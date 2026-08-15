@@ -1,0 +1,149 @@
+---
+import type { CollectionEntry } from 'astro:content';
+import BaseHead from '../components/BaseHead.astro';
+import Footer from '../components/Footer.astro';
+import FormattedDate from '../components/FormattedDate.astro';
+import Header from '../components/Header.astro';
+import { SITE_TITLE } from '../consts';
+
+type Props = CollectionEntry<'blog'>['data'] & { readingTime?: number };
+
+const { title, description, pubDate, updatedDate, regime, tags, readingTime } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<BaseHead title={`${title} — ${SITE_TITLE}`} description={description} article publishedTime={pubDate} />
+	</head>
+	<body>
+		<Header />
+		<main class="shell shell--narrow">
+			<article class:list={[`regime-${regime}`]}>
+				<div class="post-head">
+					<div class="meta">
+						<FormattedDate date={pubDate} />
+						{regime !== 'none' && <span class="regime">{regime}-bound</span>}
+						{readingTime && <span>{readingTime} min read</span>}
+					</div>
+					<h1>{title}</h1>
+					<p class="description">{description}</p>
+					{
+						tags.length > 0 && (
+							<ul class="tags">
+								{tags.map((t) => (
+									<li>{t}</li>
+								))}
+							</ul>
+						)
+					}
+				</div>
+
+				<div class="prose">
+					<slot />
+					{
+						updatedDate && (
+							<p class="updated">
+								Updated <FormattedDate date={updatedDate} />
+							</p>
+						)
+					}
+				</div>
+			</article>
+
+			<a class="back" href="/blog">← All posts</a>
+		</main>
+		<Footer />
+	</body>
+</html>
+
+<style>
+	.post-head {
+		padding-block: clamp(2.5rem, 6vw, 4rem) 1.6rem;
+		border-bottom: var(--rule-weight) solid var(--rule);
+	}
+
+	.meta {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.9rem;
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--ink-faint);
+		margin-bottom: 1.1rem;
+	}
+
+	.regime {
+		border-left: 2px solid var(--rule);
+		padding-left: 0.55rem;
+	}
+
+	.regime-memory .regime {
+		border-left-color: var(--mem);
+		color: var(--mem);
+	}
+
+	.regime-compute .regime {
+		border-left-color: var(--compute);
+		color: var(--compute);
+	}
+
+	h1 {
+		margin-bottom: 0.9rem;
+		max-width: 22ch;
+	}
+
+	.description {
+		font-size: 1.08rem;
+		color: var(--ink-soft);
+		max-width: 36rem;
+		margin-bottom: 1.1rem;
+	}
+
+	.tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.9rem;
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		font-family: var(--font-mono);
+		font-size: 0.68rem;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--ink-faint);
+	}
+
+	.prose {
+		padding-top: 2.25rem;
+	}
+
+	.updated {
+		margin-top: 3rem;
+		padding-top: 1rem;
+		border-top: var(--rule-weight) solid var(--rule-soft);
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--ink-faint);
+	}
+
+	.back {
+		display: inline-block;
+		margin-top: 3.5rem;
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		text-decoration: none;
+		color: var(--ink-faint);
+	}
+
+	.back:hover {
+		color: var(--mem);
+	}
+</style>

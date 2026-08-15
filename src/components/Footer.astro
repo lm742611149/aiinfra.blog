@@ -1,0 +1,54 @@
+---
+import { AUTHOR, SOCIALS } from '../consts';
+
+const year = new Date().getFullYear();
+---
+
+<footer>
+	<div class="shell bar">
+		<p class="label">© {year} {AUTHOR}</p>
+		<div class="links">
+			<a href="/rss.xml">RSS</a>
+			<a href={SOCIALS.github} rel="me noopener" target="_blank">GitHub</a>
+			<a href={SOCIALS.x} rel="me noopener" target="_blank">X</a>
+		</div>
+	</div>
+</footer>
+
+<style>
+	footer {
+		border-top: var(--rule-weight) solid var(--rule);
+		margin-top: 5rem;
+	}
+
+	.bar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1.5rem;
+		padding-block: 1.5rem 2.25rem;
+		flex-wrap: wrap;
+	}
+
+	p {
+		margin: 0;
+	}
+
+	.links {
+		display: flex;
+		gap: 1.25rem;
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+	}
+
+	.links a {
+		text-decoration: none;
+		color: var(--ink-faint);
+	}
+
+	.links a:hover {
+		color: var(--ink);
+	}
+</style>

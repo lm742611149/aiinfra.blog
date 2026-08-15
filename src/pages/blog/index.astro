@@ -1,0 +1,107 @@
+---
+import { getCollection } from 'astro:content';
+import BaseHead from '../../components/BaseHead.astro';
+import Footer from '../../components/Footer.astro';
+import Header from '../../components/Header.astro';
+import PostRow from '../../components/PostRow.astro';
+import { SITE_TITLE } from '../../consts';
+
+const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(
+	(a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
+);
+
+// Group by year — the only structure the archive actually has.
+const byYear = new Map<number, typeof posts>();
+for (const post of posts) {
+	const year = post.data.pubDate.getUTCFullYear();
+	byYear.set(year, [...(byYear.get(year) ?? []), post]);
+}
+const years = [...byYear.keys()].sort((a, b) => b - a);
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<BaseHead
+			title={`Writing — ${SITE_TITLE}`}
+			description="Every post: profiling, kernels, and inference engine internals."
+		/>
+	</head>
+	<body>
+		<Header />
+		<main class="shell">
+			<div class="page-head">
+				<p class="label">Archive</p>
+				<h1>Writing</h1>
+				<p class="count">
+					{posts.length}
+					{posts.length === 1 ? 'post' : 'posts'}
+				</p>
+			</div>
+
+			{
+				years.map((year) => (
+					<section class="year">
+						<h2 class="label year-label">{year}</h2>
+						{byYear.get(year)!.map((post) => (
+							<PostRow
+								href={`/blog/${post.id}/`}
+								title={post.data.title}
+								description={post.data.description}
+								pubDate={post.data.pubDate}
+								regime={post.data.regime}
+								tags={post.data.tags}
+							/>
+						))}
+					</section>
+				))
+			}
+
+			{posts.length === 0 && <p class="empty">Nothing published yet.</p>}
+		</main>
+		<Footer />
+	</body>
+</html>
+
+<style>
+	.page-head {
+		padding-block: clamp(2.5rem, 6vw, 4rem) 1rem;
+		border-bottom: var(--rule-weight) solid var(--rule);
+	}
+
+	.page-head .label {
+		margin-bottom: 0.75rem;
+	}
+
+	h1 {
+		font-size: clamp(1.9rem, 4vw, 2.6rem);
+		margin-bottom: 0.6rem;
+	}
+
+	.count {
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--ink-faint);
+		margin: 0 0 0.85rem;
+	}
+
+	.year {
+		padding-top: 2.25rem;
+	}
+
+	.year-label {
+		font-family: var(--font-mono);
+		font-weight: 500;
+		font-size: 0.72rem;
+		letter-spacing: 0.16em;
+		color: var(--ink-faint);
+		margin-bottom: 0.25rem;
+	}
+
+	.empty {
+		padding-block: 3rem;
+		color: var(--ink-soft);
+	}
+</style>

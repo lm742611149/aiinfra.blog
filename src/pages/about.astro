@@ -1,0 +1,94 @@
+---
+import BaseHead from '../components/BaseHead.astro';
+import Footer from '../components/Footer.astro';
+import Header from '../components/Header.astro';
+import { AUTHOR, SITE_TITLE, SOCIALS } from '../consts';
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<BaseHead
+			title={`About — ${SITE_TITLE}`}
+			description={`${AUTHOR} on why this site exists and what gets written here.`}
+		/>
+	</head>
+	<body>
+		<Header />
+		<main class="shell shell--narrow">
+			<div class="page-head">
+				<p class="label">About</p>
+				<h1>Learning inference infrastructure the slow way</h1>
+			</div>
+
+			<div class="prose body">
+				<p>
+					I'm {AUTHOR}. For the past several years I've built B2B SaaS billing systems — subscription
+					lifecycles, proration, invoice generation, the kind of software where a rounding error
+					shows up on someone's bank statement. It taught me to chase a number until it reconciles.
+				</p>
+				<p>
+					I'm now pointing that habit at GPUs. This site is the working log: what I measure, what I
+					got wrong, and what the arithmetic actually says. Not tutorials — I'm not far enough along
+					to teach anyone. Closer to lab notes that happen to be public.
+				</p>
+
+				<h2>What gets written here</h2>
+				<p>The plan, roughly in order:</p>
+				<ul>
+					<li>
+						<strong>Reading the hardware.</strong> Roofline analysis, arithmetic intensity, and using
+						a profiler to tell memory stalls from launch overhead.
+					</li>
+					<li>
+						<strong>Kernels.</strong> Triton, then the fused patterns that matter for attention and
+						normalisation.
+					</li>
+					<li>
+						<strong>Engines.</strong> Building a minimal inference engine end to end — KV cache,
+						batching, scheduling — then reading vLLM to find out how wrong I was.
+					</li>
+					<li>
+						<strong>Scale.</strong> Sharding, and what actually happens when a node fails mid-run.
+					</li>
+				</ul>
+
+				<h2>House rules</h2>
+				<p>
+					Every performance claim comes with the hardware, the shapes, and how it was measured. If a
+					number is from a spec sheet rather than my own run, it says so. Posts get corrected in
+					place, with the change noted at the bottom — I'd rather be usefully wrong in public than
+					quietly vague.
+				</p>
+
+				<h2>Elsewhere</h2>
+				<p>
+					<a href={SOCIALS.github} rel="me noopener" target="_blank">GitHub</a> ·
+					<a href={SOCIALS.x} rel="me noopener" target="_blank">X</a> ·
+					<a href="/rss.xml">RSS</a>
+				</p>
+			</div>
+		</main>
+		<Footer />
+	</body>
+</html>
+
+<style>
+	.page-head {
+		padding-block: clamp(2.5rem, 6vw, 4rem) 1.4rem;
+		border-bottom: var(--rule-weight) solid var(--rule);
+	}
+
+	.page-head .label {
+		margin-bottom: 0.75rem;
+	}
+
+	h1 {
+		font-size: clamp(1.9rem, 4vw, 2.6rem);
+		max-width: 20ch;
+	}
+
+	.body {
+		padding-top: 2.25rem;
+	}
+</style>

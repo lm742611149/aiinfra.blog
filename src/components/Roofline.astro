@@ -1,0 +1,173 @@
+---
+/*
+  The site's signature: an actual roofline plot for an A100-80GB
+  (1.935 TB/s HBM, 312 TFLOP/s BF16 → ridge point at 161 FLOP/byte).
+
+  Both axes are log2. Coordinates are precomputed, not derived at runtime,
+  so the plot stays a static asset with no JS.
+*/
+---
+
+<figure class="roofline">
+	<svg viewBox="0 0 520 340" role="img" aria-labelledby="roofline-title roofline-desc">
+		<title id="roofline-title">Roofline model for an NVIDIA A100-80GB</title>
+		<desc id="roofline-desc">
+			Attainable throughput rises with arithmetic intensity along a 1.935 terabyte-per-second
+			memory bandwidth slope until it flattens at the 312 TFLOP/s compute ceiling. The ridge point
+			sits at 161 FLOP per byte. Single-sequence decode sits far to the left at roughly 1 FLOP per
+			byte, deep in the memory-bound region.
+		</desc>
+
+		<g class="grid">
+			<line x1="135" y1="30" x2="135" y2="288"></line>
+			<line x1="208" y1="30" x2="208" y2="288"></line>
+			<line x1="281" y1="30" x2="281" y2="288"></line>
+			<line x1="354" y1="30" x2="354" y2="288"></line>
+			<line x1="427" y1="30" x2="427" y2="288"></line>
+			<line x1="62" y1="241" x2="500" y2="241"></line>
+			<line x1="62" y1="171" x2="500" y2="171"></line>
+			<line x1="62" y1="100" x2="500" y2="100"></line>
+		</g>
+
+		<g class="axis">
+			<line x1="62" y1="288" x2="500" y2="288"></line>
+			<line x1="62" y1="30" x2="62" y2="288"></line>
+		</g>
+
+		<!-- Ridge point drop line -->
+		<line class="drop" x1="403" y1="47" x2="403" y2="288"></line>
+
+		<!-- The roof itself -->
+		<path class="roof-mem" d="M62 266 L403 47"></path>
+		<path class="roof-compute" d="M403 47 L500 47"></path>
+
+		<!-- Where single-sequence decode actually lands -->
+		<circle class="dot-mem" cx="135" cy="219" r="4.5"></circle>
+		<circle class="dot-ridge" cx="403" cy="47" r="4"></circle>
+
+		<g class="tick">
+			<text x="135" y="303" text-anchor="middle">1</text>
+			<text x="208" y="303" text-anchor="middle">4</text>
+			<text x="281" y="303" text-anchor="middle">16</text>
+			<text x="354" y="303" text-anchor="middle">64</text>
+			<text x="427" y="303" text-anchor="middle">256</text>
+			<text x="56" y="245" text-anchor="end">1</text>
+			<text x="56" y="175" text-anchor="end">8</text>
+			<text x="56" y="104" text-anchor="end">64</text>
+		</g>
+
+		<g class="note">
+			<text class="n-mem" x="86" y="118">1.935 TB/s HBM</text>
+			<text class="n-mem sub" x="86" y="134">memory-bound</text>
+			<text class="n-compute" x="500" y="34" text-anchor="end">312 TFLOP/s · compute-bound</text>
+			<text class="n-ridge" x="396" y="272" text-anchor="end">ridge point · 161 FLOP/byte</text>
+			<text class="n-decode" x="148" y="238">decode, batch = 1 · AI ≈ 1</text>
+		</g>
+
+		<g class="axis-title">
+			<text x="281" y="326" text-anchor="middle">arithmetic intensity — FLOP per byte of HBM traffic</text>
+			<text transform="rotate(-90 18 159)" x="18" y="159" text-anchor="middle">TFLOP/s attained</text>
+		</g>
+	</svg>
+</figure>
+
+<style>
+	.roofline {
+		margin: 0;
+	}
+
+	svg {
+		display: block;
+		width: 100%;
+		height: auto;
+		overflow: visible;
+	}
+
+	.grid line {
+		stroke: var(--rule-soft);
+		stroke-width: 1;
+	}
+
+	.axis line {
+		stroke: var(--rule);
+		stroke-width: 1;
+	}
+
+	.drop {
+		stroke: var(--rule);
+		stroke-width: 1;
+		stroke-dasharray: 2 4;
+	}
+
+	.roof-mem {
+		stroke: var(--mem);
+		stroke-width: 2.5;
+		fill: none;
+		stroke-linecap: round;
+	}
+
+	.roof-compute {
+		stroke: var(--compute);
+		stroke-width: 2.5;
+		fill: none;
+		stroke-linecap: round;
+	}
+
+	.dot-mem {
+		fill: var(--mem);
+	}
+
+	.dot-ridge {
+		fill: var(--paper);
+		stroke: var(--compute);
+		stroke-width: 2;
+	}
+
+	text {
+		font-family: var(--font-mono);
+		fill: var(--ink-faint);
+	}
+
+	.tick text {
+		font-size: 10px;
+	}
+
+	.axis-title text {
+		font-size: 9.5px;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+	}
+
+	.note text {
+		font-size: 11px;
+		letter-spacing: 0.01em;
+	}
+
+	.n-mem,
+	.n-decode {
+		fill: var(--mem);
+	}
+
+	.n-mem.sub {
+		fill: var(--ink-faint);
+		font-size: 10px;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+	}
+
+	.n-compute,
+	.n-ridge {
+		fill: var(--compute);
+	}
+
+	.n-ridge {
+		fill: var(--ink-faint);
+	}
+
+	@media (max-width: 560px) {
+		.axis-title text,
+		.n-mem.sub {
+			display: none;
+		}
+	}
+</style>

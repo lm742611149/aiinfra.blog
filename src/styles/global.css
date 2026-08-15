@@ -1,0 +1,309 @@
+/*
+  Ridge Point — design tokens.
+
+  Colour carries meaning here: indigo marks the memory-bound side of the
+  roofline, amber the compute-bound side. Don't use them decoratively.
+*/
+
+:root {
+	/* Surfaces — cool grey paper, not cream */
+	--paper: #eef0f4;
+	--paper-raised: #f7f8fa;
+	--ink: #131a24;
+	--ink-soft: #4d5765;
+	--ink-faint: #7b8492;
+	--rule: #d3d8e0;
+	--rule-soft: #e2e6ec;
+
+	/* The two regimes */
+	--mem: #2b53d8;
+	--mem-wash: #dfe5fb;
+	--compute: #b26a12;
+	--compute-wash: #f6e8d3;
+
+	/* Code surface */
+	--code-bg: #171d28;
+	--code-fg: #d7dce6;
+	--code-rule: #2b3444;
+
+	/* Type */
+	--font-display: var(--font-archivo), 'Helvetica Neue', system-ui, sans-serif;
+	--font-body: var(--font-serif), Georgia, 'Times New Roman', serif;
+	--font-mono: var(--font-mono-face), ui-monospace, 'SF Mono', Menlo, monospace;
+
+	/* Rhythm */
+	--measure: 34rem;
+	--gutter: clamp(1.25rem, 4vw, 2.5rem);
+	--rule-weight: 1px;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--paper: #0e1319;
+		--paper-raised: #151c25;
+		--ink: #e4e8ef;
+		--ink-soft: #a3adbc;
+		--ink-faint: #737e8d;
+		--rule: #262f3b;
+		--rule-soft: #1c242e;
+
+		--mem: #7d9bff;
+		--mem-wash: #1a2540;
+		--compute: #dfa14a;
+		--compute-wash: #2e2415;
+
+		--code-bg: #0a0e13;
+		--code-fg: #cdd4e0;
+		--code-rule: #1f2733;
+	}
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	-webkit-text-size-adjust: 100%;
+}
+
+body {
+	margin: 0;
+	background: var(--paper);
+	color: var(--ink);
+	font-family: var(--font-body);
+	font-size: 18px;
+	line-height: 1.65;
+	text-rendering: optimizeLegibility;
+	-webkit-font-smoothing: antialiased;
+	display: flex;
+	flex-direction: column;
+	min-height: 100vh;
+}
+
+main {
+	flex: 1;
+}
+
+/* ---------- Type scale ---------- */
+
+h1,
+h2,
+h3,
+h4 {
+	font-family: var(--font-display);
+	font-weight: 700;
+	letter-spacing: -0.02em;
+	line-height: 1.12;
+	color: var(--ink);
+	margin: 0;
+	text-wrap: balance;
+}
+
+h1 {
+	font-size: clamp(1.85rem, 3.6vw, 2.7rem);
+}
+h2 {
+	font-size: clamp(1.45rem, 3vw, 1.8rem);
+	letter-spacing: -0.015em;
+}
+h3 {
+	font-size: 1.2rem;
+	letter-spacing: -0.01em;
+}
+
+p {
+	margin: 0 0 1.15em;
+}
+
+a {
+	color: var(--ink);
+	text-decoration-color: var(--rule);
+	text-decoration-thickness: 1px;
+	text-underline-offset: 0.2em;
+	transition: text-decoration-color 0.12s ease, color 0.12s ease;
+}
+
+a:hover {
+	color: var(--mem);
+	text-decoration-color: currentColor;
+}
+
+a:focus-visible,
+button:focus-visible {
+	outline: 2px solid var(--mem);
+	outline-offset: 3px;
+	border-radius: 2px;
+}
+
+strong {
+	font-weight: 600;
+}
+
+hr {
+	border: 0;
+	border-top: var(--rule-weight) solid var(--rule);
+	margin: 3rem 0;
+}
+
+/* ---------- Utility label: the mono voice ---------- */
+
+.label {
+	font-family: var(--font-mono);
+	font-size: 0.7rem;
+	font-weight: 500;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+	color: var(--ink-faint);
+}
+
+.shell {
+	width: 100%;
+	max-width: 62rem;
+	margin-inline: auto;
+	padding-inline: var(--gutter);
+}
+
+/* Long-form pages: a narrower shell centres the measure, instead of
+   stranding a 34rem column on the left of a 62rem page. */
+.shell--narrow {
+	max-width: 41rem;
+}
+
+.shell--narrow .prose {
+	max-width: none;
+}
+
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+/* ---------- Prose ---------- */
+
+.prose {
+	max-width: var(--measure);
+}
+
+.prose h2 {
+	margin: 2.6rem 0 0.75rem;
+}
+
+.prose h3 {
+	margin: 2rem 0 0.5rem;
+}
+
+.prose ul,
+.prose ol {
+	margin: 0 0 1.15em;
+	padding-left: 1.3em;
+}
+
+.prose li {
+	margin-bottom: 0.35em;
+}
+
+.prose li::marker {
+	color: var(--ink-faint);
+}
+
+.prose blockquote {
+	margin: 1.8rem 0;
+	padding: 0.2rem 0 0.2rem 1.25rem;
+	border-left: 2px solid var(--mem);
+	color: var(--ink-soft);
+	font-style: italic;
+}
+
+.prose img {
+	max-width: 100%;
+	height: auto;
+	display: block;
+}
+
+.prose table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--font-mono);
+	font-size: 0.82rem;
+	margin: 1.8rem 0;
+}
+
+.prose th,
+.prose td {
+	text-align: left;
+	padding: 0.5rem 0.9rem 0.5rem 0;
+	border-bottom: var(--rule-weight) solid var(--rule-soft);
+}
+
+.prose th {
+	color: var(--ink-faint);
+	font-weight: 500;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	font-size: 0.7rem;
+	border-bottom-color: var(--rule);
+}
+
+/* ---------- Code ---------- */
+
+:not(pre) > code {
+	font-family: var(--font-mono);
+	font-size: 0.84em;
+	padding: 0.12em 0.35em;
+	background: var(--rule-soft);
+	border-radius: 3px;
+	word-break: break-word;
+}
+
+pre {
+	font-family: var(--font-mono);
+	font-size: 0.82rem;
+	line-height: 1.6;
+	background: var(--code-bg) !important;
+	color: var(--code-fg);
+	border: 1px solid var(--code-rule);
+	padding: 1rem 1.15rem;
+	overflow-x: auto;
+	margin: 1.8rem 0;
+	/* Code blocks break the measure — they get the full column */
+	max-width: min(100%, 46rem);
+}
+
+pre > code {
+	all: unset;
+	font-family: inherit;
+}
+
+/* Shiki css-variables theme, tuned to the palette */
+:root {
+	--astro-code-foreground: #d7dce6;
+	--astro-code-background: transparent;
+	--astro-code-token-constant: #9fd1ff;
+	--astro-code-token-string: #b8dba4;
+	--astro-code-token-comment: #6b7686;
+	--astro-code-token-keyword: #f0a2c0;
+	--astro-code-token-parameter: #e6c07b;
+	--astro-code-token-function: #9fd1ff;
+	--astro-code-token-string-expression: #b8dba4;
+	--astro-code-token-punctuation: #8b95a5;
+	--astro-code-token-link: #9fd1ff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+}

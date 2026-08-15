@@ -1,0 +1,129 @@
+---
+import FormattedDate from './FormattedDate.astro';
+
+interface Props {
+	href: string;
+	title: string;
+	description: string;
+	pubDate: Date;
+	regime?: 'memory' | 'compute' | 'none';
+	tags?: string[];
+}
+
+const { href, title, description, pubDate, regime = 'none', tags = [] } = Astro.props;
+---
+
+<article class:list={['row', `regime-${regime}`]}>
+	<div class="meta">
+		<FormattedDate date={pubDate} />
+		{regime !== 'none' && <span class="regime">{regime}-bound</span>}
+	</div>
+	<div class="body">
+		<h2><a href={href}>{title}</a></h2>
+		<p>{description}</p>
+		{
+			tags.length > 0 && (
+				<ul class="tags">
+					{tags.map((t) => (
+						<li>{t}</li>
+					))}
+				</ul>
+			)
+		}
+	</div>
+</article>
+
+<style>
+	.row {
+		display: grid;
+		grid-template-columns: 9.5rem 1fr;
+		gap: 1.5rem;
+		padding-block: 1.75rem;
+		border-bottom: var(--rule-weight) solid var(--rule-soft);
+	}
+
+	.meta {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--ink-faint);
+		padding-top: 0.35rem;
+	}
+
+	.regime {
+		align-self: flex-start;
+		border-left: 2px solid var(--rule);
+		padding-left: 0.5rem;
+		letter-spacing: 0.06em;
+	}
+
+	.regime-memory .regime {
+		border-left-color: var(--mem);
+		color: var(--mem);
+	}
+
+	.regime-compute .regime {
+		border-left-color: var(--compute);
+		color: var(--compute);
+	}
+
+	h2 {
+		font-size: 1.32rem;
+		margin-bottom: 0.4rem;
+	}
+
+	h2 a {
+		text-decoration: none;
+	}
+
+	h2 a:hover {
+		color: var(--mem);
+	}
+
+	.regime-compute h2 a:hover {
+		color: var(--compute);
+	}
+
+	.body p {
+		margin: 0;
+		color: var(--ink-soft);
+		font-size: 0.98rem;
+		max-width: 38rem;
+	}
+
+	.tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.8rem;
+		list-style: none;
+		margin: 0.7rem 0 0;
+		padding: 0;
+		font-family: var(--font-mono);
+		font-size: 0.68rem;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--ink-faint);
+	}
+
+	@media (max-width: 640px) {
+		.row {
+			grid-template-columns: 1fr;
+			gap: 0.55rem;
+		}
+
+		.meta {
+			flex-direction: row;
+			align-items: center;
+			gap: 0.75rem;
+			padding-top: 0;
+		}
+
+		.regime {
+			border-left-width: 2px;
+		}
+	}
+</style>

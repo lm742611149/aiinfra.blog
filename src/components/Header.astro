@@ -1,0 +1,90 @@
+---
+import { SITE_TITLE } from '../consts';
+
+const path = Astro.url.pathname;
+const isWriting = path === '/blog' || path.startsWith('/blog/');
+const isAbout = path === '/about' || path === '/about/';
+---
+
+<header>
+	<div class="shell bar">
+		<a class="mark" href="/">
+			<svg viewBox="0 0 26 14" aria-hidden="true" width="26" height="14">
+				<path d="M1 13 L15 3" stroke="var(--mem)" stroke-width="2" fill="none" stroke-linecap="round"></path>
+				<path d="M15 3 L25 3" stroke="var(--compute)" stroke-width="2" fill="none" stroke-linecap="round"></path>
+			</svg>
+			<span>{SITE_TITLE}</span>
+		</a>
+
+		<nav aria-label="Primary">
+			<a href="/blog" class:list={[{ active: isWriting }]}>Writing</a>
+			<a href="/about" class:list={[{ active: isAbout }]}>About</a>
+			<a href="/rss.xml">RSS</a>
+		</nav>
+	</div>
+</header>
+
+<style>
+	header {
+		border-bottom: var(--rule-weight) solid var(--rule);
+	}
+
+	.bar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1.5rem;
+		padding-block: 1.05rem;
+	}
+
+	.mark {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.6rem;
+		text-decoration: none;
+		font-family: var(--font-display);
+		font-weight: 700;
+		font-size: 1.02rem;
+		letter-spacing: -0.015em;
+	}
+
+	.mark:hover {
+		color: var(--ink);
+	}
+
+	.mark svg {
+		flex: none;
+	}
+
+	nav {
+		display: flex;
+		gap: 1.35rem;
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+	}
+
+	nav a {
+		text-decoration: none;
+		color: var(--ink-faint);
+		padding-block: 0.15rem;
+		border-bottom: 2px solid transparent;
+	}
+
+	nav a:hover {
+		color: var(--ink);
+	}
+
+	nav a.active {
+		color: var(--ink);
+		border-bottom-color: var(--mem);
+	}
+
+	@media (max-width: 460px) {
+		nav {
+			gap: 1rem;
+			font-size: 0.68rem;
+		}
+	}
+</style>
