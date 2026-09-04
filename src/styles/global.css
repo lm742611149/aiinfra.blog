@@ -7,11 +7,11 @@
 
 :root {
 	/* Surfaces — cool grey paper, not cream */
-	--paper: #eef0f4;
-	--paper-raised: #f7f8fa;
-	--ink: #131a24;
-	--ink-soft: #4d5765;
-	--ink-faint: #7b8492;
+	--paper: #f7f8fa;
+	--paper-raised: #ffffff;
+	--ink: #0f1520;
+	--ink-soft: #3a4352;
+	--ink-faint: #6b7483;
 	--rule: #d3d8e0;
 	--rule-soft: #e2e6ec;
 
@@ -27,10 +27,9 @@
 	--code-rule: #2b3444;
 
 	/* Type */
-	--font-display: var(--font-archivo), 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB',
-		'Microsoft YaHei', system-ui, sans-serif;
-	--font-body: var(--font-serif), Georgia, 'Times New Roman', 'Songti SC', 'Noto Serif CJK SC',
-		'Source Han Serif SC', 'PingFang SC', 'Microsoft YaHei', serif;
+	--font-display: var(--font-archivo), var(--font-cjk-sans), 'Helvetica Neue', 'PingFang SC',
+		system-ui, sans-serif;
+	--font-body: var(--font-serif), var(--font-cjk-serif), Georgia, 'Songti SC', serif;
 	--font-mono: var(--font-mono-face), ui-monospace, 'SF Mono', Menlo, monospace;
 
 	/* Rhythm */
@@ -43,9 +42,9 @@
 	:root {
 		--paper: #0e1319;
 		--paper-raised: #151c25;
-		--ink: #e4e8ef;
-		--ink-soft: #a3adbc;
-		--ink-faint: #737e8d;
+		--ink: #eef1f6;
+		--ink-soft: #b4bdcb;
+		--ink-faint: #7f8a99;
 		--rule: #262f3b;
 		--rule-soft: #1c242e;
 
@@ -355,8 +354,20 @@ pre > code {
 
 /* CJK prose reads better with slightly more line height and no justification. */
 html[lang='zh'] .prose {
-	line-height: 1.85;
+	line-height: 1.9;
 	text-align: left;
+	font-size: 1.04rem;
+	font-weight: 500;
+	-webkit-font-smoothing: auto;
+}
+
+html[lang='zh'] .prose li,
+html[lang='zh'] .prose td {
+	font-weight: 500;
+}
+
+html[lang='zh'] .prose strong {
+	font-weight: 600;
 }
 
 html[lang='zh'] .prose h1,
