@@ -14,6 +14,11 @@ const blog = defineCollection({
 		tags: z.array(z.string()).default([]),
 		// Drafts build locally but are excluded from the site.
 		draft: z.boolean().default(false),
+		// Series membership. `aiinfra-365` is the day-by-day study log; `day` orders it.
+		series: z.string().optional(),
+		day: z.number().int().nonnegative().optional(),
+		// Content language. Drives <html lang> so CJK fallbacks and hyphenation behave.
+		lang: z.enum(['en', 'zh']).default('en'),
 	}),
 });
 

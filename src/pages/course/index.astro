@@ -1,0 +1,306 @@
+---
+import { getCollection } from 'astro:content';
+import BaseHead from '../../components/BaseHead.astro';
+import Footer from '../../components/Footer.astro';
+import FormattedDate from '../../components/FormattedDate.astro';
+import Header from '../../components/Header.astro';
+import { SITE_TITLE } from '../../consts';
+
+const TOTAL_DAYS = 365;
+
+const days = (
+	await getCollection('blog', ({ data }) => !data.draft && data.series === 'aiinfra-365' && data.day !== undefined)
+).sort((a, b) => a.data.day! - b.data.day!);
+
+// Group into the study plan's months: Day 0 is the prologue, then 30 days per month.
+const monthOf = (day: number) => (day === 0 ? 0 : Math.ceil(day / 30));
+const MONTH_TITLES: Record<number, string> = {
+	0: '序章 · 为什么走这条路',
+	1: 'M1 · 地基:算力和内存花在哪',
+	2: 'M2 · 推理机制:KV cache、batching、量化',
+	3: 'M3 · 推理深度:读 vLLM',
+	4: 'M4 · 产出物 01:推理优化报告',
+	5: 'M5 · GPU 编程:Triton 入门',
+	6: 'M6 · 产出物 02:自己的 kernel',
+	7: 'M7 · 最小推理引擎:设计与分配器',
+	8: 'M8 · 产出物 03:开源引擎',
+	9: 'M9 · 训练侧:DDP 与 FSDP',
+	10: 'M10 · 产出物 04:故障恢复',
+	11: 'M11 · 收口:作品集',
+	12: 'M12 · 投递与面试',
+};
+const byMonth = new Map<number, typeof days>();
+for (const d of days) {
+	const m = monthOf(d.data.day!);
+	byMonth.set(m, [...(byMonth.get(m) ?? []), d]);
+}
+const months = [...byMonth.keys()].sort((a, b) => a - b);
+const latest = days.at(-1);
+const pct = Math.round((days.length / TOTAL_DAYS) * 1000) / 10;
+---
+
+<!doctype html>
+<html lang="zh">
+	<head>
+		<BaseHead
+			title={`365 天 AI Infra 自学课程 — ${SITE_TITLE}`}
+			description="从 transformer 零基础到能写推理引擎的 365 天学习日志。每天一篇,记录学到的所有东西、算出的每个数字、犯过的每个错。"
+		/>
+	</head>
+	<body>
+		<Header />
+		<main class="shell">
+			<div class="page-head">
+				<p class="label">aiinfra-365</p>
+				<h1>365 天 AI Infra 自学课程</h1>
+				<p class="lede">
+					一个 transformer 零基础的后端工程师,用 12 个月把自己改造成能做推理优化的人。每天一篇,写给三个月后复习的自己:
+					每个概念从最小单元讲起,每个数字都要自己算出来,每道错题都留档。
+				</p>
+				<div class="progress" role="group" aria-label="Progress">
+					<div class="progress-meta">
+						<span class="num">{days.length} / {TOTAL_DAYS} 天</span>
+						<span class="num">{pct}%</span>
+					</div>
+					<div class="track"><div class="fill" style={`width:${Math.max(pct, 0.6)}%`}></div></div>
+					{
+						latest && (
+							<p class="latest">
+								最新:<a href={`/blog/${latest.id}/`}>Day {latest.data.day}</a> ·
+								<FormattedDate date={latest.data.pubDate} />
+							</p>
+						)
+					}
+				</div>
+			</div>
+
+			{
+				months.map((m) => (
+					<section class="month">
+						<h2 class="month-title">{MONTH_TITLES[m] ?? `M${m}`}</h2>
+						<ol class="days">
+							{byMonth.get(m)!.map((d) => (
+								<li class:list={['day', `regime-${d.data.regime}`]}>
+									<a class="day-num" href={`/blog/${d.id}/`}>
+										Day {String(d.data.day).padStart(2, '0')}
+									</a>
+									<div class="day-body">
+										<h3>
+											<a href={`/blog/${d.id}/`}>{d.data.title.replace(/^Day \d+ · /, '')}</a>
+										</h3>
+										<p>{d.data.description}</p>
+										<div class="day-meta">
+											<FormattedDate date={d.data.pubDate} />
+											{d.data.regime !== 'none' && <span class="regime">{d.data.regime}-bound</span>}
+										</div>
+									</div>
+								</li>
+							))}
+						</ol>
+					</section>
+				))
+			}
+
+			{days.length === 0 && <p class="empty">还没有开始。</p>}
+
+			<section class="rules">
+				<h2 class="month-title">这个系列的规则</h2>
+				<ul>
+					<li>一次只推进一小块,每块结尾都要能回答「哪句没跟上」。</li>
+					<li>算不出数字就是没过,跟读了几篇文章无关。</li>
+					<li>每篇都有名词解释、参考资料和自测题,答案折叠,先自己写再展开。</li>
+					<li>错题本照实记:错在哪、为什么会错、纠正后的规律是什么。</li>
+				</ul>
+			</section>
+		</main>
+		<Footer />
+	</body>
+</html>
+
+<style>
+	.page-head {
+		padding-block: clamp(2.5rem, 6vw, 4rem) 1.5rem;
+		border-bottom: var(--rule-weight) solid var(--rule);
+	}
+
+	.page-head .label {
+		margin-bottom: 0.75rem;
+	}
+
+	h1 {
+		font-size: clamp(1.9rem, 4vw, 2.6rem);
+		margin-bottom: 0.9rem;
+		letter-spacing: 0;
+	}
+
+	.lede {
+		font-size: 1.04rem;
+		line-height: 1.8;
+		color: var(--ink-soft);
+		max-width: 40rem;
+		margin: 0 0 1.5rem;
+	}
+
+	.progress {
+		max-width: 40rem;
+	}
+
+	.progress-meta {
+		display: flex;
+		justify-content: space-between;
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+		letter-spacing: 0.08em;
+		color: var(--ink-faint);
+		margin-bottom: 0.45rem;
+	}
+
+	.track {
+		height: 4px;
+		background: var(--rule-soft);
+		border-radius: 999px;
+		overflow: hidden;
+	}
+
+	.fill {
+		height: 100%;
+		background: var(--mem);
+		border-radius: 999px;
+	}
+
+	.latest {
+		margin: 0.6rem 0 0;
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.06em;
+		color: var(--ink-faint);
+	}
+
+	.month {
+		padding-top: 2.25rem;
+	}
+
+	.month-title {
+		font-family: var(--font-mono);
+		font-weight: 500;
+		font-size: 0.74rem;
+		letter-spacing: 0.14em;
+		color: var(--ink-faint);
+		margin-bottom: 0.5rem;
+		text-transform: none;
+	}
+
+	.days {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+
+	.day {
+		display: grid;
+		grid-template-columns: 6.5rem 1fr;
+		gap: 1.5rem;
+		padding-block: 1.4rem;
+		border-bottom: var(--rule-weight) solid var(--rule-soft);
+	}
+
+	.day-num {
+		align-self: start;
+		justify-self: start;
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+		letter-spacing: 0.08em;
+		text-decoration: none;
+		color: var(--ink);
+		background: var(--paper-raised);
+		border: 1px solid var(--rule);
+		border-radius: 3px;
+		padding: 0.2rem 0.55rem;
+		margin-top: 0.15rem;
+	}
+
+	.regime-memory .day-num {
+		border-left: 3px solid var(--mem);
+	}
+
+	.regime-compute .day-num {
+		border-left: 3px solid var(--compute);
+	}
+
+	.day-num:hover {
+		color: var(--mem);
+		border-color: var(--mem);
+	}
+
+	.day-body h3 {
+		font-size: 1.22rem;
+		margin: 0 0 0.4rem;
+		letter-spacing: 0;
+		line-height: 1.4;
+	}
+
+	.day-body h3 a {
+		text-decoration: none;
+	}
+
+	.day-body h3 a:hover {
+		color: var(--mem);
+	}
+
+	.day-body p {
+		margin: 0;
+		color: var(--ink-soft);
+		font-size: 0.96rem;
+		line-height: 1.75;
+		max-width: 40rem;
+	}
+
+	.day-meta {
+		display: flex;
+		gap: 0.9rem;
+		margin-top: 0.55rem;
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--ink-faint);
+	}
+
+	.regime {
+		border-left: 2px solid var(--rule);
+		padding-left: 0.5rem;
+	}
+
+	.regime-memory .regime {
+		border-left-color: var(--mem);
+		color: var(--mem);
+	}
+
+	.regime-compute .regime {
+		border-left-color: var(--compute);
+		color: var(--compute);
+	}
+
+	.rules {
+		padding-top: 2.5rem;
+	}
+
+	.rules ul {
+		margin: 0;
+		padding-left: 1.2rem;
+		color: var(--ink-soft);
+		line-height: 1.85;
+	}
+
+	.empty {
+		padding-block: 3rem;
+		color: var(--ink-soft);
+	}
+
+	@media (max-width: 600px) {
+		.day {
+			grid-template-columns: 1fr;
+			gap: 0.6rem;
+		}
+	}
+</style>

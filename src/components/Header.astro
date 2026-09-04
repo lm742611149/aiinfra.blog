@@ -3,6 +3,7 @@ import { SITE_TITLE } from '../consts';
 
 const path = Astro.url.pathname;
 const isWriting = path === '/blog' || path.startsWith('/blog/');
+const isCourse = path === '/course' || path.startsWith('/course/');
 const isAbout = path === '/about' || path === '/about/';
 ---
 
@@ -17,6 +18,7 @@ const isAbout = path === '/about' || path === '/about/';
 		</a>
 
 		<nav aria-label="Primary">
+			<a href="/course" class:list={[{ active: isCourse }]}>365 Days</a>
 			<a href="/blog" class:list={[{ active: isWriting }]}>Writing</a>
 			<a href="/about" class:list={[{ active: isAbout }]}>About</a>
 			<a href="/rss.xml">RSS</a>

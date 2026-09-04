@@ -1,6 +1,7 @@
-# Ridge Point
+# Ridge Point · aiinfra.blog
 
-A technical blog about GPU inference performance. Astro, static output, deployed on Cloudflare Pages.
+A technical blog about GPU inference performance, plus a 365-day AI Infra study log. Astro, static
+output, deployed on Cloudflare Pages at https://aiinfra.blog.
 
 ## Running it
 
@@ -28,6 +29,23 @@ tags: ['nsight', 'profiling']
 draft: false # true keeps it out of the build entirely
 ---
 ```
+
+### The 365-day course
+
+Study-log posts live in `src/content/blog/aiinfra-365/` and carry three extra fields:
+
+```yaml
+series: 'aiinfra-365'   # membership in the course
+day: 7                  # orders the course page and drives prev/next links
+lang: 'zh'              # sets <html lang>; course posts are written in Chinese
+```
+
+Title convention: `Day N · 标题` — the `Day N · ` prefix is stripped on the course index and in
+prev/next navigation. Every course post follows the same skeleton: 今天要解决的问题 → 正文 → 名词解释
+→ 常见误区 → 参考资料 → 自测 (answers inside `<details>`) → 明天预告. Reading time counts CJK
+characters at 400/min.
+
+The course index is `/course` (`src/pages/course/index.astro`), grouped by month of the study plan.
 
 `regime` is the one bit of colour logic in the design: `memory` marks a post as living on the
 bandwidth-bound side of the roofline (indigo), `compute` on the FLOP-bound side (amber), `none`
@@ -59,9 +77,10 @@ The site is fully static, so Pages needs no adapter.
    - Build command: `npm run build`
    - Output directory: `dist`
    - Environment variable: `NODE_VERSION` = `22.21.1`
-4. **After the first deploy, set the real origin in `astro.config.mjs`.** `SITE` currently points at
-   `https://ridge-point.pages.dev`. RSS links, canonical URLs and the sitemap are all derived from
-   it, so a wrong value there ships broken feed links.
+4. Custom domain: Pages project → Custom domains → add `aiinfra.blog` (and `www.aiinfra.blog` as a
+   redirect). If the domain's DNS is already on Cloudflare the CNAME is created for you; otherwise
+   point a CNAME at `<project>.pages.dev`. `SITE` in `astro.config.mjs` is already `https://aiinfra.blog`;
+   RSS links, canonical URLs and the sitemap derive from it.
 
 Fonts are fetched from Google at build time and self-hosted in the output — the deployed site makes
 no third-party requests, but the build machine needs network access.

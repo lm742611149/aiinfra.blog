@@ -4,16 +4,22 @@ import BlogPost from '../../layouts/BlogPost.astro';
 
 export async function getStaticPaths() {
 	const posts = await getCollection('blog', ({ data }) => !data.draft);
-	return posts.map((post) => ({
-		params: { slug: post.id },
-		props: post,
-	}));
+	const course = posts
+		.filter((p) => p.data.series === 'aiinfra-365' && p.data.day !== undefined)
+		.sort((a, b) => a.data.day! - b.data.day!);
+	return posts.map((post) => {
+		const i = course.findIndex((p) => p.id === post.id);
+		return {
+			params: { slug: post.id },
+			props: { post, prev: i > 0 ? course[i - 1] : null, next: i >= 0 && i < course.length - 1 ? course[i + 1] : null },
+		};
+	});
 }
 
-const post = Astro.props;
+const { post, prev, next } = Astro.props;
 const { Content, remarkPluginFrontmatter } = await render(post);
 ---
 
-<BlogPost {...post.data} readingTime={remarkPluginFrontmatter.readingTime}>
+<BlogPost {...post.data} readingTime={remarkPluginFrontmatter.readingTime} prev={prev} next={next}>
 	<Content />
 </BlogPost>

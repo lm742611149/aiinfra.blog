@@ -13,6 +13,9 @@ const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(
 
 const recent = posts.slice(0, 5);
 const hasMore = posts.length > recent.length;
+
+const course = posts.filter((p) => p.data.series === 'aiinfra-365' && p.data.day !== undefined);
+const courseLatest = course.sort((a, b) => b.data.day! - a.data.day!)[0];
 ---
 
 <!doctype html>
@@ -41,6 +44,24 @@ const hasMore = posts.length > recent.length;
 					<Roofline />
 				</div>
 			</section>
+
+			{
+				courseLatest && (
+					<section class="shell course">
+						<a class="course-card" href="/course">
+							<div>
+								<p class="label">365-day study log</p>
+								<h2>365 天 AI Infra 自学课程</h2>
+								<p class="course-lede">
+									从 transformer 零基础开始,每天一篇。已写到 Day {courseLatest.data.day}:
+									{courseLatest.data.title.replace(/^Day \d+ · /, '')}
+								</p>
+							</div>
+							<span class="course-cta">目录 →</span>
+						</a>
+					</section>
+				)
+			}
 
 			<section class="shell writing">
 				<div class="section-head">
@@ -104,6 +125,55 @@ const hasMore = posts.length > recent.length;
 		margin: 1.6rem 0 0;
 		padding-top: 1.1rem;
 		border-top: var(--rule-weight) solid var(--rule);
+	}
+
+	.course {
+		padding-top: 0.5rem;
+		padding-bottom: 2.5rem;
+	}
+
+	.course-card {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1.5rem;
+		padding: 1.4rem 1.6rem;
+		background: var(--paper-raised);
+		border: var(--rule-weight) solid var(--rule);
+		border-left: 3px solid var(--mem);
+		border-radius: 4px;
+		text-decoration: none;
+		color: var(--ink);
+	}
+
+	.course-card:hover {
+		border-color: var(--mem);
+	}
+
+	.course-card .label {
+		margin-bottom: 0.4rem;
+	}
+
+	.course-card h2 {
+		font-size: 1.25rem;
+		margin-bottom: 0.4rem;
+		letter-spacing: 0;
+	}
+
+	.course-lede {
+		margin: 0;
+		color: var(--ink-soft);
+		font-size: 0.95rem;
+		line-height: 1.7;
+		max-width: 34rem;
+	}
+
+	.course-cta {
+		flex: none;
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+		letter-spacing: 0.1em;
+		color: var(--mem);
 	}
 
 	.writing {

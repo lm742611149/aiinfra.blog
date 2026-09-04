@@ -6,13 +6,20 @@ import FormattedDate from '../components/FormattedDate.astro';
 import Header from '../components/Header.astro';
 import { SITE_TITLE } from '../consts';
 
-type Props = CollectionEntry<'blog'>['data'] & { readingTime?: number };
+type Entry = CollectionEntry<'blog'>;
+type Props = Entry['data'] & {
+	readingTime?: number;
+	prev?: Entry | null;
+	next?: Entry | null;
+};
 
-const { title, description, pubDate, updatedDate, regime, tags, readingTime } = Astro.props;
+const { title, description, pubDate, updatedDate, regime, tags, readingTime, series, day, lang, prev, next } =
+	Astro.props;
+const inCourse = series === 'aiinfra-365';
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang={lang}>
 	<head>
 		<BaseHead title={`${title} — ${SITE_TITLE}`} description={description} article publishedTime={pubDate} />
 	</head>
@@ -22,6 +29,7 @@ const { title, description, pubDate, updatedDate, regime, tags, readingTime } = 
 			<article class:list={[`regime-${regime}`]}>
 				<div class="post-head">
 					<div class="meta">
+						{inCourse && <a class="day" href="/course">Day {day}</a>}
 						<FormattedDate date={pubDate} />
 						{regime !== 'none' && <span class="regime">{regime}-bound</span>}
 						{readingTime && <span>{readingTime} min read</span>}
@@ -51,7 +59,30 @@ const { title, description, pubDate, updatedDate, regime, tags, readingTime } = 
 				</div>
 			</article>
 
-			<a class="back" href="/blog">← All posts</a>
+			{
+				inCourse && (prev || next) && (
+					<nav class="series-nav" aria-label="Course navigation">
+						{prev ? (
+							<a class="series-link" href={`/blog/${prev.id}/`}>
+								<span class="series-label">← Day {prev.data.day}</span>
+								<span class="series-title">{prev.data.title.replace(/^Day \d+ · /, '')}</span>
+							</a>
+						) : (
+							<span />
+						)}
+						{next ? (
+							<a class="series-link series-link--next" href={`/blog/${next.id}/`}>
+								<span class="series-label">Day {next.data.day} →</span>
+								<span class="series-title">{next.data.title.replace(/^Day \d+ · /, '')}</span>
+							</a>
+						) : (
+							<span />
+						)}
+					</nav>
+				)
+			}
+
+			<a class="back" href={inCourse ? '/course' : '/blog'}>{inCourse ? '← 365 天课程目录' : '← All posts'}</a>
 		</main>
 		<Footer />
 	</body>
@@ -79,6 +110,68 @@ const { title, description, pubDate, updatedDate, regime, tags, readingTime } = 
 	.regime {
 		border-left: 2px solid var(--rule);
 		padding-left: 0.55rem;
+	}
+
+	.day {
+		text-decoration: none;
+		color: var(--ink);
+		background: var(--paper-raised);
+		border: 1px solid var(--rule);
+		border-radius: 3px;
+		padding: 0.15rem 0.5rem;
+	}
+
+	.day:hover {
+		border-color: var(--mem);
+		color: var(--mem);
+	}
+
+	.series-nav {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 1rem;
+		margin-top: 3.5rem;
+		padding-top: 1.5rem;
+		border-top: var(--rule-weight) solid var(--rule);
+	}
+
+	.series-link {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		text-decoration: none;
+		color: var(--ink);
+	}
+
+	.series-link--next {
+		text-align: right;
+	}
+
+	.series-label {
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--ink-faint);
+	}
+
+	.series-title {
+		font-size: 0.95rem;
+		color: var(--ink-soft);
+	}
+
+	.series-link:hover .series-title {
+		color: var(--mem);
+	}
+
+	@media (max-width: 560px) {
+		.series-nav {
+			grid-template-columns: 1fr;
+		}
+
+		.series-link--next {
+			text-align: left;
+		}
 	}
 
 	.regime-memory .regime {

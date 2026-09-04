@@ -27,8 +27,10 @@
 	--code-rule: #2b3444;
 
 	/* Type */
-	--font-display: var(--font-archivo), 'Helvetica Neue', system-ui, sans-serif;
-	--font-body: var(--font-serif), Georgia, 'Times New Roman', serif;
+	--font-display: var(--font-archivo), 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB',
+		'Microsoft YaHei', system-ui, sans-serif;
+	--font-body: var(--font-serif), Georgia, 'Times New Roman', 'Songti SC', 'Noto Serif CJK SC',
+		'Source Han Serif SC', 'PingFang SC', 'Microsoft YaHei', serif;
 	--font-mono: var(--font-mono-face), ui-monospace, 'SF Mono', Menlo, monospace;
 
 	/* Rhythm */
@@ -306,4 +308,59 @@ pre > code {
 		transition-duration: 0.01ms !important;
 		scroll-behavior: auto !important;
 	}
+}
+
+/* Collapsible quiz answers used by the 365-day course posts. */
+.prose details {
+	margin: 0.75rem 0 1.5rem;
+	padding: 0.85rem 1.1rem;
+	background: var(--paper-raised);
+	border: var(--rule-weight) solid var(--rule);
+	border-left: 3px solid var(--mem);
+	border-radius: 4px;
+}
+
+.prose details > summary {
+	cursor: pointer;
+	font-family: var(--font-mono);
+	font-size: 0.74rem;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--ink-faint);
+	list-style: none;
+}
+
+.prose details > summary::-webkit-details-marker {
+	display: none;
+}
+
+.prose details > summary::before {
+	content: '▸ ';
+	color: var(--mem);
+}
+
+.prose details[open] > summary::before {
+	content: '▾ ';
+}
+
+.prose details[open] > summary {
+	margin-bottom: 0.75rem;
+	padding-bottom: 0.6rem;
+	border-bottom: var(--rule-weight) solid var(--rule-soft);
+}
+
+.prose details > :last-child {
+	margin-bottom: 0;
+}
+
+/* CJK prose reads better with slightly more line height and no justification. */
+html[lang='zh'] .prose {
+	line-height: 1.85;
+	text-align: left;
+}
+
+html[lang='zh'] .prose h1,
+html[lang='zh'] .prose h2,
+html[lang='zh'] .prose h3 {
+	letter-spacing: 0;
 }

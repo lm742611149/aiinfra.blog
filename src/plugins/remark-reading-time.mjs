@@ -6,7 +6,9 @@
  */
 
 const PROSE_WPM = 220;
+const CJK_CPM = 400; // CJK has no word boundaries — count characters instead
 const CODE_LPM = 24;
+const CJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]/g;
 
 function collect(node, acc) {
 	if (node.type === 'code') {
@@ -14,8 +16,10 @@ function collect(node, acc) {
 		return acc;
 	}
 	if (typeof node.value === 'string') {
-		const words = node.value.trim().split(/\s+/).filter(Boolean).length;
-		acc.words += words;
+		const cjk = node.value.match(CJK)?.length ?? 0;
+		const rest = node.value.replace(CJK, ' ');
+		acc.cjk += cjk;
+		acc.words += rest.trim().split(/\s+/).filter(Boolean).length;
 	}
 	for (const child of node.children ?? []) collect(child, acc);
 	return acc;
@@ -23,8 +27,8 @@ function collect(node, acc) {
 
 export function remarkReadingTime() {
 	return (tree, file) => {
-		const { words, codeLines } = collect(tree, { words: 0, codeLines: 0 });
-		const minutes = words / PROSE_WPM + codeLines / CODE_LPM;
+		const { words, cjk, codeLines } = collect(tree, { words: 0, cjk: 0, codeLines: 0 });
+		const minutes = words / PROSE_WPM + cjk / CJK_CPM + codeLines / CODE_LPM;
 		file.data.astro.frontmatter.readingTime = Math.max(1, Math.round(minutes));
 	};
 }

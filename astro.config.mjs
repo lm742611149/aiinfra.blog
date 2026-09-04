@@ -5,9 +5,8 @@ import sitemap from '@astrojs/sitemap';
 import { defineConfig, fontProviders } from 'astro/config';
 import { remarkReadingTime } from './src/plugins/remark-reading-time.mjs';
 
-// TODO: swap for the custom domain once it's pointed at Cloudflare Pages.
-// This must be the real origin — RSS links, canonical URLs and the sitemap all derive from it.
-const SITE = 'https://ridge-point.pages.dev';
+// The real origin — RSS links, canonical URLs and the sitemap all derive from it.
+const SITE = 'https://aiinfra.blog';
 
 export default defineConfig({
 	site: SITE,
