@@ -7,7 +7,7 @@ compatibility_date = "2025-09-01"
 
 [vars]
 # Origins allowed to call the API. Any *.aiinfra-blog.pages.dev preview is also accepted.
-ALLOWED_ORIGINS = "https://aiinfra.blog,https://aiinfra-blog.pages.dev"
+ALLOWED_ORIGINS = "https://aiinfra.blog,https://www.aiinfra.blog,https://aiinfra-blog.pages.dev"
 SITE_ORIGIN = "https://aiinfra.blog"
 # Sender for notification mail. aiinfra.blog is verified in Resend (SPF/DKIM/MX on send.aiinfra.blog).
 MAIL_FROM = "AI Infra comments <comments@aiinfra.blog>"
