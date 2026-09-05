@@ -26,6 +26,6 @@ export const LANG_TAG: Record<'en' | 'zh', string> = { en: 'en', zh: 'zh-CN' };
 export const OG_LOCALE: Record<'en' | 'zh', string> = { en: 'en_US', zh: 'zh_CN' };
 
 // Comments (Cloudflare Pages Functions + D1, see functions/api/). The Turnstile site key is public.
-// `1x00000000000000000000AA` is Cloudflare's always-pass test key — replace with the real widget's key.
+// Widget "aiinfra.blog" (Managed mode); hostnames aiinfra.blog + aiinfra-blog.pages.dev.
 export const COMMENTS_ENABLED = true;
-export const TURNSTILE_SITEKEY = '1x00000000000000000000AA';
+export const TURNSTILE_SITEKEY = '0x4AAAAAAEoU-mHlKW6s1ixj';
