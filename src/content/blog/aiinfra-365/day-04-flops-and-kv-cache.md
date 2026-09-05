@@ -1,7 +1,7 @@
 ---
 title: 'Day 4 · 一次前向多少 FLOPs，以及 KV cache 为什么每个 token 要 512 KB'
 description: '把 Day 2 数出来的参数量变成两个能算的数：模型跑一遍要做多少次运算，以及 decode 时为了不重算而缓存下来的 k、v 占多少显存。算完会发现 batch 一大，缓存比权重本身还大。附六个模型的 KV cache 对照表和一段从 config.json 自动算账的代码。'
-pubDate: 2026-09-02
+pubDate: 2026-09-04
 regime: memory
 tags: ['flops', 'kv-cache', 'decode', 'gqa', 'aiinfra-365']
 series: 'aiinfra-365'

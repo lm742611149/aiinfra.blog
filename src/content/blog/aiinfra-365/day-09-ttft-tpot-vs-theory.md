@@ -1,7 +1,7 @@
 ---
 title: 'Day 9 · 把 TTFT 和 TPOT 分开测，再和 W1 的理论下限对账'
 description: '一次 generate 的耗时里藏着两个性格完全不同的数：首 token 时间和后续每 token 时间。今天把它们拆开，各自算出理论下限，然后用一个比值回答 W1 那张表能不能信。'
-pubDate: 2026-09-07
+pubDate: 2026-09-05
 regime: memory
 tags: ['ttft', 'tpot', 'latency', 'colab', 't4', 'aiinfra-365']
 series: 'aiinfra-365'

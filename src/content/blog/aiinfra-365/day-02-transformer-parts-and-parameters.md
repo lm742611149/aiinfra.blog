@@ -1,7 +1,7 @@
 ---
 title: 'Day 2 · Transformer 零件图：把 Llama-2-7B 的 6.74B 参数一个矩阵一个矩阵数出来'
 description: '不靠任何公式表，只用「矩阵形状 = 输入长度 × 输出长度」一条规律，把 Llama-2-7B 的 6.74B 参数从头数到尾，再算出它在 fp16 下占多少显存。同一套算法顺手对账 13B、Llama-3-8B 和 TinyLlama-1.1B。'
-pubDate: 2026-08-31
+pubDate: 2026-09-04
 regime: none
 tags: ['transformer', 'parameters', 'llama', 'aiinfra-365']
 series: 'aiinfra-365'

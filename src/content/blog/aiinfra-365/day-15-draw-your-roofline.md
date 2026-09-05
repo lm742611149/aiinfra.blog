@@ -1,7 +1,7 @@
 ---
 title: 'Day 15 · 用实测值画自己的 roofline，算实测 ridge point'
 description: '把 Day 13 测出的带宽、Day 14 测出的算力换掉标称值，用 matplotlib 画出自己这张卡的 roofline，再把 Day 9 的 TPOT 换算成图上的一个点。屋顶从此是自己测出来的，不是宣传页上抄来的。'
-pubDate: 2026-09-13
+pubDate: 2026-09-05
 regime: memory
 tags: ['roofline', 'matplotlib', 't4', 'arithmetic-intensity', 'aiinfra-365']
 series: 'aiinfra-365'

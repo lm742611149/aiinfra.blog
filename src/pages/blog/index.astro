@@ -5,11 +5,11 @@ import Footer from '../../components/Footer.astro';
 import Header from '../../components/Header.astro';
 import PostRow from '../../components/PostRow.astro';
 import { SITE_TITLE } from '../../consts';
+import { COURSE_SERIES } from '../../consts';
+import { byNewest } from '../../lib/posts';
 import { breadcrumbSchema } from '../../lib/seo';
 
-const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(
-	(a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
-);
+const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(byNewest);
 
 // Group by year — the only structure the archive actually has.
 const byYear = new Map<number, typeof posts>();
@@ -65,6 +65,7 @@ const years = [...byYear.keys()].sort((a, b) => b - a);
 								pubDate={post.data.pubDate}
 								regime={post.data.regime}
 								tags={post.data.tags}
+								day={post.data.series === COURSE_SERIES ? post.data.day : undefined}
 							/>
 						))}
 					</section>

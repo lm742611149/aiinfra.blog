@@ -1,7 +1,7 @@
 ---
 title: 'Day 1 · 让深度学习 Brrrr：三种瓶颈怎么判定'
 description: '读 Horace He 的 Brrrr。一段代码跑得慢，只可能卡在三个地方：算力、显存带宽、调度开销。今天学的是怎么判断卡在哪一个，判错了后面所有优化都是白干。附判定流程图、三段式时间线和一个可以在 Colab 上跑的小实验。'
-pubDate: 2026-08-30
+pubDate: 2026-09-04
 regime: memory
 tags: ['brrrr', 'roofline', 'aiinfra-365']
 series: 'aiinfra-365'

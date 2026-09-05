@@ -1,7 +1,7 @@
 ---
 title: 'Day 12 · W2 复习：理论 vs 实测对比报告、五道验收题、错题本'
 description: '第一周算账，第二周对账。把 Day 7 到 Day 11 压成一页：计时怎么做才是真的、TTFT 和 TPOT 各自的下限、比值怎么读、profiler 里的 kernel 名怎么对回模型、gap 占比怎么算。然后合上笔记做路线图 W2 的五道验收题，把这周会犯的错一条条摊开。'
-pubDate: 2026-09-10
+pubDate: 2026-09-05
 regime: memory
 tags: ['review', 'week-2', 'profiler', 'timing', 'aiinfra-365']
 series: 'aiinfra-365'

@@ -1,7 +1,7 @@
 ---
 title: 'Day 24 · W4 复习：一条命令起环境的完整清单、五道验收题、错题本'
 description: '把 W4 五天的工程活压成一张能打勾的清单：开机前、开机后、收尾三段，每项对应哪个脚本、哪条计费事实。然后做路线图 W4 的五道验收题，把这周三篇文章里口径不一致的地方统一掉，最后整理错题本。W4 结束时的标准只有一句：一条命令起环境，跑完自己消失，钱花在哪一眼可查。'
-pubDate: 2026-09-22
+pubDate: 2026-09-05
 regime: none
 tags: ['review', 'week-4', 'runpod', 'vast', 'cost', 'automation', 'aiinfra-365']
 series: 'aiinfra-365'

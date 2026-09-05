@@ -1,7 +1,7 @@
 ---
 title: 'Day 22 · 三层自动销毁：脚本末尾关机、空闲检测、余额上限'
 description: '忘记关机是这条路上预算失控的唯一原因，而它不会因为「这次一定记得」而消失。给三种不同的失败方式各配一道保险：任务结束脚本自己销毁实例，GPU 空闲太久看门程序销毁实例，前两层都失效时账户余额兜底。每一层写出来、跑一遍，验收是故意跑完一个任务，然后看实例自己消失。'
-pubDate: 2026-09-20
+pubDate: 2026-09-05
 regime: none
 tags: ['runpod', 'vast', 'cost', 'automation', 'bash', 'nvidia-smi', 'aiinfra-365']
 series: 'aiinfra-365'

@@ -1,7 +1,7 @@
 ---
 title: 'Day 30 · M1 总复习：一页笔记、20 道全月自测、错题本汇总与 M2 预告'
 description: '把 M1 四周加加餐周压成一页：W1 的账本、W2 的计时与 profiler、W3 的实测屋顶、W4 的环境流水线、加餐周的硬件与数值地基。然后合上笔记做 20 道全月自测，把三十天的错题按形状、单位、异步、标称、计费五类归根，对照 Day 0 的目标逐条打勾，最后写 M2 的预告。'
-pubDate: 2026-09-28
+pubDate: 2026-09-05
 regime: memory
 tags: ['review', 'quiz', 'month-1', 'roofline', 'aiinfra-365']
 series: 'aiinfra-365'

@@ -1,7 +1,7 @@
 ---
 title: 'Day 10 · torch.profiler 抓一次 generate，在 Perfetto 里看懂 timeline'
 description: '计时器只给一个数，profiler 给每个 kernel 的名字和时长。今天把 Day 9 那个比值拆开：一步 decode 里 GPU 真正在跑的是哪几个 kernel，各对应模型的哪一部分，CPU 那边又在干什么。'
-pubDate: 2026-09-08
+pubDate: 2026-09-05
 regime: none
 tags: ['profiler', 'perfetto', 'trace', 'kernel', 'colab', 'aiinfra-365']
 series: 'aiinfra-365'

@@ -1,7 +1,7 @@
 ---
 title: 'Day 13 · 实测显存带宽：一次 copy 能搬多快'
 description: 'W3 开工。标称 320 GB/s 是纸面数字，今天用一次最简单的逐元素加法，把 T4 真正能搬多快测出来，再把这个实测值装回 Day 5 的 decode 下限公式里。顺手踩清三个坑：字节只算读没算写、张量小到落进 L2、没 synchronize。'
-pubDate: 2026-09-11
+pubDate: 2026-09-05
 regime: memory
 tags: ['bandwidth', 'benchmark', 'hbm', 'colab', 'aiinfra-365']
 series: 'aiinfra-365'

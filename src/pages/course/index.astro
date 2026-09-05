@@ -2,7 +2,6 @@
 import { getCollection } from 'astro:content';
 import BaseHead from '../../components/BaseHead.astro';
 import Footer from '../../components/Footer.astro';
-import FormattedDate from '../../components/FormattedDate.astro';
 import Header from '../../components/Header.astro';
 import { COURSE_SERIES, COURSE_TITLE, SITE_TITLE } from '../../consts';
 import { breadcrumbSchema } from '../../lib/seo';
@@ -93,8 +92,7 @@ const schema = [
 					{
 						latest && (
 							<p class="latest">
-								最新:<a href={`/blog/${latest.id}/`}>Day {latest.data.day}</a> ·
-								<FormattedDate date={latest.data.pubDate} />
+								最新:<a href={`/blog/${latest.id}/`}>Day {latest.data.day} · {latest.data.title.replace(/^Day \d+ · /, '')}</a>
 							</p>
 						)
 					}
@@ -116,10 +114,11 @@ const schema = [
 											<a href={`/blog/${d.id}/`}>{d.data.title.replace(/^Day \d+ · /, '')}</a>
 										</h3>
 										<p>{d.data.description}</p>
-										<div class="day-meta">
-											<FormattedDate date={d.data.pubDate} />
-											{d.data.regime !== 'none' && <span class="regime">{d.data.regime}-bound</span>}
-										</div>
+										{d.data.regime !== 'none' && (
+											<div class="day-meta">
+												<span class="regime">{d.data.regime}-bound</span>
+											</div>
+										)}
 									</div>
 								</li>
 							))}

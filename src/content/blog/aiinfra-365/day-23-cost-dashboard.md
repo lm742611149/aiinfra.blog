@@ -1,7 +1,7 @@
 ---
 title: 'Day 23 · 成本看板：每次实验的 GPU 时长和花费一眼可查'
 description: '把每一次开机都变成一行记录：日期、实验名、卡型、小时价、时长、花费、一句结论。启动和销毁脚本自动记账，一段 Python 汇总本月，再把小时价换算成每个实验多少钱、每百万 token 多少钱。答不出「这个月花了多少、花在哪」就是看板没做好。'
-pubDate: 2026-09-21
+pubDate: 2026-09-05
 regime: none
 tags: ['cost', 'runpod', 'budget', 'tooling', 'aiinfra-365']
 series: 'aiinfra-365'

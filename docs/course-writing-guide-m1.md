@@ -12,7 +12,7 @@ frontmatter:
 ---
 title: 'Day N · 标题'                 # 必须以 “Day N · ” 开头(中间点 · 两侧各一个空格)
 description: '一两句话,会出现在目录页和 RSS。'
-pubDate: 2026-09-05                   # Day N 的日期 = 2026-08-29 + N 天(Day 7 = 09-05,Day 30 = 09-28)
+pubDate: 2026-09-05                   # 实际发布的那天,绝不能是未来;界面不显示日期,只显示 Day N(日期只给 RSS/sitemap/JSON-LD 用)
 regime: memory                        # memory | compute | none,按当天主题真实归类,不是装饰
 tags: ['profiler', 'colab', 'aiinfra-365']   # 最后一个固定 'aiinfra-365'
 series: 'aiinfra-365'

@@ -1,7 +1,7 @@
 ---
 title: 'Day 26 · 数值格式：fp32/tf32/fp16/bf16/fp8/int8/int4 各占几位、差在哪'
 description: '前面四周所有的「× 2 字节」都默认了 fp16。今天把这 16 个位拆开看：几位给符号、几位给指数、几位给尾数，换一种分法就是另一个格式。然后回答两个实际问题：为什么 T4 跑 bf16 会出事，以及把权重压到 8 位、4 位之后 decode 上限从 150 tok/s 变成多少。'
-pubDate: 2026-09-24
+pubDate: 2026-09-05
 regime: memory
 tags: ['fp16', 'bf16', 'fp8', 'int8', 'quantization', 'numerics', 'aiinfra-365']
 series: 'aiinfra-365'

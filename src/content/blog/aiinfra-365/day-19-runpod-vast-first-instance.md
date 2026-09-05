@@ -1,7 +1,7 @@
 ---
 title: 'Day 19 · 第一次租 GPU:RunPod / Vast 开 spot 实例，SSH 进去看 nvidia-smi'
 description: 'W4 第一天，从免费 Colab 换到按秒计费的租卡。两家平台怎么选、便宜的可中断实例到底便宜在哪、选哪张卡要先算显存再看价，以及第一次 SSH 进去必须做的三件事。全程只充 10 到 20 美元。'
-pubDate: 2026-09-17
+pubDate: 2026-09-05
 regime: none
 tags: ['runpod', 'vast', 'nvidia-smi', 'cost', 'aiinfra-365']
 series: 'aiinfra-365'

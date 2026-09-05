@@ -1,7 +1,7 @@
 ---
 title: 'Day 3 · Self-attention 到底在算什么：q、k、v、多头，以及模型怎么一个 token 一个 token 往外吐'
 description: '把注意力机制拆到能手算的粒度：三个向量各干什么、权重怎么来的、加起来的到底是什么。用一个 3 token、head_dim 2 的例子把整张注意力矩阵算完，再接一段能跑的 numpy。顺带搞清模型为什么只能一个 token 一个 token 地生成，以及这件事怎么直接引出 prefill、decode 和 KV cache。'
-pubDate: 2026-09-01
+pubDate: 2026-09-04
 regime: none
 tags: ['attention', 'transformer', 'decode', 'aiinfra-365']
 series: 'aiinfra-365'

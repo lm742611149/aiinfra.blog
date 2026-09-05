@@ -1,7 +1,7 @@
 ---
 title: 'Day 8 · CUDA 是异步的：不 synchronize 的计时全是假的'
 description: 'CPU 把 kernel 扔进队列就往下走，GPU 在后面慢慢干。不加 synchronize,perf_counter 测到的是「派活的时间」，不是「干完活的时间」，能差几个数量级。今天把这件事画成时间线，对比两种正确的计时法，把 Day 7 的计时代码改成以后一年都用的最终版。'
-pubDate: 2026-09-06
+pubDate: 2026-09-05
 regime: none
 tags: ['cuda', 'async', 'synchronize', 'timing', 'benchmark', 'aiinfra-365']
 series: 'aiinfra-365'

@@ -1,7 +1,7 @@
 ---
 title: 'Day 0 · 这条路为什么是 AI Infra，以及 12 个月怎么走'
 description: '开工前把三件事写死：为什么选 AI Infra 而不是 AI 应用层，为什么先攻推理不碰分布式训练，以及 12 个月每一段要交出什么东西。这一篇是整个 365 天系列的地图，也是三个月后动摇时要回来读的那一篇。'
-pubDate: 2026-08-29
+pubDate: 2026-09-04
 regime: none
 tags: ['roadmap', 'aiinfra-365']
 series: 'aiinfra-365'

@@ -5,7 +5,7 @@ Run from the repo root:  python3 scripts/check-course.py [--links]
 
 Checks every post under src/content/blog/aiinfra-365/:
   * frontmatter has the seven course fields, and `day` matches the filename
-  * pubDate == 2026-08-29 + day
+  * pubDate is a real date, never in the future (it is metadata for search engines; the UI only shows Day N)
   * the seven skeleton sections are present, in order
   * the "明天预告 / 下周预告" section names the next day's title
   * figure / video counts and CJK character count
@@ -24,7 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 POSTS = ROOT / 'src/content/blog/aiinfra-365'
-DAY0 = dt.date(2026, 8, 29)
+TODAY = dt.date.today()
 SECTIONS = ['今天要解决的问题', '名词解释', '常见误区', '参考资料', '自测']
 CJK = re.compile(r'[一-鿿]')
 
@@ -92,8 +92,8 @@ def main() -> int:
             problems.append(f'{p.name}: title does not start with "Day {day} · " → {title!r}')
         try:
             pub = dt.date.fromisoformat(fm.get('pubDate', ''))
-            if pub != DAY0 + dt.timedelta(days=day):
-                problems.append(f'{p.name}: pubDate {pub} ≠ {DAY0 + dt.timedelta(days=day)}')
+            if pub > TODAY:
+                problems.append(f'{p.name}: pubDate {pub} is in the future')
         except ValueError:
             problems.append(f'{p.name}: bad pubDate {fm.get("pubDate")!r}')
         if fm.get('series') != 'aiinfra-365' or fm.get('lang') != 'zh':

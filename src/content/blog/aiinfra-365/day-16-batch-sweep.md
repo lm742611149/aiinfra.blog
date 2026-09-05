@@ -1,7 +1,7 @@
 ---
 title: 'Day 16 · batch 从 1 扫到 128：吞吐曲线在哪里离开斜线'
 description: '把 batch 开到 1、4、16、64、128，测 decode 每步时间，算吞吐，标到 Day 15 的 roofline 上。W1 预测 batch 到 ridge 附近才碰屋顶，今天要看这条曲线实际在哪弯、为什么弯——弯的原因不是 FLOP 追上了带宽，是 KV cache 的字节跟着 batch 一起涨。'
-pubDate: 2026-09-14
+pubDate: 2026-09-05
 regime: memory
 tags: ['batching', 'throughput', 'kv-cache', 't4', 'roofline', 'aiinfra-365']
 series: 'aiinfra-365'

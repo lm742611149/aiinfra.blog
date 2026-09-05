@@ -1,7 +1,7 @@
 ---
 title: 'Day 25 · GPU 解剖：SM、tensor core、寄存器/shared/L2/HBM 到底是什么'
 description: '前四周一直在说「算力」和「带宽」，今天把这两个词拆开看里面的零件：算力是多少个 SM 里多少个 tensor core 每个时钟做多少次乘加，带宽是一座五层的存储金字塔里最底下那一层。312 TFLOP/s 和 2039 GB/s 这两个数，今天要能从零件表里亲手算出来。'
-pubDate: 2026-09-23
+pubDate: 2026-09-05
 regime: none
 tags: ['gpu', 'hardware', 'sm', 'tensor-core', 'memory-hierarchy', 'aiinfra-365']
 series: 'aiinfra-365'

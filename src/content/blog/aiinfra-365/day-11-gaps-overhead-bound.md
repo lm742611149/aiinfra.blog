@@ -1,7 +1,7 @@
 ---
 title: 'Day 11 · timeline 上的 gap:overhead-bound 的实物证据'
 description: 'Day 1 读到的第三种瓶颈 overhead-bound，今天在 Perfetto 的 timeline 上亲眼看到它：GPU 那一行的空白。算清 decode 一步为什么有三百个小 kernel、CPU 为什么发不过来，再看加大 batch 时空白怎么缩，以及两种真正的治法。'
-pubDate: 2026-09-09
+pubDate: 2026-09-05
 regime: none
 tags: ['profiler', 'overhead', 'cuda-graphs', 'torch-compile', 'perfetto', 'aiinfra-365']
 series: 'aiinfra-365'

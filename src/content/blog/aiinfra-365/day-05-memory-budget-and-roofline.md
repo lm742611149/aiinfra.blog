@@ -1,7 +1,7 @@
 ---
 title: 'Day 5 · 显存花在哪、decode 为什么最快只有 150 token/s：算术强度与 roofline'
 description: '把 7B 模型推理时的显存拆成四项算清楚，再用一次除法算出 decode 的物理上限。最后引出整条路线最重要的一个数：ridge point ≈ 153。附五张卡的 ridge point 对照、量化和 KV cache 读取怎么改这张图。'
-pubDate: 2026-09-03
+pubDate: 2026-09-04
 regime: memory
 tags: ['roofline', 'memory', 'decode', 'a100', 'aiinfra-365']
 series: 'aiinfra-365'

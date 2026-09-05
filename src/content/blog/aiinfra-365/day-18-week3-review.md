@@ -1,7 +1,7 @@
 ---
 title: 'Day 18 · W3 复习：自己的 roofline、五道验收题、错题本'
 description: '把测带宽、测算力、画 roofline、扫 batch、对比标称这五天压成一页笔记：每一步的公式、预期区间和坑放在一起。合上笔记做路线图 W3 的五道验收题，再把这周最容易测错的地方一条条摊开。屋顶从这周起是自己测的，不是抄的。'
-pubDate: 2026-09-16
+pubDate: 2026-09-05
 regime: memory
 tags: ['review', 'roofline', 'benchmark', 'week-3', 'aiinfra-365']
 series: 'aiinfra-365'

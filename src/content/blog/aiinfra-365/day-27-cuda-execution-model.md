@@ -1,7 +1,7 @@
 ---
 title: 'Day 27 · CUDA 执行模型：kernel、grid、block、warp、stream 与 launch 开销'
 description: '一个 kernel 是怎么被切成几千个 block 撒到 SM 上跑的，warp 为什么是 32，stream 为什么是有序队列，以及每次 launch 都要付的那笔固定税有多大。把 Day 11 在 timeline 上看到的 gap 追到它的物理来源，顺手给 M5 的 Triton 铺好路。'
-pubDate: 2026-09-25
+pubDate: 2026-09-05
 regime: none
 tags: ['cuda', 'kernel', 'warp', 'stream', 'cuda-graph', 'triton', 'aiinfra-365']
 series: 'aiinfra-365'

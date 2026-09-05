@@ -1,7 +1,7 @@
 ---
 title: 'Day 21 · bootstrap 脚本：从零到能跑代码 5 分钟'
 description: '把「开机之后手工装环境」这件事变成一个幂等的脚本：装依赖、拉代码、配 token、预热模型、打印 nvidia-smi。每一步都计时，找出最慢的那一步。验收标准只有一条：从实例启动到能跑第一行 GPU 代码，全自动，不超过 5 分钟。'
-pubDate: 2026-09-19
+pubDate: 2026-09-05
 regime: none
 tags: ['runpod', 'vast', 'bootstrap', 'bash', 'environment', 'aiinfra-365']
 series: 'aiinfra-365'

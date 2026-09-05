@@ -1,7 +1,7 @@
 ---
 title: 'Day 20 · 实例销毁后什么会丢：代码、数据、模型权重各放哪'
 description: '租来的机器是一次性的，销毁之后盘上的一切都没了。今天把 RunPod 和 Vast 的几种存储在 stop 和 delete 时的命运搞清楚，算一笔「存着」和「重下」哪个便宜的账，然后给代码、模型权重、实验结果三类东西各定一个去处，画成决策树。'
-pubDate: 2026-09-18
+pubDate: 2026-09-05
 regime: none
 tags: ['storage', 'runpod', 'vast', 'huggingface', 'cost', 'aiinfra-365']
 series: 'aiinfra-365'

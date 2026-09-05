@@ -1,7 +1,7 @@
 ---
 title: 'Day 28 · 怎么读一张 GPU 规格表：dense 与 sparse、SXM 与 PCIe、NVLink 与 $/token'
 description: 'A100 宣传页写 624 TFLOPS，Day 5 用的却是 312；同样叫 A100 80GB，SXM 和 PCIe 的带宽差 5%，ridge point 一个 153 一个 161；NVLink 和 PCIe 差十倍。把规格表上每个会骗人的数字过一遍，最后把小时价换算成每一百万 token 多少钱，看 batching 在账单上是多大的杠杆。'
-pubDate: 2026-09-26
+pubDate: 2026-09-05
 regime: compute
 tags: ['spec-sheet', 'a100', 'h100', 't4', 'nvlink', 'cost', 'aiinfra-365']
 series: 'aiinfra-365'

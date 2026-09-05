@@ -1,7 +1,7 @@
 ---
 title: 'Day 17 · 标称 vs 实测：哪些 kernel 能打到屋顶，哪些永远打不到'
 description: '把 Day 13、14 测出来的带宽和算力跟规格表并排放，算清标称值是怎么来的、实测为什么差那一截。再给每种 kernel 算一遍算术强度，标到 roofline 上：大矩阵乘能碰到屋顶，elementwise、softmax、norm 这些永远贴着斜线的底部，而这正是 M5 要写 fused kernel 的全部理由。'
-pubDate: 2026-09-15
+pubDate: 2026-09-05
 regime: compute
 tags: ['roofline', 'mfu', 'gemm', 'fusion', 'tensor-core', 'aiinfra-365']
 series: 'aiinfra-365'

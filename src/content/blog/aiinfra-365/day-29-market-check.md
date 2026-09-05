@@ -1,7 +1,7 @@
 ---
 title: 'Day 29 · 2026-09 市场校准：JD 里要什么，路线图哪里要加勾'
 description: '拿真实招聘要求对照 Day 0 定的路线：样本从哪来、有多不完整，JD 里反复出现哪些词，哪些是路线图已经覆盖的、哪些是缺口。由此在路线图上加了六个勾，记下薪资快照和四条必须正视的限制。不改骨架，只补缺口。'
-pubDate: 2026-09-27
+pubDate: 2026-09-05
 regime: none
 tags: ['market', 'roadmap', 'jd', 'career', 'aiinfra-365']
 series: 'aiinfra-365'

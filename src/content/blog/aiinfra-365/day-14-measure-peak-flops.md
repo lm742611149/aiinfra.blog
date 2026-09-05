@@ -1,7 +1,7 @@
 ---
 title: 'Day 14 · 实测峰值算力：大方阵 matmul 能打到几成'
 description: '昨天测了斜线，今天测屋顶。用大方阵矩阵乘法把 T4 真正能算多快测出来：FLOPs = 2MNK 除以时间。坑比带宽多：矩阵不够大打不满、fp32 的标称是另一个数、fp16 要真走 tensor core 才对得上 65 TFLOPS、A100 的 624 是稀疏值。顺手算出方阵多大才跨过 ridge point。'
-pubDate: 2026-09-12
+pubDate: 2026-09-05
 regime: compute
 tags: ['flops', 'matmul', 'tensor-core', 'benchmark', 'colab', 'aiinfra-365']
 series: 'aiinfra-365'

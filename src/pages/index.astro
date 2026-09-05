@@ -6,11 +6,10 @@ import Header from '../components/Header.astro';
 import PostRow from '../components/PostRow.astro';
 import Roofline from '../components/Roofline.astro';
 import { COURSE_SERIES, SITE_DESCRIPTION, SITE_TITLE } from '../consts';
+import { byNewest } from '../lib/posts';
 import { personSchema, websiteSchema } from '../lib/seo';
 
-const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(
-	(a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
-);
+const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(byNewest);
 
 const recent = posts.slice(0, 5);
 const hasMore = posts.length > recent.length;
@@ -88,6 +87,7 @@ const courseLatest = course.sort((a, b) => b.data.day! - a.data.day!)[0];
 								pubDate={post.data.pubDate}
 								regime={post.data.regime}
 								tags={post.data.tags}
+								day={post.data.series === COURSE_SERIES ? post.data.day : undefined}
 							/>
 						))
 					)
