@@ -1,6 +1,6 @@
 ---
 title: 'Day 6 · W1 复习：一页笔记、五道验收题、错题本与 13B 全解'
-description: '把第一周所有公式和数字压成一页,合上笔记做完五道验收题,再把这周犯过的错一条条摊开。算不出数字就是没过,跟读了几篇文章没关系。'
+description: '把第一周所有公式和数字压成一页，合上笔记做完五道验收题，再把这周犯过的错一条条摊开。算不出数字就是没过，跟读了几篇文章没关系。'
 pubDate: 2026-09-04
 regime: memory
 tags: ['review', 'quiz', 'week-1', 'aiinfra-365']
@@ -18,6 +18,83 @@ W1 的目标只有一句话:能回答「一个 7B 模型推理的时候,显存�
 这些数字本身不重要,换一个模型换一张卡就全变了。重要的是算法:参数量藏在矩阵形状里,矩阵形状是「输入长度 × 输出长度」,显存是参数乘字节数,速度上限是带宽除以要搬的字节。这四条会一直用到 M12。
 
 这篇是 W1 的收口。先把所有东西压成一页,然后做题,然后把错题摊开,最后把 13B 的练习从头到尾重算一遍留底。
+
+
+<figure>
+<svg viewBox="0 0 640 330" role="img" aria-label="W1 知识地图:从模型配置一路推到 memory-bound 结论的三条链">
+  <defs>
+    <marker id="d6arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="var(--ink-faint)"/>
+    </marker>
+  </defs>
+  <text x="10" y="18" font-family="var(--font-mono)" font-size="11" fill="var(--ink-faint)">链 1 · 权重多大、搬一遍多久</text>
+  <g font-family="var(--font-mono)" font-size="11" fill="var(--ink)">
+    <rect x="10" y="28" width="110" height="58" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="65" y="47" text-anchor="middle">配置文件</text>
+    <text x="65" y="63" text-anchor="middle" fill="var(--ink-soft)">L=32 d=4096</text>
+    <text x="65" y="78" text-anchor="middle" fill="var(--ink-soft)">d_ff=11008 V=32k</text>
+    <rect x="136" y="28" width="110" height="58" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="191" y="47" text-anchor="middle">矩阵形状</text>
+    <text x="191" y="63" text-anchor="middle" fill="var(--ink-soft)">输入长 × 输出长</text>
+    <text x="191" y="78" text-anchor="middle" fill="var(--ink-soft)">格子数 = 参数数</text>
+    <rect x="262" y="28" width="110" height="58" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="317" y="47" text-anchor="middle">参数量</text>
+    <text x="317" y="63" text-anchor="middle" fill="var(--ink-soft)">32×202.4M+0.26B</text>
+    <text x="317" y="78" text-anchor="middle" font-weight="700">= 6.74B</text>
+    <rect x="388" y="28" width="110" height="58" rx="3" fill="var(--mem-wash)" stroke="var(--mem)"/>
+    <text x="443" y="47" text-anchor="middle">权重字节</text>
+    <text x="443" y="63" text-anchor="middle" fill="var(--ink-soft)">6.74B × 2 B</text>
+    <text x="443" y="78" text-anchor="middle" font-weight="700" fill="var(--mem)">= 13.5 GB</text>
+    <rect x="514" y="28" width="116" height="58" rx="3" fill="var(--mem-wash)" stroke="var(--mem)"/>
+    <text x="572" y="47" text-anchor="middle">搬一遍</text>
+    <text x="572" y="63" text-anchor="middle" fill="var(--ink-soft)">÷ 2039 GB/s</text>
+    <text x="572" y="78" text-anchor="middle" font-weight="700" font-size="10" fill="var(--mem)">6.6 ms ≈ 150 tok/s</text>
+  </g>
+  <g stroke="var(--ink-faint)" stroke-width="1.2" fill="none" marker-end="url(#d6arr)">
+    <path d="M120 57 L134 57"/><path d="M246 57 L260 57"/><path d="M372 57 L386 57"/><path d="M498 57 L512 57"/>
+  </g>
+
+  <text x="10" y="122" font-family="var(--font-mono)" font-size="11" fill="var(--ink-faint)">链 2 · 每个字节配多少计算</text>
+  <g font-family="var(--font-mono)" font-size="11" fill="var(--ink)">
+    <rect x="10" y="132" width="180" height="58" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="100" y="151" text-anchor="middle">每参数 2 FLOP,搬 2 B</text>
+    <text x="100" y="167" text-anchor="middle" fill="var(--ink-soft)">N 在分子分母约掉</text>
+    <text x="100" y="182" text-anchor="middle" font-weight="700">算术强度 = 1</text>
+    <rect x="230" y="132" width="180" height="58" rx="3" fill="var(--compute-wash)" stroke="var(--compute)"/>
+    <text x="320" y="151" text-anchor="middle">卡的 ridge point</text>
+    <text x="320" y="167" text-anchor="middle" fill="var(--ink-soft)">312 TFLOP/s ÷ 2039 GB/s</text>
+    <text x="320" y="182" text-anchor="middle" font-weight="700" fill="var(--compute)">≈ 153 FLOP/byte</text>
+    <rect x="450" y="132" width="180" height="58" rx="3" fill="var(--mem-wash)" stroke="var(--mem)"/>
+    <text x="540" y="151" text-anchor="middle">1 ≪ 153</text>
+    <text x="540" y="167" text-anchor="middle" fill="var(--ink-soft)">算力利用率 0.65%</text>
+    <text x="540" y="182" text-anchor="middle" font-weight="700" fill="var(--mem)">decode memory-bound</text>
+  </g>
+  <g stroke="var(--ink-faint)" stroke-width="1.2" fill="none" marker-end="url(#d6arr)">
+    <path d="M190 161 L228 161"/><path d="M410 161 L448 161"/>
+  </g>
+
+  <text x="10" y="226" font-family="var(--font-mono)" font-size="11" fill="var(--ink-faint)">链 3 · batch 一大谁超过谁</text>
+  <g font-family="var(--font-mono)" font-size="11" fill="var(--ink)">
+    <rect x="10" y="236" width="180" height="58" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="100" y="255" text-anchor="middle">只用 L 和 d</text>
+    <text x="100" y="271" text-anchor="middle" fill="var(--ink-soft)">2 × 32 × 4096 × 2 B</text>
+    <text x="100" y="286" text-anchor="middle" font-weight="700">KV 512 KB / token</text>
+    <rect x="230" y="236" width="180" height="58" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="320" y="255" text-anchor="middle">batch 32 × 2048</text>
+    <text x="320" y="271" text-anchor="middle" fill="var(--ink-soft)">65536 token × 512 KB</text>
+    <text x="320" y="286" text-anchor="middle" font-weight="700">= 32 GB</text>
+    <rect x="450" y="236" width="180" height="58" rx="3" fill="var(--mem-wash)" stroke="var(--mem)"/>
+    <text x="540" y="255" text-anchor="middle">32 GB &gt; 13.5 GB</text>
+    <text x="540" y="271" text-anchor="middle" fill="var(--ink-soft)">缓存是权重的 2.4 倍</text>
+    <text x="540" y="286" text-anchor="middle" font-weight="700" fill="var(--mem)">batch 的天花板</text>
+  </g>
+  <g stroke="var(--ink-faint)" stroke-width="1.2" fill="none" marker-end="url(#d6arr)">
+    <path d="M190 265 L228 265"/><path d="M410 265 L448 265"/>
+  </g>
+  <text x="10" y="320" font-family="var(--font-mono)" font-size="10" fill="var(--ink-faint)">口径:Llama-2-7B fp16 · A100 80GB SXM。蓝 = 带宽侧的结论,琥珀 = 算力侧的数。</text>
+</svg>
+<figcaption>W1 的全部内容就是这三条链。每个箭头都是一步四则运算,任何一格答不上来就回那一天重读。链 1 和链 2 合在一起得出「decode 是 memory-bound」,链 3 得出「KV cache 决定 batch 能开多大」。</figcaption>
+</figure>
 
 ## 一页笔记
 
@@ -53,6 +130,13 @@ W1 的目标只有一句话:能回答「一个 7B 模型推理的时候,显存�
 7. 算术强度 `= FLOP ÷ 搬运的字节`。decode batch 1 时 ≈ 1。
 8. ridge point `= 峰值算力 ÷ 带宽`。算术强度低于它卡带宽,高于它卡算力。
 
+上面第 1 条和第 5 条写的是 Llama-2 这种 k、v 头数等于 q 头数(MHA)的情况。很多新模型用 GQA,k、v 只有 n_kv 个头,这两条要改成通式,MHA 只是 n_kv = h 的特例:
+
+- 一层注意力参数 `= 2·d² + 2·d·(n_kv·d_head)`。W^q 和 W^o 仍是 d × d,W^k 和 W^v 变成 d × (n_kv·d_head)。
+- KV cache 每 token `= 2 × L × (n_kv·d_head) × 字节数`。
+
+n_kv = h 时 n_kv·d_head = d,退回原来的式子。算任何新模型之前先去 config 里找 `num_key_value_heads`,这是 Day 4 就提过、下面加练二会真用一次的坑。
+
 代入 7B 得到 W1 那张七行表:
 
 | 要算出的数 | 答案 | 怎么来的 |
@@ -74,6 +158,50 @@ W1 的目标只有一句话:能回答「一个 7B 模型推理的时候,显存�
 | 激活 | ~1.4 GB | 3% | 随 batch 变,当前层算完就释放 |
 | 框架开销 | ~1.5 GB | 3% | 基本固定,CUDA context + 显存池 |
 
+
+<figure>
+<svg viewBox="0 0 640 210" role="img" aria-label="7B 与 13B 在 batch 32 × 2048 时四项显存占用的堆叠条,和 80 GB 上限线的对比">
+  <text x="10" y="18" font-family="var(--font-mono)" font-size="11" fill="var(--ink-faint)">batch 32 × 2048 token · fp16 · 一格 = 6.5 px / GB</text>
+  <g stroke="var(--rule-soft)" stroke-width="1">
+    <line x1="100" y1="30" x2="100" y2="150"/><line x1="230" y1="30" x2="230" y2="150"/>
+    <line x1="360" y1="30" x2="360" y2="150"/><line x1="490" y1="30" x2="490" y2="150"/>
+  </g>
+  <g font-family="var(--font-mono)" font-size="10" fill="var(--ink-faint)">
+    <text x="100" y="164" text-anchor="middle">0</text><text x="230" y="164" text-anchor="middle">20 GB</text>
+    <text x="360" y="164" text-anchor="middle">40 GB</text><text x="490" y="164" text-anchor="middle">60 GB</text>
+    <text x="620" y="164" text-anchor="middle">80 GB</text>
+  </g>
+  <line x1="620" y1="28" x2="620" y2="152" stroke="var(--compute)" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="616" y="40" text-anchor="end" font-family="var(--font-mono)" font-size="10" fill="var(--compute)">A100 80 GB 上限</text>
+
+  <text x="90" y="72" text-anchor="end" font-family="var(--font-mono)" font-size="12" fill="var(--ink)">7B</text>
+  <rect x="100" y="56" width="87.75" height="24" fill="var(--mem)"/>
+  <rect x="187.75" y="56" width="208" height="24" fill="var(--mem-wash)" stroke="var(--mem)" stroke-width="1"/>
+  <rect x="395.75" y="56" width="9.1" height="24" fill="var(--ink-faint)"/>
+  <rect x="404.85" y="56" width="9.75" height="24" fill="var(--rule)"/>
+  <text x="143" y="72" text-anchor="middle" font-family="var(--font-mono)" font-size="10" fill="var(--paper-raised)">13.5</text>
+  <text x="291" y="72" text-anchor="middle" font-family="var(--font-mono)" font-size="10" fill="var(--mem)">KV 32 GB</text>
+  <text x="422" y="72" font-family="var(--font-mono)" font-size="10" fill="var(--ink-soft)">合计 48.4 GB,还剩 31.6</text>
+
+  <text x="90" y="122" text-anchor="end" font-family="var(--font-mono)" font-size="12" fill="var(--ink)">13B</text>
+  <rect x="100" y="106" width="169" height="24" fill="var(--mem)"/>
+  <rect x="269" y="106" width="325" height="24" fill="var(--mem-wash)" stroke="var(--mem)" stroke-width="1"/>
+  <rect x="594" y="106" width="11.7" height="24" fill="var(--ink-faint)"/>
+  <rect x="605.7" y="106" width="9.75" height="24" fill="var(--rule)"/>
+  <text x="184" y="122" text-anchor="middle" font-family="var(--font-mono)" font-size="10" fill="var(--paper-raised)">26</text>
+  <text x="431" y="122" text-anchor="middle" font-family="var(--font-mono)" font-size="10" fill="var(--mem)">KV 50 GB</text>
+  <text x="431" y="145" text-anchor="middle" font-family="var(--font-mono)" font-size="10" fill="var(--ink-soft)">合计 79.3 GB,离上限只差 0.7 GB</text>
+
+  <g font-family="var(--font-mono)" font-size="10" fill="var(--ink-soft)">
+    <rect x="100" y="184" width="12" height="10" fill="var(--mem)"/><text x="117" y="193">权重</text>
+    <rect x="170" y="184" width="12" height="10" fill="var(--mem-wash)" stroke="var(--mem)"/><text x="187" y="193">KV cache</text>
+    <rect x="262" y="184" width="12" height="10" fill="var(--ink-faint)"/><text x="279" y="193">激活</text>
+    <rect x="332" y="184" width="12" height="10" fill="var(--rule)"/><text x="349" y="193">框架开销</text>
+  </g>
+</svg>
+<figcaption>同一个 batch 32 × 2048 的场景,7B 还剩 30 多 GB,13B 已经贴着 80 GB 的上限。两条里 KV cache 都是最长的一段:它不是权重的零头,是权重的两倍多。13B 的激活按 d_ff = 13824 算,65536 × 13824 × 2 B ≈ 1.8 GB。</figcaption>
+</figure>
+
 参数量对账过程,留一份免得下次又要重推:
 
 | 部件 | 算式 | 参数 |
@@ -89,6 +217,51 @@ W1 的目标只有一句话:能回答「一个 7B 模型推理的时候,显存�
 ## 五道验收题
 
 路线图上写的是「合上笔记,五道全对才算过」。下面是我合上笔记后写的答案,写完再对照上面的一页笔记核对过。每题先自己答,再展开。
+
+
+<figure>
+<svg viewBox="0 0 640 250" role="img" aria-label="五道验收题分别落在 W1 哪几天的知识上">
+  <g font-family="var(--font-mono)" font-size="11" fill="var(--ink)">
+    <rect x="10" y="14" width="300" height="34" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="20" y="35">Q1 · 显存四项各占多少</text>
+    <rect x="10" y="60" width="300" height="34" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="20" y="81">Q2 · KV cache 会不会超过权重</text>
+    <rect x="10" y="106" width="300" height="34" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="20" y="127">Q3 · 一个 token 最快多久,由什么决定</text>
+    <rect x="10" y="152" width="300" height="34" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="20" y="173">Q4 · prefill / decode 各卡在哪</text>
+    <rect x="10" y="198" width="300" height="34" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="20" y="219">Q5 · batching 涨吞吐不降延迟</text>
+  </g>
+  <g font-family="var(--font-mono)" font-size="11" fill="var(--ink)">
+    <rect x="460" y="14" width="170" height="34" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="470" y="35">Day 1 三种瓶颈</text>
+    <rect x="460" y="60" width="170" height="34" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="470" y="81">Day 2 矩阵与参数量</text>
+    <rect x="460" y="106" width="170" height="34" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="470" y="127">Day 3 注意力与自回归</text>
+    <rect x="460" y="152" width="170" height="34" rx="3" fill="var(--paper-raised)" stroke="var(--rule)"/>
+    <text x="470" y="173">Day 4 FLOPs 与 KV cache</text>
+    <rect x="460" y="198" width="170" height="34" rx="3" fill="var(--mem-wash)" stroke="var(--mem)"/>
+    <text x="470" y="219" fill="var(--mem)">Day 5 显存四项与 roofline</text>
+  </g>
+  <g stroke="var(--mem)" stroke-width="1.6" fill="none" opacity="0.9">
+    <path d="M310 31 C 400 31, 400 215, 460 215"/>
+    <path d="M310 77 C 400 77, 400 215, 460 215"/>
+    <path d="M310 123 C 400 123, 400 215, 460 215"/>
+    <path d="M310 169 C 400 169, 400 215, 460 215"/>
+    <path d="M310 215 L 460 215"/>
+  </g>
+  <g stroke="var(--ink-faint)" stroke-width="1" fill="none" stroke-dasharray="3 3">
+    <path d="M310 77 C 400 77, 400 169, 460 169"/>
+    <path d="M310 123 C 400 123, 400 77, 460 77"/>
+    <path d="M310 169 C 400 169, 400 123, 460 123"/>
+    <path d="M310 215 C 400 215, 400 31, 460 31"/>
+  </g>
+  <text x="390" y="244" text-anchor="middle" font-family="var(--font-mono)" font-size="10" fill="var(--ink-faint)">实线 = 主要考点,虚线 = 要用到的前置</text>
+</svg>
+<figcaption>五道题全部汇到 Day 5,但每一道都要拉一天的前置才能答完整:Q2 要 Day 4 的 KV cache 公式,Q3 要 Day 2 的参数到字节,Q4 要 Day 3 的 prefill 和 decode 区别,Q5 要 Day 1 的三种瓶颈。哪条虚线断了,就是哪天没学扎实。</figcaption>
+</figure>
 
 ### 第一题:7B fp16 模型推理时显存怎么分配?给出各项的百分比
 
@@ -218,6 +391,148 @@ decode 每步只生成 1 个 token。权重读一遍只算 1 个 token,算术强
 
 模型参数翻倍,上限减半,因为要搬的字节翻倍了。
 
+
+## 加练二:换卡换模型重算一遍(H100、Llama-3-8B)
+
+W1 那张表的数字只对 7B 加 A100 成立。要检验是不是真学会了算法而不是背下了答案,最好的办法是换一组输入再算一遍。这里换两样:卡换成 H100 SXM,模型换成 Llama-3-8B。两样各带一个新坑。
+
+### H100 换的是屋顶
+
+H100 SXM 的规格表上两个数:HBM3 带宽 3350 GB/s,BF16 稠密算力 989 TFLOP/s。规格表上还有一个 1979 TFLOP/s,那是「with sparsity」的数,要求权重一半是零,普通推理用不上,做估算一律取稠密值。A100 同样有 312 和 624 两个数,W1 用的一直是 312。
+
+带宽从 2039 涨到 3350,是 1.64 倍。算力从 312 涨到 989,是 3.17 倍。算力涨得比带宽多,所以 ridge point 往右挪了:
+
+`989e12 ÷ 3350e9 ≈ 295 FLOP/byte`
+
+这意味着同样的 decode,H100 上要开到 batch ≈ 295 才能把算力喂饱,比 A100 的 153 还难。卡越新,越 memory-bound,这是近几代 GPU 的共同趋势,也是为什么推理优化的重心一直在字节上。
+
+7B 在 H100 上的 decode 上限:
+
+`3350 GB/s ÷ 13.5 GB ≈ 248 tok/s`
+
+从 150 到 248,和带宽的 1.64 倍完全一致,算力涨的那 3 倍在 batch 1 时一点没用上。
+
+### Llama-3-8B 换的是模型,带 GQA 的坑
+
+配置:L = 32,d = 4096,h = 32,d_head = 128,**n_kv = 8**,d_ff = 14336,V = 128256,fp16。和 7B 比,层数和 d 完全一样,变的是三处:词表翻了四倍、FFN 更宽、k 和 v 只有 8 个头。
+
+第一步,词表两头。Llama-3 的 embedding 和 lm_head 不共享,两张表各 128256 × 4096。
+
+`2 × 128256 × 4096 = 1,050,673,152 ≈ 1.05B`
+
+光两张表就超过 10 亿,是 7B 那两张表(0.26B)的四倍。
+
+第二步,一层注意力,用通式。W^q 和 W^o 仍是 4096 × 4096,W^k 和 W^v 是 4096 × (8 × 128) = 4096 × 1024。
+
+`2 × 4096 × 4096 + 2 × 4096 × 1024 = 33,554,432 + 8,388,608 = 41,943,040 ≈ 41.9M`
+
+7B 的一层注意力是 67.1M,GQA 把它砍掉了 37%。
+
+第三步,一层 FFN。
+
+`3 × 4096 × 14336 = 176,160,768 ≈ 176.2M`
+
+第四步,一层合计。
+
+`41.9M + 176.2M = 218.1M`
+
+第五步,32 层。
+
+`218.1M × 32 = 6,979M ≈ 6.98B`
+
+第六步,总参数。
+
+`6.98B + 1.05B = 8.03B`
+
+对账成功,官方叫 8B。注意 7B 到 8B 多出来的 1.3B 参数,几乎全在词表两张表和更宽的 FFN 上,注意力反而少了。
+
+第七步,权重显存。
+
+`8.03B × 2 bytes = 16.06 GB ≈ 16 GB`
+
+第八步,KV cache 每 token。这里就是坑:不能再写 d = 4096,要写 n_kv × d_head = 1024。
+
+`2 × 32 × 1024 × 2 = 131,072 bytes = 128 KB`
+
+7B 是 512 KB,8B 只有 128 KB,四分之一。这就是 GQA 存在的全部理由:参数只省了 6%,KV cache 省了 75%。
+
+第九步,batch 32 × 2048 的 KV cache。
+
+`65536 × 128 KB = 8 GB`
+
+权重 16 GB,KV cache 8 GB。**缓存变成权重的一半,而不是 7B 那样的 2.4 倍**。同样的 80 GB 卡,7B 装完权重加缓存剩 34.5 GB,8B 剩 56 GB,能开的 batch 大得多。
+
+第十步,decode 上限。
+
+`A100:2039 ÷ 16.06 ≈ 127 tok/s`
+`H100:3350 ÷ 16.06 ≈ 209 tok/s`
+
+### 三个模型两张卡放在一起
+
+| | Llama-2-7B | Llama-2-13B | Llama-3-8B |
+| --- | --- | --- | --- |
+| L / d / n_kv / d_ff / V | 32 / 4096 / 32 / 11008 / 32000 | 40 / 5120 / 40 / 13824 / 32000 | 32 / 4096 / **8** / 14336 / **128256** |
+| 参数 | 6.74B | 13.02B | 8.03B |
+| fp16 权重 | 13.5 GB | 26 GB | 16 GB |
+| KV cache / token | 512 KB | 800 KB | **128 KB** |
+| KV @ 32 × 2048 | 32 GB | 50 GB | 8 GB |
+| KV ÷ 权重 | 2.4 | 1.9 | **0.5** |
+| decode 上限 @ A100 | 150 tok/s | 78 tok/s | 127 tok/s |
+| decode 上限 @ H100 | 248 tok/s | 129 tok/s | 209 tok/s |
+
+| | A100 80GB SXM | H100 80GB SXM |
+| --- | --- | --- |
+| 带宽 | 2039 GB/s | 3350 GB/s(1.64×) |
+| BF16 稠密算力 | 312 TFLOP/s | 989 TFLOP/s(3.17×) |
+| ridge point | 153 | 295 |
+| batch 1 decode 算力利用率(7B) | 0.65% | 1 ÷ 295 ≈ 0.34% |
+
+看这两张表能得出三条 W1 单看 7B 得不出的规律:
+
+1. decode 上限只看「带宽 ÷ 权重字节」,所以 8B 比 7B 慢(权重多 2.5 GB),和 GQA 无关,GQA 省的是显存不是 batch 1 的速度。
+2. GQA 把「KV cache 是 batch 的天花板」这个问题缓解了四倍,同一张卡能同时服务更多请求,吞吐上限完全不一样。这是 Llama-3 之后几乎所有模型都用 GQA 的原因。
+3. 卡越新 ridge point 越高,batch 1 的算力利用率反而越低。换卡不解决 memory-bound,只是把每个字节搬得更快。
+
+规格数字的出处:A100 和 H100 的数取自 NVIDIA 官网数据表,Llama-3-8B 的配置取自 Hugging Face 上模型仓库的 `config.json`(`num_key_value_heads: 8`、`intermediate_size: 14336`、`vocab_size: 128256`)。仓库需要接受许可才能看到文件,页面本身公开。
+
+## 自测:换模型换卡
+
+这四题是加练二之后加的,专门考「算法是不是通用」。合上上面两张表再做。
+
+**1. 一个模型 L = 48、d = 6144、n_kv = 8、d_head = 128,fp16。KV cache 每 token 多大?如果不知道有 GQA、直接用 d 算,会差几倍?**
+
+<details><summary>答案</summary>
+
+用通式:2 × 48 × (8 × 128) × 2 = 2 × 48 × 1024 × 2 = 196,608 bytes = 192 KB。
+
+若错用 d = 6144:2 × 48 × 6144 × 2 = 1,179,648 bytes = 1152 KB。差 6 倍,正好是 h ÷ n_kv = 48 ÷ 8 的比值(d = h × d_head = 48 × 128 = 6144)。
+
+</details>
+
+**2. 同一个 7B 模型,从 A100 搬到 H100,batch 1 的 decode 上限涨多少倍?算力涨了 3.17 倍,为什么没体现出来?**
+
+<details><summary>答案</summary>
+
+涨 3350 ÷ 2039 ≈ 1.64 倍,从 150 到 248 tok/s。因为 batch 1 时算术强度只有 1,远低于两张卡的 ridge point,时间全花在搬权重上,上限只由带宽决定。算力再多也在等数据。
+
+</details>
+
+**3. H100 上要开到多大 batch,7B 的 decode 才开始卡算力?这个数比 A100 大还是小,为什么?**
+
+<details><summary>答案</summary>
+
+batch ≈ 295,即 H100 的 ridge point。比 A100 的 153 大,因为 H100 的算力涨幅(3.17×)大于带宽涨幅(1.64×),算力 ÷ 带宽变大了。卡越新越难喂饱,越依赖 batching。
+
+</details>
+
+**4. Llama-3-8B 比 Llama-2-7B 多了 1.3B 参数,多在哪?注意力部分是多了还是少了?**
+
+<details><summary>答案</summary>
+
+多在两处:词表从 32000 到 128256,embedding 和 lm_head 两张表从 0.26B 涨到 1.05B(+0.79B);FFN 中间宽度从 11008 到 14336,32 层合计多 3 × 4096 × 3328 × 32 ≈ 1.31B。注意力部分反而少了:GQA 让每层从 67.1M 降到 41.9M,32 层少 0.81B。三项相加约 +1.29B。
+
+</details>
+
 ## 错题本
 
 这周犯的错都在这里,每条写错在哪、为什么会错、纠正后应该记住什么规律。
@@ -259,6 +574,13 @@ decode 每步只生成 1 个 token。权重读一遍只算 1 个 token,算术强
 规律:attention 的输出 = Σ(相似度权重 × v)。权重来自 q·k,内容来自 v。
 
 五条错误里有三条是同一个根子:向量和矩阵、长度和形状没分清。这是 W1 最大的收获,不是那些数字,是这条地基补上了。
+
+向量和矩阵分不清这件事,最后是靠看别人一行行敲代码解决的。Karpathy 这一讲里 self-attention 那一段,`head_size`、`key = nn.Linear(n_embd, head_size)`、`wei = q @ k.transpose(-2, -1)`,每个 tensor 的形状都在注释里写着,配合 bbycroft 的 3D 图看,W1 错题一和错题三就不会再犯。
+
+<figure class="video">
+<div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/kCc8FmEb1nY" title="Let's build GPT: from scratch, in code, spelled out." loading="lazy" allow="accelerometer; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
+<figcaption>Andrej Karpathy ·《Let's build GPT: from scratch, in code, spelled out.》· 全长约 2 小时。W1 只需要看 self-attention 那一段(大约从第 56 分钟起,他从 version 1 的平均写到 version 4 的 q/k/v),盯着每个 Linear 的输入输出长度看,再看 multi-head 拼接和 projection 那几行。</figcaption>
+</figure>
 
 ## 学习方法反思
 
@@ -324,6 +646,9 @@ decode 每步只生成 1 个 token。权重读一遍只算 1 个 token,算术强
 - Lilian Weng,《Large Transformer Model Inference Optimization》,按标题搜。M2 开始读。
 - vLLM 论文《Efficient Memory Management for Large Language Model Serving with PagedAttention》,arXiv 2309.06180。第二题的答案为什么重要,读它的引言就知道。
 - Llama 2 论文《Llama 2: Open Foundation and Fine-Tuned Chat Models》,arXiv 2307.09288。模型配置表在附录。
+- Meta,Llama-3-8B 模型仓库,https://huggingface.co/meta-llama/Meta-Llama-3-8B 。加练二的配置出处,`config.json` 里能看到 `num_key_value_heads: 8`,页面公开,文件要先接受许可。
+- NVIDIA,A100 产品页 https://www.nvidia.com/en-us/data-center/a100/ 和 H100 产品页 https://www.nvidia.com/en-us/data-center/h100/ 。312 / 2039 和 989 / 3350 这四个数的出处,记得看稠密值不看 sparsity 值。
+- Stanford CS336 课程主页 https://stanford-cs336.github.io/spring2025/ 和讲义仓库 https://github.com/stanford-cs336/spring2025-lectures 。每讲的代码和 PDF 都在这里。
 
 视频与交互:
 
@@ -331,16 +656,33 @@ decode 每步只生成 1 个 token。权重读一遍只算 1 个 token,算术强
 - 3Blue1Brown,《But what is a GPT?》https://www.3blue1brown.com/lessons/gpt 和《Attention in transformers, visually explained》https://www.3blue1brown.com/lessons/attention 。
 - 李宏毅,《Self-attention(上)》《Self-attention(下)》,按标题搜。q/k 不对称、多头拼接过 W^o 是从这两讲学的。
 - Andrej Karpathy,Neural Networks: Zero to Hero,https://karpathy.ai/zero-to-hero.html 。主线课,先看《Let's build GPT》。
-- Stanford CS336 (2025) 播放列表,YouTube playlist ID `PLoROMvodv4rOY23Y0BoGoBGgQ1zmU_MT_`。深度课,和 M1 到 M10 一一对应,先看 1-3、5-8、10 讲。
+- Stanford CS336 (2025) 播放列表,YouTube playlist ID `PLoROMvodv4rOY23Y0BoGoBGgQ1zmU_MT_`,第 1 讲视频 ID `SQ3fZ1sAqXI`。深度课,和 M1 到 M10 一一对应,先看 1-3、5-8、10 讲。
 - ZOMI 酱,《AIInfra》开源课,https://infrasys-ai.github.io/aiinfra-docs/ 。中文补充,按模块 0 → 6 → 5 → 4 看,1/2/3/7 先跳。B 站视频在他的空间按章节名搜。
-- GPU MODE lectures,YouTube 频道 GPU MODE。M5 开始看。
+- GPU MODE lectures,YouTube 频道 https://www.youtube.com/@GPUMODE ,讲义仓库 https://github.com/gpu-mode/lectures 。第 1 讲 profiler 那节 W2 就要用,其余 M5 开始看。
+
+
+CS336 是 W1 之后的深度主线。第 1 讲前半是课程概览,后半讲 tokenizer,正好接 Day 2 的 BPE。他在概览里把「为什么要从零写一遍」讲得很直接:不自己算过资源账,就没法做设计决策。这句话和 W1 的规则是一回事。
+
+<figure class="video">
+<div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/SQ3fZ1sAqXI" title="Stanford CS336 Language Modeling from Scratch | Spring 2025 | Lecture 1: Overview and Tokenization" loading="lazy" allow="accelerometer; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
+<figcaption>Stanford Online ·《Stanford CS336 Language Modeling from Scratch | Spring 2025 | Lecture 1: Overview and Tokenization》。打不开 YouTube 的话,B 站有全 17 讲的搬运,BV 号 BV1BDVU6zEkZ(中英字幕)和 BV18BbkzbEr9(英文字幕),P1 就是这一讲。</figcaption>
+</figure>
 
 ## 下周预告:W2
 
-W2 的性质和 W1 完全相反。W1 是纸笔,W2 是第一次真上手。目标是把 W1 的手算和实测对上。
+W2 的性质和 W1 完全相反。W1 是纸笔,W2 是第一次真上手。目标是把 W1 的手算和实测对上,六天的安排已经定好:
 
-要做的事:在 Colab 上跑通一个小模型的推理,用 `torch.profiler` 抓 trace,看懂 timeline,指出哪个 op 最耗时、为什么。然后拿实测的每 token 时间和 W1 算的理论上限比,看差多少、差在哪。
+| Day | 要做的事 | 验收 |
+| --- | --- | --- |
+| Day 7 · 第一次真上手:Colab 上跑通 TinyLlama 推理 | 开免费 T4,加载 TinyLlama-1.1B fp16 跑通 `generate`,弄清第一次为什么慢好几倍 | 连续 10 次运行延迟方差 < 10% |
+| Day 8 · CUDA 是异步的:不 synchronize 的计时全是假的 | 搞懂 CPU 提交、GPU 排队的模型,用 `torch.cuda.synchronize()` 和 CUDA Event 两种方法计时 | 能说出不 sync 测到的到底是什么时间 |
+| Day 9 · 把 TTFT 和 TPOT 分开测,再和 W1 的理论下限对账 | 首 token 和后续每 token 分开测,算 T4 上 TinyLlama 的理论下限,求实测 ÷ 理论的比值 | 一个比值,以及它落在 1.5–3 还是 10 说明什么 |
+| Day 10 · torch.profiler 抓一次 generate,在 Perfetto 里看懂 timeline | 抓 trace 导出 chrome trace,在 Perfetto 里分清 CPU 行和 GPU 行 | 列出 top 5 耗时 kernel,说出各自对应模型哪部分 |
+| Day 11 · timeline 上的 gap:overhead-bound 的实物证据 | 在 GPU 行上找空转的缝隙,加大 batch 再看一次 gap 占比怎么变 | 标出一个 gap 并解释它是什么、两种缩小办法 |
+| Day 12 · W2 复习:理论 vs 实测对比报告、五道验收题、错题本 | 一页对比报告(理论下限、实测 TPOT、比值、top 5 kernel、gap 占比) | 路线图 W2 的五道题全对 |
 
-路线图提前说了坑几乎全在环境和 CUDA 异步上,跟深度学习没关系:GPU 上的操作是异步的,不 `torch.cuda.synchronize()` 计时全是假的;第一次跑要 warmup,不然测到的是编译和缓存填充;Colab 免费卡的带宽和 A100 差好几倍,理论上限要按实际那张卡重算。
+这周真正的产出不是「学会用 profiler」,是 Day 9 那个比值:实测 TPOT 除以 W1 算法给出的理论下限。落在 1.5 到 3 倍之间,说明对 memory-bound 的判断是对的,W1 那张表可以信,后面八个月都能拿它做估算;差到 10 倍,说明有别的东西在拖,大概率是 overhead,Day 11 会在 timeline 上亲眼看到它。这个比值是全年调优工作的基线,以后每做一次优化都回来看它有没有向 1 靠近。
+
+路线图提前说了坑几乎全在环境和 CUDA 异步上,跟深度学习没关系:GPU 上的操作是异步的,不 `torch.cuda.synchronize()` 计时全是假的;第一次跑要 warmup,不然测到的是编译和缓存填充;Colab 免费卡的带宽和 A100 差好几倍,理论上限要按实际那张卡重算。T4 的规格是 16 GB 显存、320 GB/s 带宽、fp16 65 TFLOP/s,ridge point 约 203,而且不支持 bf16。7B fp16 的 13.5 GB 权重在 16 GB 的卡上装不下,所以换 TinyLlama-1.1B,fp16 权重约 2.2 GB,decode 理论下限 2.2 ÷ 320 ≈ 6.9 ms,约 145 tok/s。这几个数 Day 7 开工前先算一遍,到时候有实测对照。
 
 W1 一行代码没写,W2 开始写。

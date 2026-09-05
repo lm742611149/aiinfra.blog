@@ -309,6 +309,57 @@ pre > code {
 	}
 }
 
+/* Figures: inline SVG diagrams and video embeds in course posts. */
+.prose figure {
+	margin: 1.9rem 0;
+	padding: 1rem 1.1rem 0.85rem;
+	background: var(--paper-raised);
+	border: var(--rule-weight) solid var(--rule-soft);
+	border-radius: 4px;
+}
+
+.prose figure > svg {
+	display: block;
+	width: 100%;
+	height: auto;
+	font-family: var(--font-mono);
+}
+
+.prose figure > img {
+	margin: 0 auto;
+}
+
+.prose figcaption {
+	margin-top: 0.7rem;
+	font-family: var(--font-mono);
+	font-size: 0.74rem;
+	line-height: 1.6;
+	letter-spacing: 0.02em;
+	color: var(--ink-faint);
+}
+
+html[lang^='zh'] .prose figcaption {
+	font-family: var(--font-body);
+	font-size: 0.86rem;
+	letter-spacing: 0;
+}
+
+.prose .video-frame {
+	position: relative;
+	aspect-ratio: 16 / 9;
+	background: var(--code-bg);
+	border-radius: 3px;
+	overflow: hidden;
+}
+
+.prose .video-frame > iframe {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	border: 0;
+}
+
 /* Collapsible quiz answers used by the 365-day course posts. */
 .prose details {
 	margin: 0.75rem 0 1.5rem;
@@ -353,7 +404,7 @@ pre > code {
 }
 
 /* CJK prose reads better with slightly more line height and no justification. */
-html[lang='zh'] .prose {
+html[lang^='zh'] .prose {
 	line-height: 1.9;
 	text-align: left;
 	font-size: 1.04rem;
@@ -361,17 +412,17 @@ html[lang='zh'] .prose {
 	-webkit-font-smoothing: auto;
 }
 
-html[lang='zh'] .prose li,
-html[lang='zh'] .prose td {
+html[lang^='zh'] .prose li,
+html[lang^='zh'] .prose td {
 	font-weight: 500;
 }
 
-html[lang='zh'] .prose strong {
+html[lang^='zh'] .prose strong {
 	font-weight: 600;
 }
 
-html[lang='zh'] .prose h1,
-html[lang='zh'] .prose h2,
-html[lang='zh'] .prose h3 {
+html[lang^='zh'] .prose h1,
+html[lang^='zh'] .prose h2,
+html[lang^='zh'] .prose h3 {
 	letter-spacing: 0;
 }

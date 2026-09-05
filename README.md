@@ -45,6 +45,20 @@ prev/next navigation. Every course post follows the same skeleton: 今天要解�
 → 常见误区 → 参考资料 → 自测 (answers inside `<details>`) → 明天预告. Reading time counts CJK
 characters at 400/min.
 
+Every course post also carries **figures and video**:
+
+- Diagrams are inline SVG inside `<figure>…<figcaption>` (theme-aware: colour only with the tokens
+  `--ink`, `--ink-soft`, `--ink-faint`, `--rule`, `--paper-raised`, `--mem`/`--mem-wash` for the
+  memory-bound side, `--compute`/`--compute-wash` for the compute-bound side). No hot-linked images.
+- Videos use `<figure class="video"><div class="video-frame"><iframe …></iframe></div></figure>` with
+  a `youtube-nocookie.com/embed/ID` or `player.bilibili.com/player.html?bvid=BV…` source. Embed only
+  IDs verified through YouTube oEmbed or the Bilibili view API.
+- Measured numbers that have not actually been measured are written as expected ranges with their
+  derivation, plus an empty table to fill in later. Spec numbers cite the vendor page.
+
+`python3 scripts/check-course.py` validates frontmatter, skeleton order, day/date consistency,
+prev/next previews, figure and video counts; add `--links` to curl every URL and embed ID.
+
 The course index is `/course` (`src/pages/course/index.astro`), grouped by month of the study plan.
 
 `regime` is the one bit of colour logic in the design: `memory` marks a post as living on the
@@ -60,11 +74,37 @@ src/
   components/Roofline.astro    the homepage plot — hand-placed log-scale coordinates
   content/blog/                posts
   content.config.ts            frontmatter schema (build fails if a post breaks it)
-  consts.ts                    site title, tagline, social links
+  consts.ts                    site title, tagline, social links, OG defaults
   layouts/BlogPost.astro       article page
-  plugins/                     remark plugin for reading time
+  lib/seo.ts                   schema.org builders + OG image lookup
+  pages/tags/                  tag archives (one page per tag, /tags/ index)
+  plugins/                     remark plugin for reading time + word count
   styles/global.css            every design token lives here
+public/
+  og/                          social preview cards, generated — see below
+  robots.txt, _headers         crawler + Cloudflare cache/security headers
+scripts/gen-og.mjs             renders public/og/*.png with sharp
 ```
+
+## SEO
+
+What every page ships with, all derived from frontmatter — nothing to fill in by hand:
+
+- `<title>`, meta description, canonical, `og:*` / `twitter:*` (large image card), `og:locale` and
+  `<html lang>` from the post's `lang` (`zh` → `zh-CN`), `article:published_time` / `modified_time` / `tag`.
+- JSON-LD: `WebSite` + `Person` on the homepage, `BlogPosting` + `BreadcrumbList` on posts,
+  `CollectionPage`/`ItemList` on `/course` and tag pages, `ProfilePage` on `/about`.
+- `sitemap-index.xml` with `<lastmod>` from `updatedDate ?? pubDate`; `robots.txt` points at it.
+  Tag pages with a single post are `noindex` and left out of the sitemap.
+- A 404 page, and `_headers` marking hashed `/_astro/*` assets immutable.
+
+**Social cards.** `npm run og` renders one 1200×630 PNG per post into `public/og/` (plus `default.png`),
+using the macOS fonts, and only for posts newer than their card. Run it after writing or retitling a
+post and commit the PNGs — the Cloudflare build never renders text. A post without a card falls back
+to the default one automatically.
+
+After the first deploy: add the domain to Google Search Console (DNS TXT record in Cloudflare) and
+submit `https://aiinfra.blog/sitemap-index.xml`; do the same in Bing Webmaster Tools.
 
 ## Deploying to Cloudflare Pages
 
