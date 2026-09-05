@@ -20,6 +20,12 @@ const { post, prev, next } = Astro.props;
 const { Content, remarkPluginFrontmatter } = await render(post);
 ---
 
-<BlogPost {...post.data} readingTime={remarkPluginFrontmatter.readingTime} prev={prev} next={next}>
+<BlogPost
+	post={post}
+	readingTime={remarkPluginFrontmatter.readingTime}
+	wordCount={remarkPluginFrontmatter.wordCount}
+	prev={prev}
+	next={next}
+>
 	<Content />
 </BlogPost>

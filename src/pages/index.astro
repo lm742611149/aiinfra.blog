@@ -5,7 +5,8 @@ import Footer from '../components/Footer.astro';
 import Header from '../components/Header.astro';
 import PostRow from '../components/PostRow.astro';
 import Roofline from '../components/Roofline.astro';
-import { SITE_DESCRIPTION, SITE_TITLE } from '../consts';
+import { COURSE_SERIES, SITE_DESCRIPTION, SITE_TITLE } from '../consts';
+import { personSchema, websiteSchema } from '../lib/seo';
 
 const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(
 	(a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
@@ -14,14 +15,18 @@ const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(
 const recent = posts.slice(0, 5);
 const hasMore = posts.length > recent.length;
 
-const course = posts.filter((p) => p.data.series === 'aiinfra-365' && p.data.day !== undefined);
+const course = posts.filter((p) => p.data.series === COURSE_SERIES && p.data.day !== undefined);
 const courseLatest = course.sort((a, b) => b.data.day! - a.data.day!)[0];
 ---
 
 <!doctype html>
 <html lang="en">
 	<head>
-		<BaseHead title={`${SITE_TITLE} — GPU inference performance`} description={SITE_DESCRIPTION} />
+		<BaseHead
+			title={`${SITE_TITLE} — GPU inference performance & a 365-day AI Infra course`}
+			description={SITE_DESCRIPTION}
+			schema={[websiteSchema(Astro.site), personSchema(Astro.site)]}
+		/>
 	</head>
 	<body>
 		<Header />

@@ -1,0 +1,48 @@
+---
+import BaseHead from '../components/BaseHead.astro';
+import Footer from '../components/Footer.astro';
+import Header from '../components/Header.astro';
+import { SITE_TITLE } from '../consts';
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<BaseHead title={`Not found — ${SITE_TITLE}`} description="This page does not exist." noindex />
+	</head>
+	<body>
+		<Header />
+		<main class="shell shell--narrow">
+			<div class="page-head">
+				<p class="label">404</p>
+				<h1>Off the roofline.</h1>
+				<p class="lede">
+					Nothing lives at this address. Try the <a href="/course">365-day course</a>, the
+					<a href="/blog">archive</a>, or the <a href="/tags">tag index</a>.
+				</p>
+			</div>
+		</main>
+		<Footer />
+	</body>
+</html>
+
+<style>
+	.page-head {
+		padding-block: clamp(3rem, 8vw, 6rem) 1.4rem;
+	}
+
+	.page-head .label {
+		margin-bottom: 0.75rem;
+	}
+
+	h1 {
+		font-size: clamp(1.9rem, 4vw, 2.6rem);
+		margin-bottom: 1rem;
+	}
+
+	.lede {
+		font-size: 1.06rem;
+		color: var(--ink-soft);
+		max-width: 30rem;
+	}
+</style>

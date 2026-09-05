@@ -4,24 +4,48 @@ import BaseHead from '../components/BaseHead.astro';
 import Footer from '../components/Footer.astro';
 import FormattedDate from '../components/FormattedDate.astro';
 import Header from '../components/Header.astro';
-import { SITE_TITLE } from '../consts';
+import { COURSE_SERIES, COURSE_TITLE, LANG_TAG, SITE_TITLE } from '../consts';
+import { blogPostingSchema, breadcrumbSchema, ogImageFor, tagSlug } from '../lib/seo';
 
 type Entry = CollectionEntry<'blog'>;
-type Props = Entry['data'] & {
+type Props = {
+	post: Entry;
 	readingTime?: number;
+	wordCount?: number;
 	prev?: Entry | null;
 	next?: Entry | null;
 };
 
-const { title, description, pubDate, updatedDate, regime, tags, readingTime, series, day, lang, prev, next } =
-	Astro.props;
-const inCourse = series === 'aiinfra-365';
+const { post, readingTime, wordCount, prev, next } = Astro.props;
+const { title, description, pubDate, updatedDate, regime, tags, series, day, lang } = post.data;
+const inCourse = series === COURSE_SERIES;
+
+const image = ogImageFor(post.id);
+const schema = [
+	blogPostingSchema(Astro.site, post, { image, wordCount }),
+	breadcrumbSchema(Astro.site, [
+		{ name: SITE_TITLE, path: '/' },
+		inCourse ? { name: COURSE_TITLE, path: '/course/' } : { name: 'Writing', path: '/blog/' },
+		{ name: title, path: `/blog/${post.id}/` },
+	]),
+];
 ---
 
 <!doctype html>
-<html lang={lang}>
+<html lang={LANG_TAG[lang]}>
 	<head>
-		<BaseHead title={`${title} — ${SITE_TITLE}`} description={description} article publishedTime={pubDate} />
+		<BaseHead
+			title={`${title} — ${SITE_TITLE}`}
+			description={description}
+			article
+			publishedTime={pubDate}
+			modifiedTime={updatedDate}
+			tags={tags}
+			lang={lang}
+			image={image}
+			imageAlt={title}
+			schema={schema}
+		/>
 	</head>
 	<body>
 		<Header />
@@ -38,9 +62,11 @@ const inCourse = series === 'aiinfra-365';
 					<p class="description">{description}</p>
 					{
 						tags.length > 0 && (
-							<ul class="tags">
+							<ul class="tags" aria-label="Tags">
 								{tags.map((t) => (
-									<li>{t}</li>
+									<li>
+										<a href={`/tags/${tagSlug(t)}/`} rel="tag">{t}</a>
+									</li>
 								))}
 							</ul>
 						)
@@ -194,6 +220,15 @@ const inCourse = series === 'aiinfra-365';
 		color: var(--ink-soft);
 		max-width: 36rem;
 		margin-bottom: 1.1rem;
+	}
+
+	.tags a {
+		text-decoration: none;
+		color: inherit;
+	}
+
+	.tags a:hover {
+		color: var(--mem);
 	}
 
 	.tags {

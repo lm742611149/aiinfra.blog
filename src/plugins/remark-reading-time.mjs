@@ -1,5 +1,5 @@
 /**
- * Adds `readingTime` (whole minutes) to each post's frontmatter.
+ * Adds `readingTime` (whole minutes) and `wordCount` to each post's frontmatter.
  * Counts words in the mdast rather than the raw source, so frontmatter,
  * import statements and JSX attributes don't inflate the estimate.
  * Code blocks are counted at a slower rate — you read them differently.
@@ -30,5 +30,7 @@ export function remarkReadingTime() {
 		const { words, cjk, codeLines } = collect(tree, { words: 0, cjk: 0, codeLines: 0 });
 		const minutes = words / PROSE_WPM + cjk / CJK_CPM + codeLines / CODE_LPM;
 		file.data.astro.frontmatter.readingTime = Math.max(1, Math.round(minutes));
+		// Surfaced as schema.org `wordCount`; CJK characters count as words.
+		file.data.astro.frontmatter.wordCount = words + cjk;
 	};
 }

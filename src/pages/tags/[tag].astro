@@ -1,0 +1,129 @@
+---
+import { getCollection } from 'astro:content';
+import BaseHead from '../../components/BaseHead.astro';
+import Footer from '../../components/Footer.astro';
+import Header from '../../components/Header.astro';
+import PostRow from '../../components/PostRow.astro';
+import { SITE_TITLE } from '../../consts';
+import { breadcrumbSchema, tagSlug } from '../../lib/seo';
+
+export async function getStaticPaths() {
+	const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(
+		(a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
+	);
+	const byTag = new Map<string, { tag: string; posts: typeof posts }>();
+	for (const post of posts) {
+		for (const tag of post.data.tags) {
+			const slug = tagSlug(tag);
+			const entry = byTag.get(slug) ?? { tag, posts: [] };
+			entry.posts.push(post);
+			byTag.set(slug, entry);
+		}
+	}
+	return [...byTag.entries()].map(([slug, { tag, posts }]) => ({ params: { tag: slug }, props: { tag, posts } }));
+}
+
+const { tag, posts } = Astro.props;
+const count = posts.length;
+const zh = posts.every((p) => p.data.lang === 'zh');
+const description = zh
+	? `标签「${tag}」下的 ${count} 篇文章 — ${SITE_TITLE}`
+	: `${count} ${count === 1 ? 'post' : 'posts'} tagged “${tag}” on ${SITE_TITLE}: GPU inference performance, profiling and kernels.`;
+---
+
+<!doctype html>
+<html lang={zh ? 'zh-CN' : 'en'}>
+	<head>
+		<BaseHead
+			title={`#${tag} — ${SITE_TITLE}`}
+			description={description}
+			lang={zh ? 'zh' : 'en'}
+			noindex={count < 2}
+			schema={[
+				{
+					'@type': 'CollectionPage',
+					name: `Posts tagged ${tag}`,
+					url: new URL(Astro.url.pathname, Astro.site).toString(),
+					mainEntity: {
+						'@type': 'ItemList',
+						numberOfItems: count,
+						itemListElement: posts.map((p, i) => ({
+							'@type': 'ListItem',
+							position: i + 1,
+							name: p.data.title,
+							url: new URL(`/blog/${p.id}/`, Astro.site).toString(),
+						})),
+					},
+				},
+				breadcrumbSchema(Astro.site, [
+					{ name: SITE_TITLE, path: '/' },
+					{ name: 'Tags', path: '/tags/' },
+					{ name: tag, path: Astro.url.pathname },
+				]),
+			]}
+		/>
+	</head>
+	<body>
+		<Header />
+		<main class="shell">
+			<div class="page-head">
+				<p class="label"><a href="/tags/">Tags</a></p>
+				<h1>#{tag}</h1>
+				<p class="count">
+					{count}
+					{count === 1 ? 'post' : 'posts'}
+				</p>
+			</div>
+
+			{
+				posts.map((post) => (
+					<PostRow
+						href={`/blog/${post.id}/`}
+						title={post.data.title}
+						description={post.data.description}
+						pubDate={post.data.pubDate}
+						regime={post.data.regime}
+						tags={post.data.tags}
+					/>
+				))
+			}
+		</main>
+		<Footer />
+	</body>
+</html>
+
+<style>
+	.page-head {
+		padding-block: clamp(2.5rem, 6vw, 4rem) 1rem;
+		border-bottom: var(--rule-weight) solid var(--rule);
+	}
+
+	.page-head .label {
+		margin-bottom: 0.75rem;
+	}
+
+	.page-head .label a {
+		text-decoration: none;
+		color: inherit;
+	}
+
+	.page-head .label a:hover {
+		color: var(--mem);
+	}
+
+	h1 {
+		font-size: clamp(1.9rem, 4vw, 2.6rem);
+		margin-bottom: 0.6rem;
+		font-family: var(--font-mono);
+		letter-spacing: -0.01em;
+	}
+
+	.count {
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--ink-faint);
+		margin: 0 0 0.85rem;
+	}
+</style>

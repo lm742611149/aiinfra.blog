@@ -5,6 +5,7 @@ import Footer from '../../components/Footer.astro';
 import Header from '../../components/Header.astro';
 import PostRow from '../../components/PostRow.astro';
 import { SITE_TITLE } from '../../consts';
+import { breadcrumbSchema } from '../../lib/seo';
 
 const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(
 	(a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
@@ -24,7 +25,20 @@ const years = [...byYear.keys()].sort((a, b) => b - a);
 	<head>
 		<BaseHead
 			title={`Writing — ${SITE_TITLE}`}
-			description="Every post: profiling, kernels, and inference engine internals."
+			description="Every post on Ridge Point: GPU profiling, kernels, roofline analysis, and inference engine internals, plus the day-by-day AI Infra course."
+			schema={[
+				{
+					'@type': 'Blog',
+					'@id': new URL('/blog/#blog', Astro.site).toString(),
+					name: `${SITE_TITLE} — Writing`,
+					url: new URL('/blog/', Astro.site).toString(),
+					blogPost: posts.map((p) => ({ '@type': 'BlogPosting', headline: p.data.title, url: new URL(`/blog/${p.id}/`, Astro.site).toString() })),
+				},
+				breadcrumbSchema(Astro.site, [
+					{ name: SITE_TITLE, path: '/' },
+					{ name: 'Writing', path: '/blog/' },
+				]),
+			]}
 		/>
 	</head>
 	<body>

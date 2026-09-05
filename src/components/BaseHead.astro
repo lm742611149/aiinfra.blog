@@ -2,7 +2,14 @@
 // Imported here so every page picks up the global stylesheet.
 import '../styles/global.css';
 import { Font } from 'astro:assets';
-import { SITE_TITLE } from '../consts';
+import {
+	AUTHOR,
+	DEFAULT_OG_IMAGE,
+	OG_IMAGE_HEIGHT,
+	OG_IMAGE_WIDTH,
+	OG_LOCALE,
+	SITE_TITLE,
+} from '../consts';
 
 interface Props {
 	title: string;
@@ -10,16 +17,47 @@ interface Props {
 	/** Set on article pages so crawlers see `article` instead of `website`. */
 	article?: boolean;
 	publishedTime?: Date;
+	modifiedTime?: Date;
+	/** Article tags → `article:tag`. */
+	tags?: string[];
+	/** Content language of the page. Drives og:locale. */
+	lang?: 'en' | 'zh';
+	/** Site-relative or absolute path to the social preview image. Falls back to the default card. */
+	image?: string;
+	imageAlt?: string;
+	/** One or more schema.org objects, rendered as JSON-LD. */
+	schema?: Record<string, unknown> | Record<string, unknown>[];
+	/** Keep the page out of search results (tag pages with a single post, etc.). */
+	noindex?: boolean;
 }
 
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
-const { title, description, article = false, publishedTime } = Astro.props;
+const {
+	title,
+	description,
+	article = false,
+	publishedTime,
+	modifiedTime,
+	tags = [],
+	lang = 'en',
+	image = DEFAULT_OG_IMAGE,
+	imageAlt = `${SITE_TITLE} — ${title}`,
+	schema,
+	noindex = false,
+} = Astro.props;
+
+const imageURL = new URL(image, Astro.site);
+const schemas = schema ? (Array.isArray(schema) ? schema : [schema]) : [];
+// JSON-LD lives inside a <script>; escape `<` so a title containing "</script>" can't break out.
+const jsonLd = (o: unknown) => JSON.stringify(o).replace(/</g, '\\u003c');
 ---
 
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <meta name="generator" content={Astro.generator} />
 <meta name="color-scheme" content="light dark" />
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f7f8fa" />
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e1319" />
 
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <link rel="sitemap" href="/sitemap-index.xml" />
@@ -39,14 +77,31 @@ const { title, description, article = false, publishedTime } = Astro.props;
 
 <title>{title}</title>
 <meta name="description" content={description} />
+<meta name="author" content={AUTHOR} />
+<meta
+	name="robots"
+	content={noindex ? 'noindex, follow' : 'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1'}
+/>
 
 <meta property="og:type" content={article ? 'article' : 'website'} />
 <meta property="og:url" content={canonicalURL} />
 <meta property="og:title" content={title} />
 <meta property="og:description" content={description} />
 <meta property="og:site_name" content={SITE_TITLE} />
+<meta property="og:locale" content={OG_LOCALE[lang]} />
+<meta property="og:image" content={imageURL} />
+<meta property="og:image:width" content={String(OG_IMAGE_WIDTH)} />
+<meta property="og:image:height" content={String(OG_IMAGE_HEIGHT)} />
+<meta property="og:image:alt" content={imageAlt} />
 {publishedTime && <meta property="article:published_time" content={publishedTime.toISOString()} />}
+{modifiedTime && <meta property="article:modified_time" content={modifiedTime.toISOString()} />}
+{article && <meta property="article:author" content={AUTHOR} />}
+{article && tags.map((t) => <meta property="article:tag" content={t} />)}
 
-<meta name="twitter:card" content="summary" />
+<meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content={title} />
 <meta name="twitter:description" content={description} />
+<meta name="twitter:image" content={imageURL} />
+<meta name="twitter:image:alt" content={imageAlt} />
+
+{schemas.map((s) => <script type="application/ld+json" set:html={jsonLd({ '@context': 'https://schema.org', ...s })} />)}

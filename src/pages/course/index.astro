@@ -4,12 +4,13 @@ import BaseHead from '../../components/BaseHead.astro';
 import Footer from '../../components/Footer.astro';
 import FormattedDate from '../../components/FormattedDate.astro';
 import Header from '../../components/Header.astro';
-import { SITE_TITLE } from '../../consts';
+import { COURSE_SERIES, COURSE_TITLE, SITE_TITLE } from '../../consts';
+import { breadcrumbSchema } from '../../lib/seo';
 
 const TOTAL_DAYS = 365;
 
 const days = (
-	await getCollection('blog', ({ data }) => !data.draft && data.series === 'aiinfra-365' && data.day !== undefined)
+	await getCollection('blog', ({ data }) => !data.draft && data.series === COURSE_SERIES && data.day !== undefined)
 ).sort((a, b) => a.data.day! - b.data.day!);
 
 // Group into the study plan's months: Day 0 is the prologue, then 30 days per month.
@@ -37,22 +38,48 @@ for (const d of days) {
 const months = [...byMonth.keys()].sort((a, b) => a - b);
 const latest = days.at(-1);
 const pct = Math.round((days.length / TOTAL_DAYS) * 1000) / 10;
+
+const description =
+	'从 transformer 零基础到能写推理引擎的 365 天 AI Infra 自学课程:roofline、KV cache、profiler、CUDA、vLLM、Triton。每天一篇中文学习日志,记录算出的每个数字和犯过的每个错。';
+const schema = [
+	{
+		'@type': 'CollectionPage',
+		'@id': new URL('/course/#series', Astro.site).toString(),
+		name: COURSE_TITLE,
+		url: new URL('/course/', Astro.site).toString(),
+		description,
+		inLanguage: 'zh-CN',
+		isPartOf: { '@id': new URL('/#website', Astro.site).toString() },
+		mainEntity: {
+			'@type': 'ItemList',
+			numberOfItems: days.length,
+			itemListOrder: 'https://schema.org/ItemListOrderAscending',
+			itemListElement: days.map((d) => ({
+				'@type': 'ListItem',
+				position: d.data.day! + 1,
+				name: d.data.title,
+				url: new URL(`/blog/${d.id}/`, Astro.site).toString(),
+			})),
+		},
+	},
+	breadcrumbSchema(Astro.site, [
+		{ name: SITE_TITLE, path: '/' },
+		{ name: COURSE_TITLE, path: '/course/' },
+	]),
+];
 ---
 
 <!doctype html>
-<html lang="zh">
+<html lang="zh-CN">
 	<head>
-		<BaseHead
-			title={`365 天 AI Infra 自学课程 — ${SITE_TITLE}`}
-			description="从 transformer 零基础到能写推理引擎的 365 天学习日志。每天一篇,记录学到的所有东西、算出的每个数字、犯过的每个错。"
-		/>
+		<BaseHead title={`${COURSE_TITLE} — ${SITE_TITLE}`} description={description} lang="zh" schema={schema} />
 	</head>
 	<body>
 		<Header />
 		<main class="shell">
 			<div class="page-head">
 				<p class="label">aiinfra-365</p>
-				<h1>365 天 AI Infra 自学课程</h1>
+				<h1>{COURSE_TITLE}</h1>
 				<p class="lede">
 					一个 transformer 零基础的后端工程师,用 12 个月把自己改造成能做推理优化的人。每天一篇,写给三个月后复习的自己:
 					每个概念从最小单元讲起,每个数字都要自己算出来,每道错题都留档。

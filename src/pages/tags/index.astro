@@ -1,0 +1,119 @@
+---
+import { getCollection } from 'astro:content';
+import BaseHead from '../../components/BaseHead.astro';
+import Footer from '../../components/Footer.astro';
+import Header from '../../components/Header.astro';
+import { SITE_TITLE } from '../../consts';
+import { breadcrumbSchema, tagSlug } from '../../lib/seo';
+
+const posts = await getCollection('blog', ({ data }) => !data.draft);
+const counts = new Map<string, { tag: string; n: number }>();
+for (const post of posts) {
+	for (const tag of post.data.tags) {
+		const slug = tagSlug(tag);
+		const cur = counts.get(slug) ?? { tag, n: 0 };
+		cur.n += 1;
+		counts.set(slug, cur);
+	}
+}
+const tags = [...counts.entries()]
+	.map(([slug, { tag, n }]) => ({ slug, tag, n }))
+	.sort((a, b) => b.n - a.n || a.tag.localeCompare(b.tag));
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<BaseHead
+			title={`Tags — ${SITE_TITLE}`}
+			description={`Every topic on ${SITE_TITLE}: roofline, KV cache, profiler, CUDA, RunPod, and the rest, with post counts.`}
+			schema={breadcrumbSchema(Astro.site, [
+				{ name: SITE_TITLE, path: '/' },
+				{ name: 'Tags', path: '/tags/' },
+			])}
+		/>
+	</head>
+	<body>
+		<Header />
+		<main class="shell">
+			<div class="page-head">
+				<p class="label">Index</p>
+				<h1>Tags</h1>
+				<p class="count">{tags.length} topics</p>
+			</div>
+
+			<ul class="cloud">
+				{
+					tags.map(({ slug, tag, n }) => (
+						<li>
+							<a href={`/tags/${slug}/`}>
+								<span class="tag">#{tag}</span>
+								<span class="n">{n}</span>
+							</a>
+						</li>
+					))
+				}
+			</ul>
+		</main>
+		<Footer />
+	</body>
+</html>
+
+<style>
+	.page-head {
+		padding-block: clamp(2.5rem, 6vw, 4rem) 1rem;
+		border-bottom: var(--rule-weight) solid var(--rule);
+	}
+
+	.page-head .label {
+		margin-bottom: 0.75rem;
+	}
+
+	h1 {
+		font-size: clamp(1.9rem, 4vw, 2.6rem);
+		margin-bottom: 0.6rem;
+	}
+
+	.count {
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--ink-faint);
+		margin: 0 0 0.85rem;
+	}
+
+	.cloud {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.7rem;
+		list-style: none;
+		margin: 0;
+		padding: 2rem 0 0;
+	}
+
+	.cloud a {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 0.5rem;
+		padding: 0.35rem 0.75rem;
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+		letter-spacing: 0.04em;
+		text-decoration: none;
+		color: var(--ink);
+		background: var(--paper-raised);
+		border: 1px solid var(--rule);
+		border-radius: 3px;
+	}
+
+	.cloud a:hover {
+		border-color: var(--mem);
+		color: var(--mem);
+	}
+
+	.n {
+		font-size: 0.68rem;
+		color: var(--ink-faint);
+	}
+</style>

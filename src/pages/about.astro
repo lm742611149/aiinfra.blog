@@ -3,6 +3,7 @@ import BaseHead from '../components/BaseHead.astro';
 import Footer from '../components/Footer.astro';
 import Header from '../components/Header.astro';
 import { AUTHOR, SITE_TITLE, SOCIALS } from '../consts';
+import { breadcrumbSchema, personSchema } from '../lib/seo';
 ---
 
 <!doctype html>
@@ -10,7 +11,14 @@ import { AUTHOR, SITE_TITLE, SOCIALS } from '../consts';
 	<head>
 		<BaseHead
 			title={`About — ${SITE_TITLE}`}
-			description={`${AUTHOR} on why this site exists and what gets written here.`}
+			description={`${AUTHOR}: a backend engineer moving from B2B billing systems into GPU inference infrastructure. Why this site exists and what gets written here.`}
+			schema={[
+				{ '@type': 'ProfilePage', mainEntity: personSchema(Astro.site) },
+				breadcrumbSchema(Astro.site, [
+					{ name: SITE_TITLE, path: '/' },
+					{ name: 'About', path: '/about/' },
+				]),
+			]}
 		/>
 	</head>
 	<body>
@@ -64,7 +72,6 @@ import { AUTHOR, SITE_TITLE, SOCIALS } from '../consts';
 				<h2>Elsewhere</h2>
 				<p>
 					<a href={SOCIALS.github} rel="me noopener" target="_blank">GitHub</a> ·
-					<a href={SOCIALS.x} rel="me noopener" target="_blank">X</a> ·
 					<a href="/rss.xml">RSS</a>
 				</p>
 			</div>

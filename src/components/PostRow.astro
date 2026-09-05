@@ -1,4 +1,5 @@
 ---
+import { tagSlug } from '../lib/seo';
 import FormattedDate from './FormattedDate.astro';
 
 interface Props {
@@ -23,9 +24,11 @@ const { href, title, description, pubDate, regime = 'none', tags = [] } = Astro.
 		<p>{description}</p>
 		{
 			tags.length > 0 && (
-				<ul class="tags">
+				<ul class="tags" aria-label="Tags">
 					{tags.map((t) => (
-						<li>{t}</li>
+						<li>
+							<a href={`/tags/${tagSlug(t)}/`} rel="tag">{t}</a>
+						</li>
 					))}
 				</ul>
 			)
@@ -93,6 +96,15 @@ const { href, title, description, pubDate, regime = 'none', tags = [] } = Astro.
 		color: var(--ink-soft);
 		font-size: 0.98rem;
 		max-width: 38rem;
+	}
+
+	.tags a {
+		text-decoration: none;
+		color: inherit;
+	}
+
+	.tags a:hover {
+		color: var(--mem);
 	}
 
 	.tags {
