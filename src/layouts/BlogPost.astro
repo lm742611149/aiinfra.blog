@@ -3,8 +3,9 @@ import type { CollectionEntry } from 'astro:content';
 import BaseHead from '../components/BaseHead.astro';
 import Footer from '../components/Footer.astro';
 import FormattedDate from '../components/FormattedDate.astro';
+import Comments from '../components/Comments.astro';
 import Header from '../components/Header.astro';
-import { COURSE_SERIES, COURSE_TITLE, LANG_TAG, SITE_TITLE } from '../consts';
+import { COMMENTS_ENABLED, COURSE_SERIES, COURSE_TITLE, LANG_TAG, SITE_TITLE } from '../consts';
 import { blogPostingSchema, breadcrumbSchema, ogImageFor, tagSlug } from '../lib/seo';
 
 type Entry = CollectionEntry<'blog'>;
@@ -107,6 +108,8 @@ const schema = [
 					</nav>
 				)
 			}
+
+			{COMMENTS_ENABLED && <Comments slug={post.id} lang={lang} />}
 
 			<a class="back" href={inCourse ? '/course' : '/blog'}>{inCourse ? '← 365 天课程目录' : '← All posts'}</a>
 		</main>

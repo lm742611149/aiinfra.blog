@@ -1,0 +1,18 @@
+# Cloudflare Pages configuration: bindings for the comments API in functions/.
+# Secrets (RESEND_API_KEY, MOD_SECRET, TURNSTILE_SECRET, NOTIFY_EMAIL) are set with
+# `npx wrangler pages secret put <NAME> --project-name aiinfra-blog`, never here.
+name = "aiinfra-blog"
+pages_build_output_dir = "./dist"
+compatibility_date = "2025-09-01"
+
+[vars]
+# Origins allowed to call the API. Any *.aiinfra-blog.pages.dev preview is also accepted.
+ALLOWED_ORIGINS = "https://aiinfra.blog,https://aiinfra-blog.pages.dev"
+SITE_ORIGIN = "https://aiinfra.blog"
+# Sender for notification mail. Switch to comments@aiinfra.blog once the domain is verified in Resend.
+MAIL_FROM = "AI Infra comments <onboarding@resend.dev>"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "aiinfra-comments"
+database_id = "cae683bc-4895-43d1-b2ee-a251abb47f9f"

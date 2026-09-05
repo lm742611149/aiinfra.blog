@@ -106,6 +106,27 @@ to the default one automatically.
 After the first deploy: add the domain to Google Search Console (DNS TXT record in Cloudflare) and
 submit `https://aiinfra.blog/sitemap-index.xml`; do the same in Bing Webmaster Tools.
 
+## Comments
+
+Self-hosted on Cloudflare: Pages Functions in `functions/api/` + a D1 database (`aiinfra-comments`,
+schema in `db/schema.sql`) + Turnstile + Resend for the notification mail. Bindings live in
+`wrangler.toml`; secrets are set once with `npx wrangler pages secret put <NAME> --project-name aiinfra-blog`:
+
+| secret | purpose |
+|---|---|
+| `TURNSTILE_SECRET` | server-side Turnstile verification (site key is `TURNSTILE_SITEKEY` in `src/consts.ts`) |
+| `MOD_SECRET` | salts the visitor hash and signs the one-click delete / ban links in the mail |
+| `RESEND_API_KEY`, `NOTIFY_EMAIL` | where new-comment notifications go; mail is skipped if either is missing |
+
+What is stored: name, comment, coarse region (`CN|Guangdong`) from Cloudflare's request geo, a salted
+hash of the IP for rate limiting and bans. No raw IPs, no e-mail addresses from commenters. Defences on
+POST: origin allow-list, size caps, honeypot field, Turnstile, ban list, 3 per 10 min / 30 per day per
+visitor, duplicate check, max 2 links, the post must exist. Rendering uses `textContent` only.
+
+Local run: `npm run build && npx wrangler pages dev dist` (reads `.dev.vars`, uses a local D1; apply the
+schema once with `npx wrangler d1 execute aiinfra-comments --local --file db/schema.sql`).
+Schema changes go to production with the same command plus `--remote`.
+
 ## Deploying to Cloudflare Pages
 
 The site is fully static, so Pages needs no adapter.

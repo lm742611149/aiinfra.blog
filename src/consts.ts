@@ -24,3 +24,8 @@ export const COURSE_TITLE = '365 天 AI Infra 自学课程';
 /** BCP 47 tag for <html lang> and og:locale, from the content schema's short `lang`. */
 export const LANG_TAG: Record<'en' | 'zh', string> = { en: 'en', zh: 'zh-CN' };
 export const OG_LOCALE: Record<'en' | 'zh', string> = { en: 'en_US', zh: 'zh_CN' };
+
+// Comments (Cloudflare Pages Functions + D1, see functions/api/). The Turnstile site key is public.
+// `1x00000000000000000000AA` is Cloudflare's always-pass test key — replace with the real widget's key.
+export const COMMENTS_ENABLED = true;
+export const TURNSTILE_SITEKEY = '1x00000000000000000000AA';
