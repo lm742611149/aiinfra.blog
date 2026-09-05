@@ -97,18 +97,19 @@ export async function verifyAction(secret: string, action: string, id: string, t
 	return diff === 0;
 }
 
-export async function verifyTurnstile(secret: string, token: string, ip: string): Promise<boolean> {
-	if (!token || token.length > 2048) return false;
+/** Returns Turnstile's error codes on failure (empty array = success) so the caller can say why. */
+export async function verifyTurnstile(secret: string, token: string): Promise<string[]> {
+	if (!token) return ['missing-input-response'];
+	if (token.length > 2048) return ['invalid-input-response'];
 	const form = new FormData();
 	form.set('secret', secret);
 	form.set('response', token);
-	if (ip) form.set('remoteip', ip);
 	try {
 		const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: form });
-		const data = (await res.json()) as { success?: boolean };
-		return data.success === true;
+		const data = (await res.json()) as { success?: boolean; 'error-codes'?: string[] };
+		return data.success === true ? [] : (data['error-codes'] ?? ['unknown']);
 	} catch {
-		return false;
+		return ['siteverify-unreachable'];
 	}
 }
 

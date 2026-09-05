@@ -25,6 +25,7 @@ const t =
 				bodyPh: '算出来的数字、没跟上的地方、发现的错误,都欢迎。',
 				submit: '发表评论',
 				sending: '发送中…',
+				verifying: '正在人机验证…',
 				posted: '已发表。',
 				privacy: '只保存昵称和内容。会显示你的大致地区(国家 / 省),不保存 IP 地址。',
 				from: '来自',
@@ -51,6 +52,7 @@ const t =
 				bodyPh: 'Numbers you worked out, places you got lost, mistakes you found — all welcome.',
 				submit: 'Post comment',
 				sending: 'Sending…',
+				verifying: 'Verifying you are human…',
 				posted: 'Posted.',
 				privacy: 'Only your name and comment are stored. Your coarse region (country / state) is shown; your IP address is not kept.',
 				from: 'from',
@@ -202,10 +204,16 @@ const t =
 				widgetId = window.turnstile.render(tsBox, {
 					sitekey,
 					language: lang === 'zh' ? 'zh-cn' : 'en',
-					appearance: 'interaction-only',
-					callback: (tok) => (token = tok),
+					appearance: 'always',
+					callback: (tok) => {
+						token = tok;
+						if (msg.dataset.kind === 'error') say('');
+					},
 					'expired-callback': () => (token = ''),
-					'error-callback': () => (token = ''),
+					'error-callback': (code) => {
+						token = '';
+						say(`${t.errors.turnstile} (${code || 'error'})`, 'error');
+					},
 				});
 			};
 			document.head.append(s);
@@ -237,9 +245,11 @@ const t =
 			const body = form.elements.body.value.trim();
 			if (!name) return say(t.errors.name, 'error');
 			if (body.length < 2) return say(t.errors.body, 'error');
-			if (!token && window.turnstile && widgetId !== null) {
-				// Give an interaction-only widget a moment to finish its challenge.
-				await new Promise((r) => setTimeout(r, 1200));
+			if (!token) {
+				// The widget may still be running its challenge — wait up to 6 s for the callback.
+				say(t.verifying);
+				for (let i = 0; i < 30 && !token; i++) await new Promise((r) => setTimeout(r, 200));
+				if (!token) return say(t.errors.turnstile, 'error');
 			}
 			submit.disabled = true;
 			say(t.sending);
@@ -251,7 +261,8 @@ const t =
 				});
 				const data = await res.json().catch(() => ({}));
 				if (!res.ok) {
-					say(t.errors[data.error] || t.errors.default, 'error');
+					const detail = data.error === 'turnstile' && data.message ? ` (${data.message.replace(/^.*\(|\)$/g, '')})` : '';
+					say((t.errors[data.error] || t.errors.default) + detail, 'error');
 					return;
 				}
 				if (data.comment) {

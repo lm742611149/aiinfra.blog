@@ -83,7 +83,8 @@ export async function onRequestPost({ request, env, waitUntil }: Ctx) {
 	if (links > LIMITS.maxLinks) return fail(400, 'links', `At most ${LIMITS.maxLinks} links per comment`);
 
 	const ip = request.headers.get('cf-connecting-ip') ?? '0.0.0.0';
-	if (!(await verifyTurnstile(env.TURNSTILE_SECRET, token, ip))) return fail(403, 'turnstile', 'Verification failed, please retry');
+	const tsErrors = await verifyTurnstile(env.TURNSTILE_SECRET, token);
+	if (tsErrors.length) return fail(403, 'turnstile', `Verification failed (${tsErrors.join(', ')})`);
 
 	const ip_hash = await hashIp(ip, env.MOD_SECRET);
 	const now = Date.now();
