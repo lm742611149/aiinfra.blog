@@ -1,4 +1,4 @@
-# Ridge Point · aiinfra.blog
+# AI Infra · aiinfra.blog
 
 A technical blog about GPU inference performance, plus a 365-day AI Infra study log. Astro, static
 output, deployed on Cloudflare Pages at https://aiinfra.blog.

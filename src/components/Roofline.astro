@@ -5,6 +5,16 @@
 
   Both axes are log2. Coordinates are precomputed, not derived at runtime,
   so the plot stays a static asset with no JS.
+
+    x: AI 1 → 135, one octave = 36.5 px      (4 → 208, 16 → 281, 64 → 354, 256 → 427)
+    y: 1 TFLOP/s → 241, one octave = 23.33 px (8 → 171, 64 → 100, 312 → 47)
+
+  Animation, all CSS:
+    1. Intro (plays once): axes fade in, the roof draws itself, the decode dot lands.
+    2. Sweep (loops): a marker walks decode from batch 1 up the memory slope —
+       batch 8, batch 64, the ridge at batch ≈ 161 — then hits the compute roof at 256.
+       Path M135 219 → L403 47 → L427 47 is 342.4 px; batch 8 is at 38 %, 64 at 76 %, ridge at 93 %.
+  Honours prefers-reduced-motion (static final frame) and browsers without offset-path.
 */
 ---
 
@@ -15,10 +25,17 @@
 			Attainable throughput rises with arithmetic intensity along a 1.935 terabyte-per-second
 			memory bandwidth slope until it flattens at the 312 TFLOP/s compute ceiling. The ridge point
 			sits at 161 FLOP per byte. Single-sequence decode sits far to the left at roughly 1 FLOP per
-			byte, deep in the memory-bound region.
+			byte, deep in the memory-bound region. Batching moves it up the slope: batch 8, batch 64,
+			and at batch 256 it reaches the compute roof.
 		</desc>
 
-		<g class="grid">
+		<defs>
+			<filter id="rl-glow" x="-100%" y="-100%" width="300%" height="300%">
+				<feGaussianBlur stdDeviation="3.5"></feGaussianBlur>
+			</filter>
+		</defs>
+
+		<g class="grid intro">
 			<line x1="135" y1="30" x2="135" y2="288"></line>
 			<line x1="208" y1="30" x2="208" y2="288"></line>
 			<line x1="281" y1="30" x2="281" y2="288"></line>
@@ -29,7 +46,7 @@
 			<line x1="62" y1="100" x2="500" y2="100"></line>
 		</g>
 
-		<g class="axis">
+		<g class="axis intro">
 			<line x1="62" y1="288" x2="500" y2="288"></line>
 			<line x1="62" y1="30" x2="62" y2="288"></line>
 		</g>
@@ -41,11 +58,25 @@
 		<path class="roof-mem" d="M62 266 L403 47"></path>
 		<path class="roof-compute" d="M403 47 L500 47"></path>
 
+		<!-- Sweep: the stretch of roof decode has climbed so far -->
+		<path class="trail" d="M135 219 L403 47 L427 47"></path>
+
+		<!-- Milestones light up as the sweep passes them -->
+		<circle class="stage stage-8" cx="244.5" cy="149" r="3"></circle>
+		<circle class="stage stage-64" cx="354" cy="79" r="3"></circle>
+
 		<!-- Where single-sequence decode actually lands -->
+		<circle class="halo" cx="135" cy="219" r="4.5"></circle>
 		<circle class="dot-mem" cx="135" cy="219" r="4.5"></circle>
 		<circle class="dot-ridge" cx="403" cy="47" r="4"></circle>
 
-		<g class="tick">
+		<!-- The travelling marker -->
+		<g class="sweep">
+			<circle class="sweep-glow" cx="0" cy="0" r="7" filter="url(#rl-glow)"></circle>
+			<circle class="sweep-dot" cx="0" cy="0" r="4.5"></circle>
+		</g>
+
+		<g class="tick intro">
 			<text x="135" y="303" text-anchor="middle">1</text>
 			<text x="208" y="303" text-anchor="middle">4</text>
 			<text x="281" y="303" text-anchor="middle">16</text>
@@ -61,10 +92,17 @@
 			<text class="n-mem sub" x="86" y="134">memory-bound</text>
 			<text class="n-compute" x="500" y="34" text-anchor="end">312 TFLOP/s · compute-bound</text>
 			<text class="n-ridge" x="396" y="272" text-anchor="end">ridge point · 161 FLOP/byte</text>
-			<text class="n-decode" x="148" y="238">decode, batch = 1 · AI ≈ 1</text>
 		</g>
 
-		<g class="axis-title">
+		<!-- Sweep captions, one per stage -->
+		<g class="captions">
+			<text class="cap cap-1 n-mem" x="148" y="238">decode, batch = 1 · AI ≈ 1 · 0.6 % of peak</text>
+			<text class="cap cap-8 n-mem" x="257" y="168">batch = 8 · 15 TFLOP/s · still free</text>
+			<text class="cap cap-64 n-mem" x="500" y="98" text-anchor="end">batch = 64 · 124 TFLOP/s</text>
+			<text class="cap cap-256 n-compute" x="500" y="66" text-anchor="end">batch = 256 · on the roof</text>
+		</g>
+
+		<g class="axis-title intro">
 			<text x="281" y="326" text-anchor="middle">arithmetic intensity — FLOP per byte of HBM traffic</text>
 			<text transform="rotate(-90 18 159)" x="18" y="159" text-anchor="middle">TFLOP/s attained</text>
 		</g>
@@ -83,6 +121,8 @@
 		overflow: visible;
 	}
 
+	/* ---------- static styling ---------- */
+
 	.grid line {
 		stroke: var(--rule-soft);
 		stroke-width: 1;
@@ -99,28 +139,65 @@
 		stroke-dasharray: 2 4;
 	}
 
+	.roof-mem,
+	.roof-compute,
+	.trail {
+		fill: none;
+		stroke-width: 2.5;
+		stroke-linecap: round;
+	}
+
 	.roof-mem {
 		stroke: var(--mem);
-		stroke-width: 2.5;
-		fill: none;
-		stroke-linecap: round;
 	}
 
 	.roof-compute {
 		stroke: var(--compute);
-		stroke-width: 2.5;
-		fill: none;
-		stroke-linecap: round;
 	}
 
-	.dot-mem {
+	.trail {
+		stroke: var(--mem);
+		stroke-width: 4;
+		opacity: 0.35;
+		stroke-dasharray: 343;
+		stroke-dashoffset: 343;
+	}
+
+	.dot-mem,
+	.sweep-dot {
 		fill: var(--mem);
+	}
+
+	.halo {
+		fill: none;
+		stroke: var(--mem);
+		stroke-width: 1.5;
+		opacity: 0;
+		transform-box: fill-box;
+		transform-origin: center;
+	}
+
+	.sweep-glow {
+		fill: var(--mem);
+		opacity: 0.55;
+	}
+
+	.sweep-dot {
+		stroke: var(--paper);
+		stroke-width: 1.5;
+	}
+
+	.stage {
+		fill: var(--mem);
+		opacity: 0;
 	}
 
 	.dot-ridge {
 		fill: var(--paper);
 		stroke: var(--compute);
 		stroke-width: 2;
+		transform-box: fill-box;
+		transform-origin: center;
 	}
 
 	text {
@@ -138,13 +215,13 @@
 		text-transform: uppercase;
 	}
 
-	.note text {
+	.note text,
+	.cap {
 		font-size: 11px;
 		letter-spacing: 0.01em;
 	}
 
-	.n-mem,
-	.n-decode {
+	.n-mem {
 		fill: var(--mem);
 	}
 
@@ -155,8 +232,7 @@
 		text-transform: uppercase;
 	}
 
-	.n-compute,
-	.n-ridge {
+	.n-compute {
 		fill: var(--compute);
 	}
 
@@ -164,10 +240,355 @@
 		fill: var(--ink-faint);
 	}
 
+	.cap {
+		opacity: 0;
+	}
+
+	.cap-1 {
+		opacity: 1;
+	}
+
+	/* Without motion paths the marker can't travel: keep the static batch-1 frame. */
+	.sweep,
+	.trail,
+	.stage {
+		display: none;
+	}
+
+	/* ---------- intro (plays once) ---------- */
+
+	.intro {
+		opacity: 0;
+		animation: rl-fade 0.7s ease-out forwards;
+	}
+
+	.axis.intro {
+		animation-delay: 0.1s;
+	}
+
+	.tick.intro,
+	.axis-title.intro {
+		animation-delay: 0.5s;
+	}
+
+	.roof-mem {
+		stroke-dasharray: 406;
+		stroke-dashoffset: 406;
+		animation: rl-draw 1.1s cubic-bezier(0.4, 0, 0.2, 1) 0.35s forwards;
+	}
+
+	.roof-compute {
+		stroke-dasharray: 98;
+		stroke-dashoffset: 98;
+		animation: rl-draw 0.45s ease-out 1.35s forwards;
+	}
+
+	.drop {
+		stroke-dasharray: 2 4;
+		opacity: 0;
+		animation: rl-fade 0.5s ease-out 1.5s forwards;
+	}
+
+	.dot-ridge {
+		transform: scale(0);
+		animation: rl-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 1.65s forwards;
+	}
+
+	.dot-mem {
+		transform-box: fill-box;
+		transform-origin: center;
+		transform: scale(0);
+		animation: rl-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 1.85s forwards;
+	}
+
+	.halo {
+		animation: rl-pulse 2.6s ease-out 2.2s infinite;
+	}
+
+	.note {
+		opacity: 0;
+		animation: rl-fade 0.6s ease-out 1.9s forwards;
+	}
+
+	/* ---------- sweep (loops) ---------- */
+
+	@supports (offset-path: path('M0 0 L1 1')) {
+		.sweep,
+		.trail,
+		.stage {
+			display: initial;
+		}
+
+		.cap-1 {
+			opacity: 0;
+		}
+
+		.sweep {
+			offset-path: path('M135 219 L403 47 L427 47');
+			offset-rotate: 0deg;
+			opacity: 0;
+			animation: rl-sweep 11s ease-in-out 2.6s infinite;
+		}
+
+		.trail {
+			animation: rl-trail 11s ease-in-out 2.6s infinite;
+		}
+
+		.stage-8 {
+			animation: rl-stage-8 11s linear 2.6s infinite;
+		}
+
+		.stage-64 {
+			animation: rl-stage-64 11s linear 2.6s infinite;
+		}
+
+		.cap-1 {
+			animation: rl-cap-1 11s linear 2.6s infinite;
+		}
+
+		.cap-8 {
+			animation: rl-cap-8 11s linear 2.6s infinite;
+		}
+
+		.cap-64 {
+			animation: rl-cap-64 11s linear 2.6s infinite;
+		}
+
+		.cap-256 {
+			animation: rl-cap-256 11s linear 2.6s infinite;
+		}
+	}
+
+	/* Timeline (percent of one 11 s loop):
+	   0–8 hold at batch 1 · 8–28 → batch 8 · 28–36 hold · 36–56 → batch 64 · 56–64 hold ·
+	   64–78 → ridge · 78–83 hold · 83–89 → batch 256 · 89–97 hold · 97–100 fade */
+
+	@keyframes rl-sweep {
+		0% {
+			offset-distance: 0%;
+			opacity: 0;
+		}
+		3%,
+		8% {
+			offset-distance: 0%;
+			opacity: 1;
+		}
+		28%,
+		36% {
+			offset-distance: 37.95%;
+		}
+		56%,
+		64% {
+			offset-distance: 75.9%;
+		}
+		78%,
+		83% {
+			offset-distance: 93%;
+		}
+		89%,
+		96% {
+			offset-distance: 100%;
+			opacity: 1;
+		}
+		100% {
+			offset-distance: 100%;
+			opacity: 0;
+		}
+	}
+
+	@keyframes rl-trail {
+		0%,
+		8% {
+			stroke-dashoffset: 343;
+			opacity: 0.35;
+		}
+		28%,
+		36% {
+			stroke-dashoffset: 212.8;
+		}
+		56%,
+		64% {
+			stroke-dashoffset: 82.7;
+		}
+		78%,
+		83% {
+			stroke-dashoffset: 24;
+		}
+		89%,
+		96% {
+			stroke-dashoffset: 0;
+			opacity: 0.35;
+		}
+		100% {
+			stroke-dashoffset: 0;
+			opacity: 0;
+		}
+	}
+
+	@keyframes rl-stage-8 {
+		0%,
+		27% {
+			opacity: 0;
+		}
+		29%,
+		96% {
+			opacity: 1;
+		}
+		100% {
+			opacity: 0;
+		}
+	}
+
+	@keyframes rl-stage-64 {
+		0%,
+		55% {
+			opacity: 0;
+		}
+		57%,
+		96% {
+			opacity: 1;
+		}
+		100% {
+			opacity: 0;
+		}
+	}
+
+	@keyframes rl-cap-1 {
+		0% {
+			opacity: 0;
+		}
+		3%,
+		12% {
+			opacity: 1;
+		}
+		16%,
+		100% {
+			opacity: 0;
+		}
+	}
+
+	@keyframes rl-cap-8 {
+		0%,
+		26% {
+			opacity: 0;
+		}
+		29%,
+		40% {
+			opacity: 1;
+		}
+		44%,
+		100% {
+			opacity: 0;
+		}
+	}
+
+	@keyframes rl-cap-64 {
+		0%,
+		54% {
+			opacity: 0;
+		}
+		57%,
+		68% {
+			opacity: 1;
+		}
+		72%,
+		100% {
+			opacity: 0;
+		}
+	}
+
+	@keyframes rl-cap-256 {
+		0%,
+		88% {
+			opacity: 0;
+		}
+		91%,
+		96% {
+			opacity: 1;
+		}
+		100% {
+			opacity: 0;
+		}
+	}
+
+	@keyframes rl-fade {
+		to {
+			opacity: 1;
+		}
+	}
+
+	@keyframes rl-draw {
+		to {
+			stroke-dashoffset: 0;
+		}
+	}
+
+	@keyframes rl-pop {
+		to {
+			transform: scale(1);
+		}
+	}
+
+	@keyframes rl-pulse {
+		0% {
+			transform: scale(1);
+			opacity: 0.7;
+		}
+		70%,
+		100% {
+			transform: scale(4);
+			opacity: 0;
+		}
+	}
+
+	/* ---------- reduced motion: the finished static frame ---------- */
+
+	@media (prefers-reduced-motion: reduce) {
+		.intro,
+		.note,
+		.drop {
+			opacity: 1;
+			animation: none;
+		}
+
+		.roof-mem,
+		.roof-compute {
+			stroke-dashoffset: 0;
+			animation: none;
+		}
+
+		.dot-mem,
+		.dot-ridge {
+			transform: none;
+			animation: none;
+		}
+
+		.halo,
+		.sweep,
+		.trail,
+		.stage {
+			display: none;
+			animation: none;
+		}
+
+		.cap {
+			animation: none;
+			opacity: 0;
+		}
+
+		.cap-1 {
+			opacity: 1;
+		}
+	}
+
 	@media (max-width: 560px) {
 		.axis-title text,
 		.n-mem.sub {
 			display: none;
+		}
+
+		.cap {
+			font-size: 10px;
 		}
 	}
 </style>

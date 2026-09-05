@@ -22,7 +22,7 @@ const FORCE = process.argv.includes('--force');
 
 const W = 1200;
 const H = 630;
-const SITE_TITLE = 'Ridge Point';
+const SITE_TITLE = 'AI Infra';
 const DOMAIN = 'aiinfra.blog';
 const COURSE_TITLE = '365 天 AI Infra 自学课程';
 

@@ -1,6 +1,6 @@
 // Global site data. Imported anywhere with `import { SITE_TITLE } from '../consts'`.
 
-export const SITE_TITLE = 'Ridge Point';
+export const SITE_TITLE = 'AI Infra';
 export const SITE_TAGLINE = 'GPU inference performance, from the arithmetic up';
 export const SITE_DESCRIPTION =
 	'Notes on GPU inference performance: profiling, kernels, and the arithmetic that decides which side of the roofline you land on. Plus a 365-day AI infrastructure self-study course, written in Chinese.';
