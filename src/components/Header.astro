@@ -7,28 +7,38 @@ const isWriting = !isCourse && (path === '/blog' || path.startsWith('/blog/'));
 const isAbout = path === '/about' || path === '/about/';
 ---
 
-<header>
+<header class="site-header">
 	<div class="shell bar">
-		<a class="mark" href="/">
-			<svg viewBox="0 0 26 14" aria-hidden="true" width="26" height="14">
-				<path d="M1 13 L15 3" stroke="var(--mem)" stroke-width="2" fill="none" stroke-linecap="round"></path>
-				<path d="M15 3 L25 3" stroke="var(--compute)" stroke-width="2" fill="none" stroke-linecap="round"></path>
-			</svg>
-			<span>{SITE_TITLE}</span>
+		<a class="mark" href="/" aria-label={`${SITE_TITLE} 首页`}>
+			<span class="glyph" aria-hidden="true">
+				<svg viewBox="0 0 28 28" width="28" height="28">
+					<path d="M 14 5 A 9 9 0 1 1 5.6 17.2" fill="none" stroke="#7d9bff" stroke-width="2.4" stroke-linecap="round"></path>
+					<path d="M 2.6 13.6 L 5.6 17.6 L 9.6 14.8" fill="none" stroke="#7d9bff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></path>
+					<circle cx="14" cy="5" r="2.6" fill="#e3a54e"></circle>
+				</svg>
+			</span>
+			<span class="name">{SITE_TITLE}</span>
 		</a>
 
-		<nav aria-label="Primary">
+		<nav aria-label="主导航">
 			<a href="/course" class:list={[{ active: isCourse }]}>课程</a>
 			<a href="/blog" class:list={[{ active: isWriting }]}>全部文章</a>
 			<a href="/about" class:list={[{ active: isAbout }]}>关于</a>
-			<a href="/rss.xml">RSS</a>
+			<a class="start" href="/blog/agent-60/day-00-overview/">开始学习</a>
 		</nav>
 	</div>
 </header>
 
 <style>
-	header {
-		border-bottom: var(--rule-weight) solid var(--rule);
+	/* Always dark, so it runs straight into the dark stage on the home and lesson pages. */
+	.site-header {
+		position: sticky;
+		top: 0;
+		z-index: 40;
+		background: #0b1018;
+		backdrop-filter: saturate(140%) blur(10px);
+		-webkit-backdrop-filter: saturate(140%) blur(10px);
+		border-bottom: 1px solid #1f2a3a;
 	}
 
 	.bar {
@@ -36,57 +46,107 @@ const isAbout = path === '/about' || path === '/about/';
 		align-items: center;
 		justify-content: space-between;
 		gap: 1.5rem;
-		padding-block: 1.05rem;
+		height: 3.6rem;
 	}
 
 	.mark {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.6rem;
+		gap: 0.65rem;
 		text-decoration: none;
+		color: #eef1f6;
+	}
+
+	.glyph {
+		display: grid;
+		place-items: center;
+		width: 34px;
+		height: 34px;
+		border-radius: 8px;
+		background: #131c2b;
+		border: 1px solid #24314a;
+	}
+
+	.name {
 		font-family: var(--font-display);
 		font-weight: 700;
-		font-size: 1.02rem;
-		letter-spacing: -0.015em;
+		font-size: 1.12rem;
+		letter-spacing: -0.01em;
 	}
 
-	.mark:hover {
-		color: var(--ink);
+	.mark:hover .glyph {
+		border-color: #7d9bff;
 	}
 
-	.mark svg {
-		flex: none;
+	.mark:focus-visible,
+	nav a:focus-visible {
+		outline: 2px solid #7d9bff;
+		outline-offset: 3px;
+		border-radius: 6px;
 	}
 
 	nav {
 		display: flex;
-		gap: 1.35rem;
-		font-family: var(--font-mono);
-		font-size: 0.74rem;
-		letter-spacing: 0.1em;
-		text-transform: uppercase;
+		align-items: center;
+		gap: 0.3rem;
+		font-family: var(--font-display);
+		font-size: 0.95rem;
 	}
 
 	nav a {
 		text-decoration: none;
-		color: var(--ink-faint);
-		padding-block: 0.15rem;
-		border-bottom: 2px solid transparent;
+		color: #a9b3c3;
+		padding: 0.45rem 0.8rem;
+		border-radius: 6px;
 	}
 
 	nav a:hover {
-		color: var(--ink);
+		color: #eef1f6;
+		background: #151f30;
 	}
 
 	nav a.active {
-		color: var(--ink);
-		border-bottom-color: var(--mem);
+		color: #eef1f6;
+		background: #17223a;
 	}
 
-	@media (max-width: 460px) {
+	nav a.start {
+		margin-left: 0.5rem;
+		color: #0b1018;
+		background: #7d9bff;
+		font-weight: 600;
+	}
+
+	nav a.start:hover {
+		background: #a3b8ff;
+	}
+
+	@media (max-width: 560px) {
+		.bar {
+			height: 3.2rem;
+			gap: 0.6rem;
+		}
+
+		.name {
+			font-size: 1rem;
+		}
+
+		.glyph {
+			width: 30px;
+			height: 30px;
+		}
+
 		nav {
-			gap: 1rem;
-			font-size: 0.68rem;
+			font-size: 0.86rem;
+			gap: 0;
+		}
+
+		nav a {
+			padding: 0.4rem 0.5rem;
+		}
+
+		nav a.start {
+			display: none;
 		}
 	}
 </style>
