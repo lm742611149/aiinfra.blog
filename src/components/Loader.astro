@@ -1,0 +1,70 @@
+---
+/**
+ * Boot overlay: wordmark with a light sweeping under it, then lift.
+ * Inline styles/script so it paints before any stylesheet lands. Font stack
+ * falls back to system faces because Archivo may not be cached on a first
+ * visit — the sweep carries the moment, not the typeface.
+ * Self-destructs on load with a hard 2s ceiling; skipped under reduced-motion.
+ */
+---
+
+<div id="boot" aria-hidden="true">
+	<div class="bmark">AI Agent</div>
+</div>
+
+<style is:inline>
+	#boot {
+		position: fixed;
+		inset: 0;
+		z-index: 9999;
+		background: #0b0e11;
+		display: grid;
+		place-items: center;
+		transition: opacity 0.45s ease, visibility 0.45s ease;
+	}
+	#boot.done { opacity: 0; visibility: hidden; pointer-events: none; }
+	#boot .bmark {
+		position: relative;
+		padding-bottom: 10px;
+		font-family: Archivo, "Helvetica Neue", system-ui, sans-serif;
+		font-weight: 700;
+		font-size: 1.55rem;
+		letter-spacing: -0.022em;
+		color: #eaecef;
+		overflow: hidden;
+	}
+	#boot .bmark::after {
+		content: '';
+		position: absolute;
+		left: 0;
+		bottom: 0;
+		height: 2px;
+		width: 100%;
+		background: linear-gradient(90deg, transparent, #f0b90b, transparent);
+		animation: bootSweep 1.25s ease-in-out infinite;
+	}
+	@keyframes bootSweep {
+		0% { transform: translateX(-100%); }
+		100% { transform: translateX(100%); }
+	}
+	@media (prefers-reduced-motion: reduce) { #boot { display: none; } }
+</style>
+
+<script is:inline>
+	(function () {
+		var el = document.getElementById('boot');
+		if (!el) return;
+		if (matchMedia('(prefers-reduced-motion: reduce)').matches) { el.remove(); return; }
+		var t0 = Date.now();
+		function finish() {
+			var wait = Math.max(0, 560 - (Date.now() - t0));
+			setTimeout(function () {
+				el.classList.add('done');
+				setTimeout(function () { el.remove(); }, 500);
+			}, wait);
+		}
+		if (document.readyState === 'complete') finish();
+		else window.addEventListener('load', finish, { once: true });
+		setTimeout(finish, 2000);
+	})();
+</script>

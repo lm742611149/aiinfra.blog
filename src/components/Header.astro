@@ -1,5 +1,6 @@
 ---
 import { SITE_TITLE } from '../consts';
+import Loader from './Loader.astro';
 
 const path = Astro.url.pathname;
 const isCourse = path === '/course' || path.startsWith('/course/') || path.startsWith('/blog/agent-60/');
@@ -7,6 +8,7 @@ const isWriting = !isCourse && (path === '/blog' || path.startsWith('/blog/'));
 const isAbout = path === '/about' || path === '/about/';
 ---
 
+<Loader />
 <header class="site-header">
 	<div class="shell bar">
 		<a class="mark" href="/" aria-label={`${SITE_TITLE} 首页`}>
