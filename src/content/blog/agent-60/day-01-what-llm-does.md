@@ -200,6 +200,7 @@ def prompt_tokens(text: str) -> int:
         max_tokens=1,  # 只关心输入算了多少 token，输出 1 个就停
         extra_body={"thinking": {"type": "disabled"}},  # 非 DeepSeek 删掉这行
     )
+    assert resp.usage is not None  # SDK 把 usage 标成「可能为空」，先断言一下，编辑器就不报红线了
     return resp.usage.prompt_tokens
 
 
@@ -212,6 +213,8 @@ for name, text in SAMPLES.items():
 ```bash
 cd agent-60-lab && uv run w1/count_tokens.py
 ```
+
+如果你用 Zed、VS Code 这类带类型检查的编辑器，没有 `assert` 那行的话，`prompt_tokens` 下面会出现红色波浪线，提示 `"prompt_tokens" is not a known attribute of "None"`。原因是 openai SDK 把 `usage` 的类型写成了 `CompletionUsage | None`：协议允许服务端不返回用量，所以类型检查器要求你先排除 None。这只是静态检查的提示，不加 `assert` 照样能跑。加上它，一是消掉红线，二是万一真没返回用量，会在这一行直接报错，而不是在后面报一个看不懂的 `AttributeError`。后面的课凡是读 `resp.usage` 的地方，都是一样的道理。
 
 输出是三行，每行给出字符数、估算的 token 数和比例。把结果和 DeepSeek 文档的 0.3 / 0.6 对照一下。如果你手上还有别家的 key，换一下 `.env` 再跑一遍，比较两家分词器的差别。
 
