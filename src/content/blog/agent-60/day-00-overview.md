@@ -198,14 +198,21 @@ Agent 工程师要做的，是写一个程序让大模型来干这件事。程�
 
 - **uv**：Python 的项目和依赖管理工具，比 pip + venv 快很多，现在新项目基本都用它。装好 uv 之后它会帮你装 Python，不用另外去官网下。
 - **Git** 和一个 GitHub 账号：作品最后要放在 GitHub 上给面试官看。
-- **编辑器**：VS Code 或 Cursor 都行。装上 Python 插件。
+- **编辑器**：VS Code、Cursor、Zed 都行。装上 Python 插件。
 - **Docker Desktop**：W3 跑 pgvector、W5 跑 Langfuse、W6 部署都要用。现在可以先不装，W3 之前装好就行。
 
 ### API 账号
 
 这门课的代码默认用 **DeepSeek** 的 API。原因很实际：国内直接能连，不用代理；价格低；兼容 OpenAI 的接口格式，支持工具调用和 JSON 输出，整门课需要的能力都有。同一份代码改三个环境变量就能换成通义千问、Kimi、智谱、OpenAI 或者 Claude，Day 3 会专门讲怎么切。
 
-注册 DeepSeek 开放平台（platform.deepseek.com），实名后充值。先充 50 元就够前两周用。建好 API key 之后，立刻存进密码管理器，**不要贴进代码、不要提交到 git**。Day 2 会讲怎么用 `.env` 文件管理它。
+具体步骤：
+
+1. 打开 **platform.deepseek.com**（开放平台，和聊天用的 chat.deepseek.com 不是一个地方，账号通用），手机号登录。
+2. 左侧菜单点「API keys」，再点「创建 API key」，名字随便起，比如 `agent-60`。
+3. 弹出来那串 `sk-` 开头的字符**只显示这一次**，马上复制存好。关掉就看不到了，丢了只能删掉重建。
+4. 左侧点「充值」，用支付宝或微信先充 10 到 20 元。**不充值调用会直接报 402**，下面动手练习会讲。
+
+这个 key 等于你的钱包密码，**不要贴进代码、不要发到群里、不要提交到 git**。待会儿我们把它放进 `.env` 文件里。
 
 如果你在海外，或者公司给报销，也可以同时开一个 Claude 或 OpenAI 的账号做对比。不是必须的。
 
@@ -257,24 +264,58 @@ uv init --python 3.12
 uv add openai python-dotenv
 ```
 
-**第 3 步：写 `.env`，并让 git 忽略它。**
+`uv init` 后面**别加 `--package` 或 `--lib`**。加了的话 uv 会按「要发布的 Python 包」来建，多出一个 `src/agent_60_lab/` 目录，`pyproject.toml` 里也会多出 `[project.scripts]` 和 `[build-system]` 两段。这门课的代码是平铺的（`w1/ask.py`、`common/llm.py` 这样），用不上那套结构。已经建成这样也没关系，把 `src` 目录和那两段配置删掉就行。
+
+建完看一眼目录，大概是这几个文件：`pyproject.toml`、`.python-version`、`README.md`、`uv.lock`、`.venv/`，普通的 `uv init` 还会给一个 `main.py`。网上旧教程里说的 `hello.py` 是老版本 uv 的叫法，现在叫 `main.py`，是同一个东西。如果你的目录里两个都没有，自己新建一个 `main.py` 就行。
+
+顺手检查一下 `pyproject.toml` 里的 `authors`：uv 会从你电脑上 git 的全局配置里读名字和邮箱。如果那是公司邮箱，而这个仓库以后要放到你自己的 GitHub 上，在这个目录里改成个人的：
 
 ```bash
-# agent-60-lab/.env  （这一行注释不要写进文件）
+git config user.email 你的个人邮箱
+```
+
+然后把 `pyproject.toml` 里那一行邮箱也手动改掉。
+
+**第 3 步：写 `.env`，并让 git 忽略它。**
+
+`.env` **不会自动生成**，任何工具都不会替你建，因为里面是你自己的 key。在项目根目录新建一个文件，名字就叫 `.env`（前面有个点，没有扩展名），内容：
+
+```bash
+# agent-60-lab/.env
 LLM_BASE_URL=https://api.deepseek.com
 LLM_API_KEY=sk-你的key
 LLM_MODEL=deepseek-flash
 ```
 
+建好以后在 Finder 里可能看不见它：以点开头的文件在 macOS 上默认隐藏，按 `Cmd + Shift + .` 就能显示，终端里用 `ls -a`。编辑器的文件树一般能直接看到。
+
+然后让 git 忽略它。新一点的 uv 有时不会生成 `.gitignore`，没有就自己建一个，至少写这几行：
+
 ```bash
-echo ".env" >> .gitignore
-git status   # 确认 .env 不在待提交列表里
+# agent-60-lab/.gitignore
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+.DS_Store
 ```
+
+检查一下有没有生效：
+
+```bash
+git check-ignore -v .env   # 打印出 .gitignore 的那一行，说明 .env 已经被忽略
+git status                 # 待提交列表里不应该出现 .env
+```
+
+习惯上还会建一个 `.env.example`，内容和 `.env` 一样，只是 key 换成占位符 `sk-你的key`。它可以提交到 git，别人拿到你的仓库照着填就行。
 
 **第 4 步：第一次调用。**
 
+把 `main.py` 的内容换成下面这段（文件叫什么不重要，叫 `hello.py` 也一样，运行时对上名字就行）：
+
 ```python
-# agent-60-lab/hello.py
+# agent-60-lab/main.py
 import os
 
 from dotenv import load_dotenv
@@ -294,16 +335,37 @@ print(resp.usage)
 ```
 
 ```bash
-uv run hello.py
+uv run main.py
 ```
 
-输出大致长这样：第一行是模型的一句自我介绍，第二行是一个 `CompletionUsage(...)` 对象，里面有 `prompt_tokens`、`completion_tokens`、`total_tokens` 几个数字。
+我自己跑出来是这样的（模型每次措辞会不一样）：
+
+```text
+我是DeepSeek，一个由深度求索公司创造的AI助手，随时准备用热情而细腻的方式帮你解答问题、处理任务！
+CompletionUsage(completion_tokens=29, prompt_tokens=8, total_tokens=37, ..., prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=8)
+```
+
+第二行是这次请求的账单：你的问题占了 8 个 token，回答用了 29 个。按上面的价格算，8 × 2 ÷ 100 万 + 29 × 8 ÷ 100 万，大约 0.00025 元。充 10 块够跑四万次这样的请求。`prompt_cache_miss_tokens` 是没命中缓存、按全价算的输入，Day 38 讲缓存的时候会再碰到它。
+
+第一次跑最常见的几个报错，对着查：
+
+| 报错 | 原因 | 怎么办 |
+| --- | --- | --- |
+| `Error code: 402 ... Insufficient Balance` | 账户没钱。说明 key 和代码都对了，请求已经到了 DeepSeek | 去开放平台「充值」，充完马上能用 |
+| `Error code: 401` | key 不对，或者复制时多了空格、少了字符 | 回平台重新建一个 key，整串复制 |
+| `KeyError: 'LLM_BASE_URL'` | 没读到 `.env`：文件没建、名字写错（比如 `env`、`.env.txt`），或者不在当前目录 | 确认 `.env` 在你执行 `uv run` 的那个目录里 |
+| `ModuleNotFoundError: No module named 'openai'` | 依赖没装，或者没用 `uv run` 而是直接 `python` | 先 `uv add openai python-dotenv`，再用 `uv run` 跑 |
+| `Connection error` / 超时 | 网络问题。DeepSeek 国内能直连，开了全局代理反而可能出问题 | 关掉代理试试；用国外厂商时则相反，要开代理 |
 
 如果你用的不是 DeepSeek，把 `extra_body` 那一行删掉（别家不认这个参数，可能报 400），再改 `.env` 里的三个值就行。
 
-**第 5 步：写一份自己的岗位笔记。** 去 Boss 直聘、猎聘或 LinkedIn 搜「Agent 开发」「大模型应用」，找 10 份你所在城市的 JD，把要求抄到一个表里，数一数每个关键词出现几次。这份表留着，Day 56 写简历的时候要用。
+**第 5 步：写一份自己的岗位笔记。** 这一步不写代码，是给自己定个靶子。去 Boss 直聘、猎聘或 LinkedIn 搜「Agent 开发」「大模型应用」，找 10 份你所在城市的 JD，做一张表：每行一份 JD（公司、职位、薪资、年限、学历），后面列关键词（Python、RAG、工具调用、MCP、评测、LangChain、前端/全栈……），数一数每个关键词在 10 份里出现了几次。
 
-**验收标准：** `uv run hello.py` 能打印出模型回复和 token 用量；`.env` 没有进 git；手里有一张 10 份 JD 的关键词表。
+为什么要做：一是开学前就知道招聘方最看重哪几样，学到那几天心里有数；二是 Day 56 写简历时拿这张表逐项对照，哪些你有项目能证明、哪些还缺，一目了然；三是用你自己城市的薪资和年限，比看全国平均更贴近现实。
+
+不想全部手抄的话，可以先看这个站的《[880 条真实 JD 拆解](/blog/agent-jd-report-2026-10/)》，里面已经数好了国内外的整体比例。但至少自己完整读两三份 JD，体会一下「有真实落地经验」「熟悉 Agent 底层原理」这类话在招聘方那里具体指什么。
+
+**验收标准：** `uv run main.py` 能打印出模型回复和 token 用量；`git check-ignore .env` 有输出，`.env` 没有进 git；手里有一张 10 份 JD 的关键词表。
 
 ## 名词解释
 
