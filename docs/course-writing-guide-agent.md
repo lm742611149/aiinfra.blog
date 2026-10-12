@@ -256,6 +256,108 @@ curl -s "https://www.youtube.com/results?search_query=..." | grep -o '"videoId":
 | 59 | day-59-job-search-salary | Day 59 · 求职渠道与薪资:国内、新加坡、海外远程,怎么找、怎么谈 | 渠道(Boss/猎聘/脉脉/LinkedIn/远程岗网站,查证);2026 薪资区间(给口径与出处,标估计);面试流程;谈薪技巧;offer 比较;避坑(假 AI 岗、外包、培训贷)。 |
 | 60 | day-60-graduation | Day 60 · 结业:60 天回顾、能力自检清单、接下来怎么进阶 | 能力自检表(对照 JD 打勾);作品清单;没达标怎么补;后续 3 个月进阶方向(深入评测、语音 Agent、Computer Use/浏览器 Agent、微调入门、开源贡献);保持更新的信息源。 |
 
+
+## 5B. 进阶篇:资深 Agent 工程师(Day 61–110)
+
+**定位**:接在 Day 60 之后,目标是资深 / Staff 级别(国内 JD 年包 P75 68 万以上那一档、海外 Senior/Staff)。读者已经学完 Day 0–60、做完 SupportPilot。进阶篇不再手把手教语法和 API,重点是**判断力、规模、深度和影响力**:为什么这样设计、在 10 倍流量和 10 个团队下还成不成立、怎么用数据说服别人、怎么带人。每篇仍用同一骨架(第 2 节),「动手练习」可以是设计题、实验、读源码、写设计文档,不一定是写代码;复习日(Day 67/74/81/88/95/110)同基础篇。
+
+**资深的标准**(每篇都要往这几条上靠):能在不确定里做取舍并写清楚理由;能设计评测证明自己是对的;能估算成本、延迟、风险;能把系统做成别人能复用的平台;能读论文和源码自己找答案;能写设计文档、能面对 Staff 级系统设计面试。
+
+**贯穿项目**:进阶毕业项目 **AgentOps 平台**(仓库 `agentops/`):把 SupportPilot 升级成一个多租户 Agent 平台:统一模型网关(路由、限流、配额、成本归因)、MCP 网关(工具注册、OAuth 鉴权、权限审计)、持久化执行(长任务、断点续跑)、评测平台(离线回归 + 线上 A/B)、可观测(OTel 全链路 + 成本看板),再加一个用 SupportPilot 的数据微调出来的小模型做分类路由。W10–W14 每周的练习都为它准备零件。
+
+### W10 · Agent 架构深水区(Day 61–67)
+
+| Day | slug | 标题 | 内容要点 |
+| --- | --- | --- | --- |
+| 61 | day-61-senior-overview | Day 61 · 进阶开学:资深 Agent 工程师和中级差在哪 | 用 JD 数据(5–10 年中位 54 万、P75 68 万、15% ≥ 80 万;海外 Staff 8 年以上)讲资深岗位要什么;中级 vs 资深能力对照表;进阶 50 天地图;AgentOps 平台项目介绍;学习方式变化(读论文、读源码、写设计文档)。 |
+| 62 | day-62-harness-design | Day 62 · Agent Harness 设计:把循环做成可复用的运行时 | harness 的组成(循环、工具层、上下文管理、权限、钩子、子 Agent、状态持久化);读 Claude Agent SDK / OpenAI Agents SDK / LangGraph 的运行时设计(查当前源码);自己设计一个 harness 接口;扩展点和约束。 |
+| 63 | day-63-context-at-scale | Day 63 · 上下文工程进阶:长任务里的压缩、外部记忆和缓存命中 | 上下文腐烂实证与评测;分层压缩策略;笔记文件/外部记忆(scratchpad、todo、NOTES.md 模式);prompt caching 友好的上下文布局(前缀稳定);工具结果分页与引用;实验:同任务不同策略的成功率与成本对比设计。 |
+| 64 | day-64-memory-systems | Day 64 · 记忆系统:短期、长期、情景、语义,怎么写、怎么忘 | 记忆分类;写入策略(何时写、写什么、谁来写);检索与冲突;遗忘与过期;隐私和用户可控;对比 mem0、Letta(MemGPT)、LangGraph store 等(查证现状);设计 SupportPilot 的客户记忆。 |
+| 65 | day-65-durable-execution | Day 65 · 持久化执行:跑几小时的 Agent 怎么不怕重启 | durable execution 概念;Temporal / Restate / LangGraph checkpoint / DBOS 对比(查证);幂等、补偿(saga)、人工步骤;Agent 步骤的确定性与重放问题;实现一个能断点续跑的长任务。 |
+| 66 | day-66-orchestration-patterns | Day 66 · 编排模式的取舍:单 Agent、工作流、多 Agent、混合 | 用评测数据比较几种架构;Anthropic 多 Agent 研究系统、Cognition「Don't build multi-agents」两种观点对照;任务分解粒度;共享状态 vs 消息传递;失败隔离;给出决策树。 |
+| 67 | day-67-w10-review | Day 67 · W10 复习:写一份 Agent 运行时的设计文档 | 知识地图;按设计文档模板(背景、目标/非目标、方案、取舍、风险、评测计划)写 AgentOps 运行时设计;资深面试题;坑清单。 |
+
+### W11 · 评测科学(Day 68–74)
+
+| Day | slug | 标题 | 内容要点 |
+| --- | --- | --- | --- |
+| 68 | day-68-eval-as-product | Day 68 · 评测是产品:评测体系的组织、流程和所有权 | 评测在团队里的位置;谁写用例、谁维护、怎么评审;评测与 PRD 绑定;eval-driven development 在多人团队里怎么落地;评测平台需求。 |
+| 69 | day-69-statistics-for-evals | Day 69 · 评测里的统计学:样本量、置信区间、显著性 | 为什么 50 条用例上 2 个点的提升不算数;二项分布置信区间;配对比较(McNemar);bootstrap;多次采样与方差;最小可检测差异;Python 实现。 |
+| 70 | day-70-judge-at-scale | Day 70 · 大规模 LLM 评审:校准、一致性、成本 | judge 与人工一致率(Cohen's kappa);偏差测量与纠正;多 judge 投票;judge 版本管理;成本控制(抽样、小模型 judge);judge 漂移监控。 |
+| 71 | day-71-online-eval-ab | Day 71 · 线上评测:A/B 实验、灰度、隐式反馈 | 离线分数和线上指标脱节的原因;A/B 实验设计(分流单位、护栏指标、实验时长);灰度与回滚;隐式反馈(转人工率、重问率、采纳率);实验平台最小实现。 |
+| 72 | day-72-red-teaming | Day 72 · 自动化红队:用 Agent 攻击 Agent | 攻击分类(注入、越权、数据外泄、拒绝服务、有害输出);自动化红队工具(查证:promptfoo、garak、PyRIT 等);攻击用例生成;把红队结果纳入回归;安全评测指标。 |
+| 73 | day-73-benchmark-design | Day 73 · 设计自己的 benchmark:从 τ-bench、SWE-bench 学方法 | 公开 benchmark 怎么构造(环境、任务、判定、污染防护);τ-bench 的用户模拟与 pass^k;SWE-bench Verified 的人工筛选;给 SupportPilot 设计一个可复现的 benchmark。 |
+| 74 | day-74-w11-review | Day 74 · W11 复习:给 AgentOps 设计评测平台 | 知识地图;评测平台设计文档;统计检验脚本整合;资深面试题(「怎么证明你的改动有效」);坑清单。 |
+
+### W12 · 模型层:自部署、微调与强化学习(Day 75–81)
+
+| Day | slug | 标题 | 内容要点 |
+| --- | --- | --- | --- |
+| 75 | day-75-model-selection | Day 75 · 选模型是工程决策:闭源、开源、大小模型怎么搭 | 选型维度(能力、工具调用可靠性、延迟、价格、数据合规、可控性);用自己的评测集选型而不是看榜;多模型路由策略;开源模型现状(2026,查证:Qwen、DeepSeek、Llama、GLM 等);总拥有成本算式。 |
+| 76 | day-76-self-hosting | Day 76 · 自部署推理:vLLM / SGLang 上线一个开源模型 | 什么时候值得自部署(成本拐点算式、合规);vLLM/SGLang 部署与 OpenAI 兼容接口;KV cache、批处理、吞吐和延迟直觉(不深入 CUDA);量化(AWQ/GPTQ/FP8)对效果和成本的影响;云 GPU 价格(查证);压测方法。 |
+| 77 | day-77-fine-tuning-lora | Day 77 · 微调入门:什么时候该微调,LoRA SFT 跑一遍 | 提示词 vs RAG vs 微调的决策;数据准备(从 SupportPilot trace 造训练集);LoRA/QLoRA 原理直觉;用 Unsloth / TRL / LLaMA-Factory 跑一次 SFT(查证当前用法,给 Colab/云 GPU 方案);评测微调效果。 |
+| 78 | day-78-preference-tuning | Day 78 · 偏好优化:DPO 让模型学会「更好的回答」 | RLHF/DPO/ORPO/KTO 直觉对比;偏好数据从哪来(人工标注、judge、线上反馈);DPO 实操;过拟合与能力退化检查。 |
+| 79 | day-79-distillation-routing | Day 79 · 蒸馏与路由:让小模型接住八成流量 | 用大模型输出蒸馏小模型;分类/路由小模型;置信度与回退大模型;成本与质量的帕累托曲线;实验设计。 |
+| 80 | day-80-rl-for-agents | Day 80 · 强化学习与 Agent:RLVR、GRPO 和工具使用训练 | 为什么 2025 年后推理模型和 Agent 能力靠 RL 提升;可验证奖励(RLVR);GRPO 直觉;Agent 环境与奖励设计;开源框架现状(查证:verl、OpenRLHF、TRL 等);一个最小可跑的 GRPO 玩具实验;这块对应用工程师的意义边界。 |
+| 81 | day-81-w12-review | Day 81 · W12 复习:给 AgentOps 训练一个路由小模型 | 知识地图;完整流程:数据 → LoRA → 评测 → 部署 → 路由;成本对比表(留空);资深面试题;坑清单。 |
+
+### W13 · 平台化与规模(Day 82–88)
+
+| Day | slug | 标题 | 内容要点 |
+| --- | --- | --- | --- |
+| 82 | day-82-platform-architecture | Day 82 · 从一个 Agent 到一个平台:多租户 Agent 平台架构 | 平台化的动机(N 个团队重复造轮子);多租户隔离(数据、配额、密钥、模型);控制面与数据面;平台 API 设计;架构图;和 Dify/Coze 这类平台的差异。 |
+| 83 | day-83-model-gateway | Day 83 · 模型网关:路由、限流、配额、降级、成本归因 | 网关职责;LiteLLM / Portkey / 自研对比(查证);多供应商故障切换;令牌桶限流;租户配额;成本按租户/功能归因;缓存层;实现一个最小网关。 |
+| 84 | day-84-mcp-gateway-auth | Day 84 · MCP 网关与鉴权:OAuth、工具注册、权限审计 | 远程 MCP 的 OAuth 2.1 流程(查证当前规范);工具注册中心;按租户/用户授权;审计日志;MCP 安全风险(工具投毒、rug pull、混淆代理);企业内 MCP 治理。 |
+| 85 | day-85-observability-at-scale | Day 85 · 规模化可观测:OTel 全链路、采样、成本看板、告警 | 高流量下 trace 采样策略;GenAI 语义约定落地;指标体系(成功率、转人工率、P95、单任务成本);告警设计;日志里的隐私;看板示例。 |
+| 86 | day-86-governance-compliance | Day 86 · 治理与合规:数据驻留、PII、审计、模型备案 | 企业客户问的安全问卷;数据驻留与跨境(国内《生成式人工智能服务管理暂行办法》与备案,查证当前要求);PII 处理;审计与留存;EU AI Act 一句话(查证);对技术方案的影响。 |
+| 87 | day-87-incident-response | Day 87 · Agent 事故复盘:线上出事了怎么查、怎么防 | Agent 事故类型(批量错误回复、越权操作、成本暴涨、注入攻击);on-call 手册;用 trace 定位根因;复盘模板(无责复盘);防再发机制(评测用例、护栏、熔断)。 |
+| 88 | day-88-w13-review | Day 88 · W13 复习:AgentOps 平台架构评审 | 知识地图;完整平台设计文档 + 架构评审清单;资深面试题;坑清单。 |
+
+### W14 · 前沿形态(Day 89–95)
+
+| Day | slug | 标题 | 内容要点 |
+| --- | --- | --- | --- |
+| 89 | day-89-coding-agents-internals | Day 89 · Coding Agent 内部:读 SWE-agent / OpenHands / Codex 的设计 | 代码 Agent 的工具集(编辑、搜索、执行、测试);ACI(agent-computer interface)设计;仓库上下文检索;沙箱;评测(SWE-bench);读一个开源实现的关键代码(查证当前仓库)。 |
+| 90 | day-90-computer-browser-use | Day 90 · Computer Use 与 Browser Agent:让 Agent 用图形界面 | 截图坐标 vs DOM/可访问性树;各家 computer use 能力现状(查证);Playwright/browser-use 实现;可靠性和安全问题;适用和不适用的场景。 |
+| 91 | day-91-voice-agents | Day 91 · 语音 Agent:实时对话的延迟预算 | 级联(ASR→LLM→TTS)vs 端到端实时模型;延迟预算拆解;打断与轮次检测;LiveKit/Pipecat 等框架(查证);国内方案;电话客服场景。 |
+| 92 | day-92-deep-research-agents | Day 92 · Deep Research Agent:长链路检索、规划和写作 | 架构(规划、并行搜索、阅读、综合、引用);开源实现对照(查证);质量评测(事实性、覆盖度、引用准确);成本控制。 |
+| 93 | day-93-agent-protocols | Day 93 · Agent 互联:A2A、MCP 与 Agent 间协作的协议之争 | A2A 协议现状(查证);与 MCP 的分工;Agent 身份与授权;跨组织 Agent 协作的信任问题;判断哪些会成为标准。 |
+| 94 | day-94-agent-product-ux | Day 94 · Agent 的产品与交互:人在回路里的体验设计 | 自主程度分级;透明度(展示计划、步骤、引用);可中断、可撤销;信任建立;失败时的体验;和 PM、设计师协作。 |
+| 95 | day-95-w14-review | Day 95 · W14 复习:前沿技术选型报告 | 知识地图;写一份「我们团队明年该不该做 X」的技术选型报告模板;资深面试题;坑清单。 |
+
+### W15–W16 · 进阶毕业项目 AgentOps 平台(Day 96–105)
+
+| Day | slug | 标题 | 内容要点 |
+| --- | --- | --- | --- |
+| 96 | day-96-agentops-kickoff | Day 96 · AgentOps 开题:设计文档、里程碑、验收指标 | 完整设计文档;从 SupportPilot 迁移的范围;仓库结构;里程碑;验收指标(多租户隔离测试、网关 P95、评测平台可用、成本归因准确)。 |
+| 97 | day-97-agentops-gateway | Day 97 · AgentOps(一):模型网关与多租户 | 实现网关:路由、限流、配额、故障切换、成本归因;租户模型;测试。 |
+| 98 | day-98-agentops-mcp-hub | Day 98 · AgentOps(二):MCP 工具中心与鉴权 | 工具注册、OAuth、按租户授权、审计日志;把 SupportPilot 的工具迁进来。 |
+| 99 | day-99-agentops-runtime | Day 99 · AgentOps(三):持久化运行时与长任务 | harness + durable execution;任务队列;断点续跑;人工步骤。 |
+| 100 | day-100-agentops-eval-platform | Day 100 · AgentOps(四):评测平台与线上实验 | 离线回归、统计检验、judge 校准、A/B 分流、报告页。 |
+| 101 | day-101-agentops-router-model | Day 101 · AgentOps(五):接入微调小模型做路由 | 把 Day 81 的小模型部署进网关;置信度回退;成本质量对比。 |
+| 102 | day-102-agentops-observability | Day 102 · AgentOps(六):全链路可观测与成本看板 | OTel、采样、看板、告警。 |
+| 103 | day-103-agentops-security | Day 103 · AgentOps(七):安全加固与红队回归 | 自动化红队接入 CI;权限与审计核查;事故演练。 |
+| 104 | day-104-agentops-load-test | Day 104 · AgentOps(八):压测、容量规划与上线 | 压测方法与工具;容量估算;部署(K8s 或 compose,给两种);上线清单。 |
+| 105 | day-105-agentops-showcase | Day 105 · AgentOps(九):包装成资深级作品 | 设计文档、架构决策记录(ADR)、评测报告、成本分析、演示视频、技术博客;招聘方怎么看资深作品。 |
+
+### W17 · 资深求职与影响力(Day 106–110)
+
+| Day | slug | 标题 | 内容要点 |
+| --- | --- | --- | --- |
+| 106 | day-106-design-docs-adr | Day 106 · 写设计文档和 ADR:资深工程师的主要产出 | 设计文档结构与范例;ADR;怎么写取舍;评审时怎么应对质疑;用 AgentOps 的文档做示范。 |
+| 107 | day-107-staff-system-design | Day 107 · Staff 级系统设计面试:三道真题完整示范 | 题目(设计企业级 Agent 平台、设计十万并发客服 Agent、设计代码 Agent 的评测体系);资深答题框架(从业务目标、约束、规模出发,讲取舍和演进);追问清单。 |
+| 108 | day-108-lead-and-influence | Day 108 · 带人和推动:技术方案怎么说服老板和其他团队 | 用 ROI 和评测数据说话;写给管理层的一页纸;带新人做 Agent 项目;跨团队平台推广;处理「AI 不靠谱」的质疑。 |
+| 109 | day-109-open-source-brand | Day 109 · 开源与技术影响力:贡献、写作、演讲 | 给 Agent 框架/MCP 生态提 PR 的路径;写技术博客;分享与演讲;GitHub 作品集;影响力对资深面试和远程岗的作用(引用 JD 数据)。 |
+| 110 | day-110-senior-graduation | Day 110 · 进阶结业:资深自检清单、谈薪和下一步 | 资深能力自检表;资深岗位渠道与谈薪(国内 P75/80 万+ 档、新加坡、海外远程的现实限制,用 docs/jd-research 数据);保持前沿的信息源;之后的方向(专精某领域、转 AI 平台/infra、做产品)。 |
+
+**进阶篇的写作要求补充**:
+- 读者已有基础,可以省略基础解释,但新名词仍要首次解释。
+- 多引用一手资料:论文(arXiv,给链接并验证)、官方工程博客、开源仓库源码(给到具体文件路径)。
+- 「动手练习」允许是设计文档、实验报告、源码阅读笔记;每篇都要有明确的产出物和验收标准。
+- 每篇至少一道「资深面试题」(标「资深面试题」),答案要体现取舍和规模思维。
+- 需要 GPU 的实验(微调、自部署、RL)给 Colab 免费方案和云 GPU 方案两条路,价格查证;不能编造训练结果,结果表留空。
+- Day 60 的「明天预告」改为预告 Day 61 进阶篇。
+
 ## 6. 完成后自检(每篇)
 
 - [ ] frontmatter 齐全,`day`、`title` 与规划表一致,`pubDate: 2026-10-12`,tags 最后一个 `agent-60`。

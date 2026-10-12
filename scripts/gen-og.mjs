@@ -28,14 +28,14 @@ const COURSE_TITLE = '60 天 AI Agent 工程师速成课';
 
 // Light palette from global.css. OG cards are always light — dark cards vanish on X's dark UI borders.
 const C = {
-	paper: '#f7f8fa',
-	raised: '#ffffff',
-	ink: '#0f1520',
-	inkSoft: '#3a4352',
-	inkFaint: '#6b7483',
-	rule: '#d3d8e0',
-	mem: '#2b53d8',
-	compute: '#b26a12',
+	paper: '#0b0e11',
+	raised: '#181a20',
+	ink: '#eaecef',
+	inkSoft: '#b7bdc6',
+	inkFaint: '#848e9c',
+	rule: '#2b3139',
+	mem: '#f0b90b',
+	compute: '#0ecb81',
 };
 // Latin faces first so hyphens/quotes come from Helvetica; Pango falls back per glyph to PingFang for CJK.
 const FONT_SANS = "'Archivo', 'Helvetica Neue', Helvetica, Arial, 'PingFang SC', 'Hiragino Sans GB', sans-serif";

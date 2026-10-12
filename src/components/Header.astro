@@ -11,10 +11,10 @@ const isAbout = path === '/about' || path === '/about/';
 	<div class="shell bar">
 		<a class="mark" href="/" aria-label={`${SITE_TITLE} 首页`}>
 			<span class="glyph" aria-hidden="true">
-				<svg viewBox="0 0 28 28" width="28" height="28">
-					<path d="M 14 5 A 9 9 0 1 1 5.6 17.2" fill="none" stroke="#7d9bff" stroke-width="2.4" stroke-linecap="round"></path>
-					<path d="M 2.6 13.6 L 5.6 17.6 L 9.6 14.8" fill="none" stroke="#7d9bff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></path>
-					<circle cx="14" cy="5" r="2.6" fill="#e3a54e"></circle>
+				<svg viewBox="0 0 28 28" width="22" height="22">
+					<path d="M 14 5.5 A 8.5 8.5 0 1 1 6.1 17" fill="none" stroke="#0b0e11" stroke-width="2.8" stroke-linecap="round"></path>
+					<path d="M 3.2 13.8 L 6.1 17.4 L 10 14.9" fill="none" stroke="#0b0e11" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"></path>
+					<circle cx="14" cy="14" r="2.6" fill="#0b0e11"></circle>
 				</svg>
 			</span>
 			<span class="name">{SITE_TITLE}</span>
@@ -35,10 +35,10 @@ const isAbout = path === '/about' || path === '/about/';
 		position: sticky;
 		top: 0;
 		z-index: 40;
-		background: #0b1018;
+		background: #0b0e11;
 		backdrop-filter: saturate(140%) blur(10px);
 		-webkit-backdrop-filter: saturate(140%) blur(10px);
-		border-bottom: 1px solid #1f2a3a;
+		border-bottom: 1px solid #2b3139;
 	}
 
 	.bar {
@@ -54,7 +54,7 @@ const isAbout = path === '/about' || path === '/about/';
 		align-items: center;
 		gap: 0.65rem;
 		text-decoration: none;
-		color: #eef1f6;
+		color: #eaecef;
 	}
 
 	.glyph {
@@ -62,9 +62,9 @@ const isAbout = path === '/about' || path === '/about/';
 		place-items: center;
 		width: 34px;
 		height: 34px;
-		border-radius: 8px;
-		background: #131c2b;
-		border: 1px solid #24314a;
+		border-radius: 9px;
+		background: #f0b90b;
+		box-shadow: 0 0 0 1px rgba(240, 185, 11, 0.35), 0 4px 14px -4px rgba(240, 185, 11, 0.55);
 	}
 
 	.name {
@@ -75,12 +75,12 @@ const isAbout = path === '/about' || path === '/about/';
 	}
 
 	.mark:hover .glyph {
-		border-color: #7d9bff;
+		background: #fcd535;
 	}
 
 	.mark:focus-visible,
 	nav a:focus-visible {
-		outline: 2px solid #7d9bff;
+		outline: 2px solid #f0b90b;
 		outline-offset: 3px;
 		border-radius: 6px;
 	}
@@ -95,30 +95,30 @@ const isAbout = path === '/about' || path === '/about/';
 
 	nav a {
 		text-decoration: none;
-		color: #a9b3c3;
+		color: #b7bdc6;
 		padding: 0.45rem 0.8rem;
 		border-radius: 6px;
 	}
 
 	nav a:hover {
-		color: #eef1f6;
-		background: #151f30;
+		color: #eaecef;
+		background: #1e2329;
 	}
 
 	nav a.active {
-		color: #eef1f6;
-		background: #17223a;
+		color: #eaecef;
+		background: #2b3139;
 	}
 
 	nav a.start {
 		margin-left: 0.5rem;
-		color: #0b1018;
-		background: #7d9bff;
+		color: #0b0e11;
+		background: #f0b90b;
 		font-weight: 600;
 	}
 
 	nav a.start:hover {
-		background: #a3b8ff;
+		background: #fcd535;
 	}
 
 	@media (max-width: 560px) {

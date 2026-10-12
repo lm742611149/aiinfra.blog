@@ -233,20 +233,20 @@ const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 	.read-progress span {
 		display: block;
 		height: 100%;
-		background: #7d9bff;
+		background: #f0b90b;
 		transform: scaleX(0);
 		transform-origin: 0 50%;
 	}
 
 	/* ---------- Dark header band, same stage as the home page ---------- */
 	.post-stage {
-		--s-bg: #0b1018;
-		--s-rule: #1f2a3a;
-		--s-ink: #eef1f6;
-		--s-soft: #a9b3c3;
-		--s-faint: #6f7b8d;
-		--s-blue: #7d9bff;
-		--s-amber: #e3a54e;
+		--s-bg: #0b0e11;
+		--s-rule: #2b3139;
+		--s-ink: #eaecef;
+		--s-soft: #b7bdc6;
+		--s-faint: #848e9c;
+		--s-blue: #f0b90b;
+		--s-amber: #0ecb81;
 		background:
 			radial-gradient(circle at 1px 1px, var(--s-rule) 1px, transparent 0) 0 0 / 22px 22px,
 			var(--s-bg);
@@ -389,12 +389,12 @@ const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 	}
 
 	.tick.done a {
-		background: #2c3e6e;
+		background: #6b5310;
 	}
 
 	.tick.here a {
 		background: var(--s-blue);
-		box-shadow: 0 0 0 3px rgba(125, 155, 255, 0.25);
+		box-shadow: 0 0 0 3px rgba(240, 185, 11, 0.25);
 	}
 
 	.tick a:hover,

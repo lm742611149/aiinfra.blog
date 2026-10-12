@@ -7,24 +7,24 @@
 
 :root {
 	/* Surfaces — cool grey paper, not cream */
-	--paper: #f7f8fa;
+	--paper: #fafafa;
 	--paper-raised: #ffffff;
-	--ink: #0f1520;
-	--ink-soft: #3a4352;
-	--ink-faint: #6b7483;
-	--rule: #d3d8e0;
-	--rule-soft: #e2e6ec;
+	--ink: #1e2329;
+	--ink-soft: #474d57;
+	--ink-faint: #707a8a;
+	--rule: #e6e8ea;
+	--rule-soft: #eef0f2;
 
 	/* The two regimes */
-	--mem: #2b53d8;
-	--mem-wash: #dfe5fb;
-	--compute: #b26a12;
-	--compute-wash: #f6e8d3;
+	--mem: #9a6c00;
+	--mem-wash: #fdf3d1;
+	--compute: #03875a;
+	--compute-wash: #dcf5ea;
 
 	/* Code surface */
-	--code-bg: #171d28;
-	--code-fg: #d7dce6;
-	--code-rule: #2b3444;
+	--code-bg: #181a20;
+	--code-fg: #eaecef;
+	--code-rule: #2b3139;
 
 	/* Type */
 	--font-display: var(--font-archivo), var(--font-cjk-sans), 'Helvetica Neue', 'PingFang SC',
@@ -41,22 +41,22 @@
 
 @media (prefers-color-scheme: dark) {
 	:root {
-		--paper: #0e1319;
-		--paper-raised: #151c25;
-		--ink: #eef1f6;
-		--ink-soft: #b4bdcb;
-		--ink-faint: #7f8a99;
-		--rule: #262f3b;
-		--rule-soft: #1c242e;
+		--paper: #0b0e11;
+		--paper-raised: #181a20;
+		--ink: #eaecef;
+		--ink-soft: #b7bdc6;
+		--ink-faint: #848e9c;
+		--rule: #2b3139;
+		--rule-soft: #1e2329;
 
-		--mem: #7d9bff;
-		--mem-wash: #1a2540;
-		--compute: #dfa14a;
-		--compute-wash: #2e2415;
+		--mem: #f0b90b;
+		--mem-wash: #2b2410;
+		--compute: #0ecb81;
+		--compute-wash: #0f2a20;
 
-		--code-bg: #0a0e13;
-		--code-fg: #cdd4e0;
-		--code-rule: #1f2733;
+		--code-bg: #121418;
+		--code-fg: #eaecef;
+		--code-rule: #2b3139;
 	}
 }
 
