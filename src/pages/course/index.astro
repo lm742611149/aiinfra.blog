@@ -4,42 +4,31 @@ import BaseHead from '../../components/BaseHead.astro';
 import Footer from '../../components/Footer.astro';
 import Header from '../../components/Header.astro';
 import { COURSE_SERIES, COURSE_TITLE, SITE_TITLE } from '../../consts';
+import { weekOf } from '../../lib/course';
 import { breadcrumbSchema } from '../../lib/seo';
-
-const TOTAL_DAYS = 61; // Day 0 + Day 1–60
 
 const days = (
 	await getCollection('blog', ({ data }) => !data.draft && data.series === COURSE_SERIES && data.day !== undefined)
 ).sort((a, b) => a.data.day! - b.data.day!);
 
-// Group into the plan's weeks. Day 0 is the prologue; W7–W8 (Day 43–54) are the capstone.
-const weekOf = (day: number) => {
-	if (day === 0) return 0;
-	if (day <= 42) return Math.ceil(day / 7);
-	if (day <= 54) return 7;
-	return 9;
-};
-const WEEK_TITLES: Record<number, string> = {
-	0: '序章',
-	1: 'W1 · 地基:大模型与 API',
-	2: 'W2 · 工具调用与 Agent 循环',
-	3: 'W3 · 上下文工程与 RAG',
-	4: 'W4 · MCP、框架与多 Agent',
-	5: 'W5 · 评测与可观测',
-	6: 'W6 · 生产化',
-	7: 'W7–W8 · 毕业项目 SupportPilot',
-	9: 'W9 · 第二作品与求职',
-};
-const byMonth = new Map<number, typeof days>();
-for (const d of days) {
-	const m = weekOf(d.data.day!);
-	byMonth.set(m, [...(byMonth.get(m) ?? []), d]);
-}
-const months = [...byMonth.keys()].sort((a, b) => a - b);
-const pct = Math.round((days.length / TOTAL_DAYS) * 1000) / 10;
+const WEEKS = [
+	{ w: 0, tag: '00', name: '序章', title: '先把岗位看清楚', out: '知道要学什么、花多少钱、两个月能到哪', range: 'Day 0' },
+	{ w: 1, tag: 'W1', name: '第一周', title: '大模型与 API', out: '命令行聊天机器人', range: 'Day 1–7' },
+	{ w: 2, tag: 'W2', name: '第二周', title: '工具调用与 Agent 循环', out: '会查天气、读文件、搜网页的 Agent', range: 'Day 8–14' },
+	{ w: 3, tag: 'W3', name: '第三周', title: '上下文工程与 RAG', out: '带引用出处的文档问答', range: 'Day 15–21' },
+	{ w: 4, tag: 'W4', name: '第四周', title: 'MCP、框架与多 Agent', out: '工单分流 Agent', range: 'Day 22–28' },
+	{ w: 5, tag: 'W5', name: '第五周', title: '评测与可观测', out: '评测集和 CI 回归门禁', range: 'Day 29–35' },
+	{ w: 6, tag: 'W6', name: '第六周', title: '生产化', out: '公网能访问的 Agent 服务', range: 'Day 36–42' },
+	{ w: 7, tag: 'W7', name: '第七、八周', title: '毕业项目 SupportPilot', out: '能放进简历的完整项目', range: 'Day 43–54', capstone: true },
+	{ w: 9, tag: 'W9', name: '第九周', title: '第二个作品和求职', out: '简历和两个作品', range: 'Day 55–60' },
+];
+const byWeek = new Map<number, typeof days>();
+for (const d of days) byWeek.set(weekOf(d.data.day!), [...(byWeek.get(weekOf(d.data.day!)) ?? []), d]);
+const strip = (t: string) => t.replace(/^Day \d+ · /, '');
+const total = days.length;
 
 const description =
-	'60 天 AI Agent 工程师速成课:大模型 API、function calling、手写 Agent 循环、RAG、MCP、LangGraph、评测、安全与部署,最后做一个完整的智能客服 Agent 项目并准备面试。每天一篇,配文档、B 站视频、书单和可运行代码。';
+	'60 天 AI Agent 工程师速成课目录:大模型 API、function calling、手写 Agent 循环、RAG、MCP、LangGraph、评测、安全与部署,最后做一个完整的智能客服 Agent 项目并准备面试。';
 const schema = [
 	{
 		'@type': 'CollectionPage',
@@ -75,253 +64,539 @@ const schema = [
 	</head>
 	<body>
 		<Header />
-		<main class="shell">
-			<div class="page-head">
-				<p class="label">agent-60</p>
-				<h1>{COURSE_TITLE}</h1>
-				<p class="lede">
-					写给有编程经验、想转 AI Agent 工程师的人。不讲模型训练和数学,只讲招聘要的东西:调 API、设计工具、做 RAG、
-					接 MCP、写评测、上生产。每天一篇,不限时,有空就学。从 Day 0 开始按顺序走,第 60 天带着两个项目去面试。
-				</p>
-				<div class="progress" role="group" aria-label="Progress">
-					<div class="progress-meta">
-						<span class="num">已发布 {days.length} / {TOTAL_DAYS} 篇</span>
-						<span class="num">{pct}%</span>
+		<main>
+			<section class="stage">
+				<div class="shell stage-grid">
+					<div>
+						<h1>课程目录</h1>
+						<p class="lede">
+							61 篇,9 周。按顺序走,每天学完回来把那一天勾上。勾选只存在你自己的浏览器里,换设备不会同步。
+						</p>
+						<nav class="jump" aria-label="按周跳转">
+							{WEEKS.map((w) => <a href={`#w${w.w}`} class:list={{ cap: w.capstone }}>{w.tag === '00' ? '序章' : w.capstone ? 'W7–8' : w.tag}</a>)}
+						</nav>
 					</div>
-					<div class="track"><div class="fill" style={`width:${Math.max(pct, 0.6)}%`}></div></div>
-					{days[0] && <p class="latest"><a href={`/blog/${days[0].id}/`}>从 Day 0 开始 →</a></p>}
-					<p class="latest"><a href="/blog/agent-jd-report-2026-10/">先看看招聘方要什么:880 条真实 JD 拆解 →</a></p>
+
+					<div class="mine" data-mine>
+						<svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+							<circle cx="60" cy="60" r="52" class="ring-bg"></circle>
+							<circle cx="60" cy="60" r="52" class="ring-fg" pathLength="100" data-ring></circle>
+						</svg>
+						<div class="mine-text">
+							<p class="mine-num"><b data-done>0</b> / {total}</p>
+							<p class="mine-label">我学完的天数</p>
+							<a class="btn" href={`/blog/${days[0]?.id}/`} data-continue>从 Day 0 开始</a>
+						</div>
+					</div>
 				</div>
-			</div>
-
-			{
-				months.map((m) => (
-					<section class="month">
-						<h2 class="month-title">{WEEK_TITLES[m] ?? `W${m}`}</h2>
-						<ol class="days">
-							{byMonth.get(m)!.map((d) => (
-								<li class:list={['day', `regime-${d.data.regime}`]}>
-									<a class="day-num" href={`/blog/${d.id}/`}>
-										Day {String(d.data.day).padStart(2, '0')}
-									</a>
-									<div class="day-body">
-										<h3>
-											<a href={`/blog/${d.id}/`}>{d.data.title.replace(/^Day \d+ · /, '')}</a>
-										</h3>
-										<p>{d.data.description}</p>
-										{d.data.regime !== 'none' && (
-											<div class="day-meta">
-												<span class="regime">{d.data.regime}-bound</span>
-											</div>
-										)}
-									</div>
-								</li>
-							))}
-						</ol>
-					</section>
-				))
-			}
-
-			{days.length === 0 && <p class="empty">还没有开始。</p>}
-
-			<section class="rules">
-				<h2 class="month-title">怎么学</h2>
-				<ul>
-					<li>每篇先看「今天要解决的问题」,学完回来对照,答不上来就是没学会。</li>
-					<li>视频和文档挑着看,「动手练习」一定要做,代码自己敲,跑通了才算过。</li>
-					<li>每周最后一天是复习和小项目,前面几周的代码会一路拼成毕业项目。</li>
-					<li>自测题先自己写答案再展开。标了「面试题」的,试着用一分钟口头讲清楚。</li>
-				</ul>
 			</section>
+
+			<div class="shell weeks">
+				{
+					WEEKS.map((w) => (
+						<section class:list={['week', { capstone: w.capstone }]} id={`w${w.w}`}>
+							<header class="week-head">
+								<p class="week-tag" aria-hidden="true">{w.tag}</p>
+								<h2>
+									<span class="week-name">{w.name} · {w.range}</span>
+									{w.title}
+								</h2>
+								<p class="week-out">做出来:{w.out}</p>
+								<p class="week-count" data-week-count={w.w}></p>
+							</header>
+							<ol class="days">
+								{(byWeek.get(w.w) ?? []).map((d) => (
+									<li class="day" data-day={d.data.day}>
+										<label class="check" title="标记为已学完">
+											<input type="checkbox" data-check={d.data.day} aria-label={`Day ${d.data.day} 已学完`} />
+											<span aria-hidden="true"></span>
+										</label>
+										<a class="day-link" href={`/blog/${d.id}/`}>
+											<span class="day-num">Day {String(d.data.day).padStart(2, '0')}</span>
+											<span class="day-title">{strip(d.data.title)}</span>
+											<span class="day-desc">{d.data.description}</span>
+										</a>
+									</li>
+								))}
+							</ol>
+						</section>
+					))
+				}
+
+				<aside class="tips">
+					<h2>怎么学才不白学</h2>
+					<ul>
+						<li>每篇先看「今天要解决的问题」,学完回来对照,答不上来就是没学会。</li>
+						<li>视频和文档挑着看,「动手练习」一定要做。代码自己敲,跑通了才算过。</li>
+						<li>每周最后一天是复习加小项目,前面几周的代码会一路拼成毕业项目。</li>
+						<li>自测题先自己写答案再展开。标了「面试题」的,试着一分钟口头讲清楚。</li>
+					</ul>
+					<a class="report" href="/blog/agent-jd-report-2026-10/">开学前可以先看:880 条真实 JD 拆解</a>
+				</aside>
+			</div>
 		</main>
 		<Footer />
+
+		<script>
+			const KEY = 'agent60-done';
+			const load = (): Set<number> => {
+				try {
+					return new Set(JSON.parse(localStorage.getItem(KEY) ?? '[]'));
+				} catch {
+					return new Set();
+				}
+			};
+			const save = (s: Set<number>) => {
+				try {
+					localStorage.setItem(KEY, JSON.stringify([...s]));
+				} catch {
+					/* private mode: ticks just won't persist */
+				}
+			};
+			const done = load();
+			const boxes = [...document.querySelectorAll<HTMLInputElement>('[data-check]')];
+			const total = boxes.length;
+			const links = new Map(
+				[...document.querySelectorAll<HTMLLIElement>('.day')].map((li) => [
+					Number(li.dataset.day),
+					li.querySelector<HTMLAnchorElement>('.day-link')!,
+				]),
+			);
+
+			const render = () => {
+				for (const b of boxes) {
+					const d = Number(b.dataset.check);
+					b.checked = done.has(d);
+					b.closest('.day')?.classList.toggle('is-done', done.has(d));
+				}
+				const n = [...done].filter((d) => links.has(d)).length;
+				const numEl = document.querySelector('[data-done]');
+				if (numEl) numEl.textContent = String(n);
+				const ring = document.querySelector<SVGCircleElement>('[data-ring]');
+				if (ring) {
+					ring.style.strokeDasharray = `${total ? (n / total) * 100 : 0} 100`;
+					ring.style.opacity = n ? '1' : '0';
+				}
+				const nextDay = [...links.keys()].sort((a, b) => a - b).find((d) => !done.has(d));
+				const cont = document.querySelector<HTMLAnchorElement>('[data-continue]');
+				if (cont) {
+					if (nextDay === undefined) {
+						cont.textContent = '全部学完了';
+						cont.href = '/blog/agent-60/day-60-graduation/';
+					} else {
+						cont.textContent = n === 0 ? '从 Day 0 开始' : `继续学 Day ${nextDay}`;
+						cont.href = links.get(nextDay)!.href;
+					}
+				}
+				document.querySelectorAll<HTMLElement>('[data-week-count]').forEach((el) => {
+					const sec = el.closest('.week')!;
+					const all = sec.querySelectorAll('.day').length;
+					const got = sec.querySelectorAll('.day.is-done').length;
+					el.textContent = got ? `已学完 ${got} / ${all}` : '';
+				});
+			};
+
+			for (const b of boxes) {
+				b.addEventListener('change', () => {
+					const d = Number(b.dataset.check);
+					if (b.checked) done.add(d);
+					else done.delete(d);
+					save(done);
+					render();
+				});
+			}
+			render();
+		</script>
 	</body>
 </html>
 
 <style>
-	.page-head {
-		padding-block: clamp(2.5rem, 6vw, 4rem) 1.5rem;
-		border-bottom: var(--rule-weight) solid var(--rule);
+	.stage {
+		--s-bg: #0b1018;
+		--s-rule: #1f2a3a;
+		--s-ink: #eef1f6;
+		--s-soft: #a9b3c3;
+		--s-faint: #6f7b8d;
+		--s-blue: #7d9bff;
+		--s-amber: #e3a54e;
+		background:
+			radial-gradient(circle at 1px 1px, var(--s-rule) 1px, transparent 0) 0 0 / 22px 22px,
+			var(--s-bg);
+		color: var(--s-ink);
+		border-bottom: 1px solid var(--s-rule);
 	}
 
-	.page-head .label {
-		margin-bottom: 0.75rem;
+	.stage-grid {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		gap: clamp(2rem, 5vw, 4rem);
+		align-items: center;
+		padding-block: clamp(2.6rem, 6vw, 4.2rem);
 	}
 
 	h1 {
-		font-size: clamp(1.9rem, 4vw, 2.6rem);
-		margin-bottom: 0.9rem;
-		letter-spacing: 0;
+		color: var(--s-ink);
+		font-size: clamp(2.4rem, 5.4vw, 3.8rem);
+		letter-spacing: -0.01em;
+		margin: 0 0 1rem;
 	}
 
 	.lede {
-		font-size: 1.04rem;
-		line-height: 1.8;
-		color: var(--ink-soft);
-		max-width: 40rem;
-		margin: 0 0 1.5rem;
+		color: var(--s-soft);
+		font-size: 1.05rem;
+		line-height: 1.85;
+		max-width: 38rem;
+		margin: 0 0 1.6rem;
 	}
 
-	.progress {
-		max-width: 40rem;
-	}
-
-	.progress-meta {
+	.jump {
 		display: flex;
-		justify-content: space-between;
-		font-family: var(--font-mono);
-		font-size: 0.74rem;
-		letter-spacing: 0.08em;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+
+	.jump a {
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: 0.92rem;
+		color: var(--s-soft);
+		text-decoration: none;
+		padding: 0.4rem 0.85rem;
+		border: 1px solid var(--s-rule);
+		border-radius: 999px;
+		background: rgba(17, 24, 38, 0.8);
+	}
+
+	.jump a:hover {
+		color: var(--s-ink);
+		border-color: var(--s-blue);
+	}
+
+	.jump a.cap {
+		color: var(--s-amber);
+		border-color: rgba(227, 165, 78, 0.45);
+	}
+
+	.jump a:focus-visible,
+	.btn:focus-visible {
+		outline: 2px solid var(--s-blue);
+		outline-offset: 3px;
+	}
+
+	.mine {
+		display: flex;
+		align-items: center;
+		gap: 1.4rem;
+		padding: 1.4rem 1.6rem;
+		background: #111826;
+		border: 1px solid var(--s-rule);
+		border-radius: 12px;
+	}
+
+	.ring {
+		width: 108px;
+		height: 108px;
+		transform: rotate(-90deg);
+		flex: none;
+	}
+
+	.ring circle {
+		fill: none;
+		stroke-width: 10;
+	}
+
+	.ring-bg {
+		stroke: var(--s-rule);
+	}
+
+	.ring-fg {
+		stroke: var(--s-blue);
+		stroke-linecap: round;
+		stroke-dasharray: 0 100;
+		transition: stroke-dasharray 0.5s ease;
+	}
+
+	.mine-num {
+		margin: 0;
+		font-family: var(--font-display);
+		font-size: 1.1rem;
+		color: var(--s-soft);
+	}
+
+	.mine-num b {
+		font-size: 2.4rem;
+		color: var(--s-ink);
+	}
+
+	.mine-label {
+		margin: 0.1rem 0 0.9rem;
+		font-size: 0.86rem;
+		color: var(--s-faint);
+	}
+
+	.btn {
+		display: inline-block;
+		padding: 0.55rem 1rem;
+		border-radius: 6px;
+		background: var(--s-blue);
+		color: #0b1018;
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: 0.92rem;
+		text-decoration: none;
+	}
+
+	.btn:hover {
+		background: #a3b8ff;
+	}
+
+	/* ---------- Weeks ---------- */
+	.weeks {
+		padding-block: 1rem 4rem;
+	}
+
+	.week {
+		display: grid;
+		grid-template-columns: 19rem minmax(0, 1fr);
+		gap: clamp(1.5rem, 4vw, 3.5rem);
+		padding-block: 2.6rem;
+		border-bottom: 1px solid var(--rule);
+		scroll-margin-top: 4rem;
+	}
+
+	.week-head {
+		position: sticky;
+		top: 5rem;
+		align-self: start;
+	}
+
+	.week-tag {
+		margin: 0;
+		font-family: var(--font-display);
+		font-weight: 800;
+		font-size: clamp(3.6rem, 7vw, 5rem);
+		line-height: 0.95;
+		color: transparent;
+		-webkit-text-stroke: 1.5px var(--mem);
+		letter-spacing: -0.03em;
+	}
+
+	.capstone .week-tag {
+		-webkit-text-stroke-color: var(--compute);
+	}
+
+	.week-head h2 {
+		font-size: 1.45rem;
+		letter-spacing: 0;
+		line-height: 1.35;
+		margin: 0.7rem 0 0.5rem;
+	}
+
+	.week-name {
+		display: block;
+		font-family: var(--font-body);
+		font-weight: 400;
+		font-size: 0.86rem;
 		color: var(--ink-faint);
-		margin-bottom: 0.45rem;
+		margin-bottom: 0.25rem;
 	}
 
-	.track {
-		height: 4px;
-		background: var(--rule-soft);
-		border-radius: 999px;
-		overflow: hidden;
+	.week-out {
+		margin: 0;
+		font-size: 0.92rem;
+		line-height: 1.7;
+		color: var(--compute);
 	}
 
-	.fill {
-		height: 100%;
-		background: var(--mem);
-		border-radius: 999px;
-	}
-
-	.latest {
+	.week-count {
 		margin: 0.6rem 0 0;
-		font-family: var(--font-mono);
-		font-size: 0.72rem;
-		letter-spacing: 0.06em;
-		color: var(--ink-faint);
-	}
-
-	.month {
-		padding-top: 2.25rem;
-	}
-
-	.month-title {
-		font-family: var(--font-mono);
-		font-weight: 500;
-		font-size: 0.74rem;
-		letter-spacing: 0.14em;
-		color: var(--ink-faint);
-		margin-bottom: 0.5rem;
-		text-transform: none;
+		font-size: 0.84rem;
+		color: var(--mem);
 	}
 
 	.days {
 		list-style: none;
 		margin: 0;
 		padding: 0;
+		display: grid;
+		gap: 0.6rem;
 	}
 
 	.day {
 		display: grid;
-		grid-template-columns: 6.5rem 1fr;
-		gap: 1.5rem;
-		padding-block: 1.4rem;
-		border-bottom: var(--rule-weight) solid var(--rule-soft);
-	}
-
-	.day-num {
-		align-self: start;
-		justify-self: start;
-		font-family: var(--font-mono);
-		font-size: 0.78rem;
-		letter-spacing: 0.08em;
-		text-decoration: none;
-		color: var(--ink);
+		grid-template-columns: 2.4rem minmax(0, 1fr);
+		align-items: start;
 		background: var(--paper-raised);
 		border: 1px solid var(--rule);
-		border-radius: 3px;
-		padding: 0.2rem 0.55rem;
-		margin-top: 0.15rem;
+		border-radius: 10px;
+		transition: border-color 0.15s ease;
 	}
 
-	.regime-memory .day-num {
-		border-left: 3px solid var(--mem);
-	}
-
-	.regime-compute .day-num {
-		border-left: 3px solid var(--compute);
-	}
-
-	.day-num:hover {
-		color: var(--mem);
+	.day:hover {
 		border-color: var(--mem);
 	}
 
-	.day-body h3 {
-		font-size: 1.22rem;
-		margin: 0 0 0.4rem;
-		letter-spacing: 0;
-		line-height: 1.4;
+	.capstone .day:hover {
+		border-color: var(--compute);
 	}
 
-	.day-body h3 a {
+	.check {
+		display: grid;
+		place-items: center;
+		padding-top: 1.15rem;
+		cursor: pointer;
+	}
+
+	.check input {
+		position: absolute;
+		opacity: 0;
+		width: 1px;
+		height: 1px;
+	}
+
+	.check span {
+		width: 18px;
+		height: 18px;
+		border-radius: 5px;
+		border: 1.5px solid var(--rule);
+		display: grid;
+		place-items: center;
+	}
+
+	.check input:focus-visible + span {
+		outline: 2px solid var(--mem);
+		outline-offset: 2px;
+	}
+
+	.check input:checked + span {
+		background: var(--mem);
+		border-color: var(--mem);
+	}
+
+	.check input:checked + span::after {
+		content: '';
+		width: 5px;
+		height: 9px;
+		border: solid var(--paper);
+		border-width: 0 2px 2px 0;
+		transform: translateY(-1px) rotate(45deg);
+	}
+
+	.day-link {
+		display: grid;
+		grid-template-columns: 5rem minmax(0, 1fr);
+		gap: 0.2rem 1rem;
+		padding: 1rem 1.2rem 1rem 0.2rem;
 		text-decoration: none;
+		color: var(--ink);
 	}
 
-	.day-body h3 a:hover {
-		color: var(--mem);
-	}
-
-	.day-body p {
-		margin: 0;
-		color: var(--ink-soft);
-		font-size: 0.96rem;
-		line-height: 1.75;
-		max-width: 40rem;
-	}
-
-	.day-meta {
-		display: flex;
-		gap: 0.9rem;
-		margin-top: 0.55rem;
+	.day-num {
+		grid-row: span 2;
 		font-family: var(--font-mono);
-		font-size: 0.7rem;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--ink-faint);
-	}
-
-	.regime {
-		border-left: 2px solid var(--rule);
-		padding-left: 0.5rem;
-	}
-
-	.regime-memory .regime {
-		border-left-color: var(--mem);
+		font-size: 0.8rem;
 		color: var(--mem);
+		padding-top: 0.2rem;
 	}
 
-	.regime-compute .regime {
-		border-left-color: var(--compute);
+	.capstone .day-num {
 		color: var(--compute);
 	}
 
-	.rules {
-		padding-top: 2.5rem;
+	.day-title {
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: 1.08rem;
+		line-height: 1.45;
 	}
 
-	.rules ul {
-		margin: 0;
+	.day-link:hover .day-title {
+		color: var(--mem);
+	}
+
+	.day-desc {
+		font-size: 0.92rem;
+		line-height: 1.75;
+		color: var(--ink-soft);
+	}
+
+	.day.is-done {
+		background: transparent;
+	}
+
+	.day.is-done .day-title,
+	.day.is-done .day-desc {
+		color: var(--ink-faint);
+	}
+
+	.tips {
+		margin-top: 3rem;
+		padding: 1.8rem 2rem;
+		background: var(--paper-raised);
+		border: 1px solid var(--rule);
+		border-radius: 12px;
+	}
+
+	.tips h2 {
+		font-size: 1.3rem;
+		letter-spacing: 0;
+		margin: 0 0 0.8rem;
+	}
+
+	.tips ul {
+		margin: 0 0 1.2rem;
 		padding-left: 1.2rem;
 		color: var(--ink-soft);
-		line-height: 1.85;
+		line-height: 1.9;
 	}
 
-	.empty {
-		padding-block: 3rem;
-		color: var(--ink-soft);
+	.report {
+		color: var(--mem);
 	}
 
-	@media (max-width: 600px) {
-		.day {
+	@media (max-width: 900px) {
+		.stage-grid {
 			grid-template-columns: 1fr;
-			gap: 0.6rem;
+		}
+
+		.week {
+			grid-template-columns: 1fr;
+			gap: 1.2rem;
+		}
+
+		.week-head {
+			position: static;
+		}
+
+		.week-tag {
+			font-size: 3rem;
+		}
+	}
+
+	@media (max-width: 560px) {
+		.mine {
+			padding: 1.1rem;
+			gap: 1rem;
+		}
+
+		.ring {
+			width: 84px;
+			height: 84px;
+		}
+
+		.day-link {
+			grid-template-columns: 1fr;
+		}
+
+		.day-num {
+			grid-row: auto;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.ring-fg,
+		.day {
+			transition: none;
 		}
 	}
 </style>
