@@ -1,6 +1,6 @@
 // Global site data. Imported anywhere with `import { SITE_TITLE } from '../consts'`.
 
-export const SITE_TITLE = 'Agent 60';
+export const SITE_TITLE = 'AI Agent';
 export const SITE_TAGLINE = '60 天从后端工程师到 AI Agent 工程师';
 export const SITE_DESCRIPTION =
 	'60 天 AI Agent 工程师速成课:大模型 API、工具调用、RAG、MCP、LangGraph、评测、生产化,最后做一个能放进简历的完整项目。每天一篇,配文档、B 站视频、书单和可运行代码。';

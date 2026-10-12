@@ -1,4 +1,4 @@
-# Agent 60 · aiinfra.blog
+# AI Agent · aiinfra.blog
 
 60 天 AI Agent 工程师速成课(中文)。Astro static output, deployed on Cloudflare Pages at https://aiinfra.blog.
 The earlier AI Infra 365-day course is preserved at git tag `archive/aiinfra-365`.
