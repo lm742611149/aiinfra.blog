@@ -24,25 +24,23 @@ Day 51 你按错误分析把分数往上提了一轮。提分的过程中你大�
 
 预计用时 5–7 小时,其中自托管 Langfuse 如果你的电脑比较老,光拉镜像就可能占半小时。前置是 Day 34(tracing 概念)、Day 38(成本与延迟的基本手段)、Day 47(主工作流)、Day 50(评测集)。
 
-### 目录回顾
+### 今天动哪些文件
 
-写到第 52 天,先把 SupportPilot 的目录对一遍。下面是本文和后面几天默认的结构,你的仓库如果在 Day 43–44 里按别的方式组织,对照着改导入路径就行,逻辑不受影响。
+目录结构沿用 Day 43 定下的那份(`src/supportpilot/` 下分 `kb/`、`tools/`、`agent/`、`memory/`、`api/`、`obs/`、`security/`)。今天新增和改动的是这些:
 
 ```text
 supportpilot/
-├── pyproject.toml  uv.lock  .env.example
-├── Dockerfile  compose.yaml
-├── app/        # FastAPI 服务:api.py(SSE 接口)、config.py、llm.py(模型客户端)、pricing.py
-├── agent/      # LangGraph 主工作流:state.py、graph.py、nodes.py、prompts.py、routing.py
-├── rag/        # 知识库:ingest.py、retriever.py(混合检索 + rerank)
-├── tools/      # MCP server 与业务工具:server.py、business.py、permissions.py
-├── memory/     # 会话与客户画像:store.py、summarize.py
-├── ui/         # Streamlit 前端:streamlit_app.py
-├── evals/      # 测试集与评测:cases.jsonl、run_eval.py、judge.py
-├── data/       # 造数脚本:seed_kb.py、seed_db.py
-├── deploy/     # Caddyfile、上线脚本
-├── scripts/    # cost_report.py 等小工具
-└── tests/
+├── src/supportpilot/
+│   ├── llm.py              # 改:换 Langfuse 版 OpenAI 客户端,每次调用记账
+│   ├── obs/
+│   │   ├── pricing.py      # 新:按高峰/空闲、缓存命中计价
+│   │   ├── ledger.py       # 新:模型调用账本(SQLite)
+│   │   └── tracing.py      # 新:工单级 trace、节点级 span
+│   ├── agent/
+│   │   ├── graph.py        # 改:add_node 时给每个节点套上 span
+│   │   └── routing.py      # 新:质检节点按类别选大小模型
+│   └── api/app.py          # 改:SSE 生成器保持同一个上下文
+└── scripts/cost_report.py  # 新:成本报表
 ```
 
 ## 为什么光有日志不够
@@ -71,7 +69,7 @@ Day 34 讲过 trace、span、generation 这三个词,这里换个角度说一遍
   <rect x="280" y="146" width="22" height="16" fill="var(--compute-wash)" stroke="var(--compute)"/>
   <text x="36" y="190" font-family="var(--font-mono)" font-size="12" fill="var(--ink)">draft · v4-pro</text>
   <rect x="304" y="178" width="250" height="16" fill="var(--mem-wash)" stroke="var(--mem)"/>
-  <text x="36" y="222" font-family="var(--font-mono)" font-size="12" fill="var(--ink)">self_check · flash</text>
+  <text x="36" y="222" font-family="var(--font-mono)" font-size="12" fill="var(--ink)">check · flash</text>
   <rect x="556" y="210" width="56" height="16" fill="var(--mem-wash)" stroke="var(--mem)"/>
   <text x="304" y="252" font-family="var(--font-mono)" font-size="11" fill="var(--ink-soft)">起草占了大半时间和大半成本</text>
   <line x1="420" y1="242" x2="420" y2="196" stroke="var(--ink-faint)" stroke-dasharray="3 3"/>
@@ -105,112 +103,132 @@ uv add langfuse
 
 Langfuse 对 OpenAI SDK 做了一个替身,把 `from openai import OpenAI` 换成 `from langfuse.openai import OpenAI`,之后每一次 `chat.completions.create` 都会自动变成一个 generation,带上 prompt、输出、token 和耗时。DeepSeek 走的是 OpenAI 兼容协议,所以同样适用。
 
-光这样还不够,每次调用会各自成为一棵单独的 trace,散在界面里。要让它们挂到同一张工单下面,得在最外层开一个 span,用 `propagate_attributes` 把 session、user、tags 传下去。下面是改造后的模型客户端,它同时负责往账本里记账,账本下一节讲。
+光这样还不够,每次调用会各自成为一棵单独的 trace,散在界面里。要让它们挂到同一张工单下面,得在最外层开一个 span,用 `propagate_attributes` 把 session、user、tags 传下去;还要让每次模型调用知道自己属于哪张工单、哪个节点,才能分节点记账。
+
+先改 Day 47 的 `LLMClient`。改动只有三处:换导入、所有请求走一个 `_create`、入账时顺便记一笔细账。
 
 ```python
-# supportpilot/app/llm.py
+# supportpilot/src/supportpilot/llm.py(在 Day 47 的版本上改,只列改动的部分)
 import time
 from contextvars import ContextVar
+from typing import Any
 
-from langfuse.openai import OpenAI  # 原来是 from openai import OpenAI
+from langfuse.openai import OpenAI  # ① 原来是 from openai import OpenAI,__init__ 里的 OpenAI(...) 不用动
 
-from app.config import settings
-from app.ledger import record_call
+from .obs.ledger import record_call
 
 # 当前在处理哪张工单、哪个节点。用 contextvars 而不是全局变量,
 # 因为 FastAPI 会并发处理多张工单,每个请求有自己的上下文。
 current_ticket: ContextVar[str] = ContextVar("current_ticket", default="-")
 current_node: ContextVar[str] = ContextVar("current_node", default="-")
 
-_client = OpenAI(base_url=settings.llm_base_url, api_key=settings.llm_api_key)
 
+class LLMClient:
+    def _create(self, **kwargs):
+        """② chat() 和 stream() 里原来的 self.client.chat.completions.create(...) 都改成 self._create(...)。"""
+        kwargs.setdefault("name", current_node.get())  # Langfuse 里这个 generation 显示的名字
+        kwargs.setdefault("metadata", {"ticket_id": current_ticket.get()})
+        return self.client.chat.completions.create(**kwargs)
 
-def chat(messages: list[dict], *, model: str, tools: list[dict] | None = None, **kwargs):
-    """所有节点都通过它调模型,好处是计费、重试、tracing 只写一处。"""
-    node = current_node.get()
-    t0 = time.perf_counter()
-    resp = _client.chat.completions.create(
-        model=model,
-        messages=messages,
-        tools=tools or None,
-        name=node,  # Langfuse 里这个 generation 显示的名字
-        metadata={"ticket_id": current_ticket.get()},
-        **kwargs,
-    )
-    latency_ms = int((time.perf_counter() - t0) * 1000)
-    record_call(
-        ticket_id=current_ticket.get(),
-        node=node,
-        model=model,
-        usage=resp.usage,
-        latency_ms=latency_ms,
-    )
-    return resp
+    def _usage(self, u: Any, model: str | None = None, t0: float | None = None) -> "Usage":
+        """③ 原来的累计逻辑不变,多记一笔带节点、模型、缓存命中、耗时的细账。"""
+        got = Usage(prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
+                    completion_tokens=getattr(u, "completion_tokens", 0) or 0, calls=1)
+        self.ledger.add(got)
+        if u is not None:
+            record_call(ticket_id=current_ticket.get(), node=current_node.get(),
+                        model=model or self.model, usage=u,
+                        latency_ms=int((time.perf_counter() - t0) * 1000) if t0 else 0)
+        return got
 ```
 
-`name` 和 `metadata` 这两个参数是 Langfuse 替身额外认识的,原版 OpenAI SDK 不收,所以只有换了导入才能这么写。
+`chat()` 和 `stream()` 各自在请求前加一行 `t0 = time.perf_counter()`,入账那行改成 `self._usage(resp.usage, kwargs["model"], t0)`(`stream()` 里是 `self._usage(last_usage, model or self.model, t0)`)。`structured()` 内部调的是 `chat()`,不用改。`name` 和 `metadata` 这两个参数是 Langfuse 替身额外认识的,原版 OpenAI SDK 不收,所以只有换了导入才能这么写。Day 47 的 `Usage.cost_cny()` 还留着,节点里算 `cost_cny` 的逻辑也不动,它按单一价格估算,今天的账本负责按真实价目精确记。
 
-最外层的入口这样包:
-
-```python
-# supportpilot/agent/run.py
-from langfuse import get_client, observe, propagate_attributes
-
-from agent.graph import build_graph
-from app.llm import current_ticket
-
-langfuse = get_client()
-graph = build_graph()
-
-
-@observe(name="handle_ticket")
-def handle_ticket(ticket: dict) -> dict:
-    token = current_ticket.set(ticket["id"])
-    try:
-        with propagate_attributes(
-            session_id=ticket["customer_id"],  # 同一客户的多张工单归到一个 session
-            user_id=ticket["customer_id"],
-            tags=["supportpilot", ticket.get("channel", "web")],
-        ):
-            return graph.invoke({"ticket": ticket})
-    finally:
-        current_ticket.reset(token)
-```
-
-节点内部要标出自己是谁,好让 generation 和账本都知道钱花在哪一步。写一个小装饰器,顺手也让每个节点在 trace 里成为一个 span:
+然后是工单级的 trace 和节点级的 span,放在 `obs/tracing.py`:
 
 ```python
-# supportpilot/agent/nodes.py(节选)
+# supportpilot/src/supportpilot/obs/tracing.py
+from collections.abc import Callable
+from contextlib import contextmanager
 from functools import wraps
 
-from langfuse import observe
+from langfuse import get_client, propagate_attributes
 
-from app.llm import current_node
-
-
-def node(name: str):
-    def deco(fn):
-        @observe(name=name)
-        @wraps(fn)
-        def wrapper(state, *args, **kwargs):
-            token = current_node.set(name)
-            try:
-                return fn(state, *args, **kwargs)
-            finally:
-                current_node.reset(token)
-        return wrapper
-    return deco
+from ..llm import current_node, current_ticket
 
 
-@node("classify")
-def classify(state):
-    ...  # Day 47 的实现不动
+@contextmanager
+def ticket_trace(ticket_id: str, customer_email: str, channel: str = "web"):
+    """一张工单从进来到回复的所有调用,都挂在这一个 span 下面。"""
+    token = current_ticket.set(ticket_id)
+    try:
+        with get_client().start_as_current_observation(as_type="span", name="handle_ticket"):
+            with propagate_attributes(session_id=customer_email,  # 同一客户的多张工单归到一个 session
+                                      user_id=customer_email, tags=["supportpilot", channel]):
+                yield
+    finally:
+        current_ticket.reset(token)
 
 
-@node("draft")
-def draft(state):
-    ...
+def traced(name: str, fn: Callable[[dict], dict]) -> Callable[[dict], dict]:
+    """把一个 LangGraph 节点函数包成 span,并告诉 LLMClient 现在是哪个节点在花钱。"""
+    @wraps(fn)
+    def wrapper(state: dict) -> dict:
+        token = current_node.set(name)
+        try:
+            with get_client().start_as_current_observation(as_type="span", name=name):
+                return fn(state)
+        finally:
+            current_node.reset(token)
+    return wrapper
 ```
+
+Day 47 的节点是在 `make_nodes(deps)` 里用闭包定义的,所以不用一个个加装饰器,在 `build_graph` 注册节点的地方统一包一层就行:
+
+```python
+# supportpilot/src/supportpilot/agent/graph.py(build_graph 里改一行)
+from ..obs.tracing import traced
+
+# build_graph() 里注册节点的循环
+for name, fn in n.items():
+    g.add_node(name, traced(name, fn))  # 原来是 g.add_node(name, fn)
+```
+
+调用方用 `ticket_trace` 把整次运行包起来。命令行脚本(`scripts/run_tickets.py`、评测脚本)里是这样:
+
+```python
+with ticket_trace(ticket["id"], ticket["customer_email"]):
+    graph.invoke({"ticket": ticket}, config)
+```
+
+Day 49 的 SSE 接口有个坑,我在这里卡了一个小时:`_events` 是同步生成器,Day 49 用 `iterate_in_threadpool` 在线程池里一步步推进它,而线程池每推进一步都会**复制一份新的上下文**,上一步里 `current_ticket.set()` 和 Langfuse 打开的 span 到下一步就不见了。表现是 trace 树断成好几截,账本里一半调用的 ticket_id 是 `-`。修法是让所有步骤在同一个 `Context` 对象里执行:
+
+```python
+# supportpilot/src/supportpilot/api/app.py(替换 Day 49 的 _sse,并在 _events 开头包一层 trace)
+import contextvars
+
+from starlette.concurrency import run_in_threadpool
+
+_DONE = object()
+
+
+def _sse(gen) -> EventSourceResponse:
+    ctx = contextvars.copy_context()  # 整个生成器共用这一个上下文
+    it = iter(gen)
+
+    async def agen():
+        while (item := await run_in_threadpool(ctx.run, next, it, _DONE)) is not _DONE:
+            yield item
+    return EventSourceResponse(agen())
+
+
+def _events(graph, payload, ticket_id: str):
+    email = _ticket_email(ticket_id)  # 查 biz.tickets 拿客户邮箱,一行 SQL,这里省略
+    with ticket_trace(ticket_id, email):
+        ...  # Day 49 原来的循环体整体缩进进来,一行不改
+```
+
+一个 `Context` 同一时刻只能被一个线程进入,这里每一步是顺序执行的,不会冲突。
 
 如果你的工作流里用了 LangChain 的模型对象(比如 `ChatOpenAI`)而不是直接调 SDK,换一种接法:`from langfuse.langchain import CallbackHandler`,在 `graph.invoke(..., config={"callbacks": [CallbackHandler()]})` 里传进去,LangGraph 每个节点会自动成为 span。两种接法别混用,不然同一次调用会出现两遍。
 
@@ -234,7 +252,7 @@ Langfuse 会根据模型名和 token 数推算成本,OpenAI、Anthropic、Google
 注意缓存命中价和未命中价差了 50 倍(flash)和 30 倍(pro)。这就是后面优化的突破口。价格以后一定会变,表格只是让你知道量级,代码里的价格放配置。
 
 ```python
-# supportpilot/app/pricing.py
+# supportpilot/src/supportpilot/obs/pricing.py
 """模型计价。价格来自 DeepSeek 官方价格页(2026-10-12 查),单位:元 / 百万 token。"""
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -286,12 +304,12 @@ def cost_yuan(model: str, usage, ts: datetime | None = None) -> float:
 账本用 SQLite 就够了,一张表:
 
 ```python
-# supportpilot/app/ledger.py
+# supportpilot/src/supportpilot/obs/ledger.py
 import sqlite3
 import threading
 from datetime import datetime
 
-from app.pricing import CST, cost_yuan, split_prompt_tokens
+from .pricing import CST, cost_yuan, split_prompt_tokens
 
 _DB = "data/ledger.sqlite3"
 _lock = threading.Lock()
@@ -395,7 +413,7 @@ if __name__ == "__main__":
 
 - classify:输入 1,500 token,输出 60 token。
 - draft:输入 6,000 token(系统提示 + 政策摘要 + 检索到的 5 段文档 + 工具结果 + 对话历史),输出 400 token。
-- self_check:输入 3,000 token,输出 80 token。
+- check:输入 3,000 token,输出 80 token。
 
 先按「全部用 v4-pro、完全不命中缓存、高峰时段」算:
 
@@ -425,26 +443,15 @@ system = f"""你是云簿 CloudLedger 的客服助手。现在是 {datetime.now(
 """
 ```
 
-时间戳和客户名放在了最前面,于是后面 3,000 token 的政策和示例永远命中不了。改成固定内容在前、变量在后:
+时间戳和客户名放在了最前面,于是后面 3,000 token 的政策和示例永远命中不了。规则就一条:固定内容在前、变量在后。
+
+好消息是 Day 47 的节点本来就是这个结构:system 消息是 `prompts.DRAFT`、`prompts.CHECK` 这些模块级常量,工单、检索资料、调查结论都拼在后面的 user 消息里。你要做的是检查一遍 `prompts.py`,确认这些常量里没有偷偷用 f-string 塞进日期、客户名这类会变的东西;有的话挪到 user 消息里,比如在 draft 节点的 `parts` 列表最前面加一段「当前时间」。
 
 ```python
-# supportpilot/agent/prompts.py(节选)
-# 固定部分:模块加载时拼好,之后每次请求逐字相同
-DRAFT_SYSTEM = "\n\n".join([ROLE_AND_TONE, OUTPUT_FORMAT, POLICY_TEXT, FEW_SHOTS])
-
-
-def build_draft_messages(state) -> list[dict]:
-    dynamic = (
-        f"当前时间:{state['now']:%Y-%m-%d %H:%M}\n"
-        f"客户:{state['customer']['name']},套餐 {state['customer']['plan']}\n\n"
-        f"<检索结果>\n{state['context']}\n</检索结果>\n\n"
-        f"<工具结果>\n{state['tool_results']}\n</工具结果>"
-    )
-    return [
-        {"role": "system", "content": DRAFT_SYSTEM},
-        *state["history"],
-        {"role": "user", "content": dynamic + "\n\n<工单>\n" + state["ticket"]["body"] + "\n</工单>"},
-    ]
+# supportpilot/src/supportpilot/agent/prompts.py(检查要点)
+# 模块加载时就定死的字符串,每次请求逐字相同,才能命中缓存
+DRAFT = """你是云簿 CloudLedger 的客服助手……"""   # 不要出现 {datetime.now()}、{customer} 这类变量
+CHECK = """你是客服回复的质检员……"""
 ```
 
 还有三个容易破坏前缀的细节,都是我在账本里看到命中率上不去才发现的:
@@ -455,7 +462,7 @@ def build_draft_messages(state) -> list[dict]:
 
 改完怎么验证?不用猜,看账本。同一组评测工单跑两遍,`hit%` 那一列应该从个位数涨到几十。
 
-改完再算一次。假设 draft 的 6,000 输入里有 3,500 是固定前缀并且命中,classify 的 1,500 里有 1,200 命中,self_check 的 3,000 里有 2,000 命中(这几个比例是假设,真实值以账本为准):
+改完再算一次。假设 draft 的 6,000 输入里有 3,500 是固定前缀并且命中,classify 的 1,500 里有 1,200 命中,check 的 3,000 里有 2,000 命中(这几个比例是假设,真实值以账本为准):
 
 - 命中 6,700 token × 0.30 / 1,000,000 ≈ 0.0020 元。
 - 未命中 3,800 token × 9 / 1,000,000 ≈ 0.0342 元。
@@ -464,48 +471,39 @@ def build_draft_messages(state) -> list[dict]:
 
 ## 第二招:模型路由,小模型干简单活
 
-第二招更直观:不是每一步都需要最强的模型。分类是从 8 个固定类别里挑一个,自检是判断「这份草稿有没有引用、有没有承诺政策外的东西」,这些是封闭式判断,便宜模型通常够用。起草要读懂检索结果、结合账单数据、写出客户能看懂的话,这一步才值得上大模型。
+第二招更直观:不是每一步都需要最强的模型。分类是从 8 个固定类别里挑一个,质检是判断「这份草稿有没有引用、有没有承诺政策外的东西」,这些是封闭式判断,便宜模型通常够用。起草要读懂检索结果、结合账单数据、写出客户能看懂的话,这一步才值得上大模型。
 
-```python
-# supportpilot/agent/routing.py
-import os
+Day 47 其实已经把位置留好了:`Deps` 里有 `llm`(起草用)和 `small_llm`(分类、质检用),只是 Day 44 的 `.env` 里 `LLM_SMALL_MODEL` 留空,两个用的是同一个模型。第一步就是把它填上:
 
-SMALL = os.getenv("MODEL_SMALL", "deepseek-flash")
-LARGE = os.getenv("MODEL_LARGE", "deepseek-v4-pro")
-
-# 默认路由:节点 -> 模型
-ROUTES = {
-    "classify": SMALL,
-    "rewrite_query": SMALL,
-    "draft": LARGE,
-    "self_check": SMALL,
-}
-
-# 这些类别涉及钱和争议,起草和自检都用大模型,宁可贵一点
-HIGH_STAKES = {"refund", "billing_dispute", "account_security"}
-
-
-def pick_model(node: str, state: dict) -> str:
-    category = state.get("category")
-    if node in ("draft", "self_check") and category in HIGH_STAKES:
-        return LARGE
-    # 分类节点自己没把握时(Day 47 让它输出了 confidence),下游一律升级
-    if node == "draft" and state.get("classify_confidence", 1.0) < 0.6:
-        return LARGE
-    # 自检没过、回到起草重写时,第二次直接用大模型
-    if node == "draft" and state.get("draft_attempts", 0) >= 1:
-        return LARGE
-    return ROUTES.get(node, LARGE)
+```bash
+# supportpilot/.env
+LLM_MODEL=deepseek-v4-pro
+LLM_SMALL_MODEL=deepseek-flash
 ```
 
-节点里把写死的模型名换成 `pick_model("draft", state)` 就完成了。
+第二步是给质检加一条例外。退款和账单类工单出错的代价大,质检宁可用贵一点的模型:
+
+```python
+# supportpilot/src/supportpilot/agent/routing.py
+from .deps import Deps
+
+# 涉及钱的类别(取值见 Day 47 的 Category),质检用大模型
+HIGH_STAKES = {"refund", "billing", "invoice"}
+
+
+def check_client(deps: Deps, state: dict):
+    """质检默认走小模型,高风险类别升级到起草用的大模型。"""
+    return deps.llm if state["triage"]["category"] in HIGH_STAKES else deps.small_llm
+```
+
+`check` 节点里把 `deps.small_llm.structured(...)` 换成 `check_client(deps, state).structured(...)` 就完成了。起草节点本来就用 `deps.llm`,不用动。
 
 路由能不能用,最终还是看评测分数,不是看我的直觉。一个常见结果是:分类换成小模型后,准确率掉了一两个点,集中在「既像退款又像账单争议」的模糊工单上。这时候有两个选择,要么给分类 prompt 加几个这类边界的 few-shot,要么接受这点损失,因为分类错了后面的自检和转人工还能兜住。这种取舍正是面试里想听的,把你的数据和决定写进 Day 54 的 README。
 
-按路由再算一次(在第一招的基础上):classify 和 self_check 改走 flash,flash 高峰价命中 0.04、未命中 2、输出 8。
+按路由再算一次(在第一招的基础上):classify 和 check 改走 flash,flash 高峰价命中 0.04、未命中 2、输出 8。
 
 - classify:1,200 × 0.04 + 300 × 2 + 60 × 8 = 48 + 600 + 480,即 1,128 / 1,000,000 ≈ 0.0011 元。
-- self_check:2,000 × 0.04 + 1,000 × 2 + 80 × 8 = 80 + 2,000 + 640,即 2,720 / 1,000,000 ≈ 0.0027 元。
+- check:2,000 × 0.04 + 1,000 × 2 + 80 × 8 = 80 + 2,000 + 640,即 2,720 / 1,000,000 ≈ 0.0027 元。
 - draft 还是 pro:3,500 × 0.30 + 2,500 × 9 + 400 × 27 = 1,050 + 22,500 + 10,800,即 34,350 / 1,000,000 ≈ 0.0344 元。
 - 合计约 0.038 元。再把批量任务(比如夜里重跑评测)放到空闲时段,还能再打五折。
 
@@ -573,7 +571,7 @@ def pick_model(node: str, state: dict) -> str:
 **步骤**
 
 1. 注册 Langfuse 云版(或按官方文档自托管),把三个环境变量写进 `.env`,运行 `uv run python -c "from langfuse import get_client; print(get_client().auth_check())"`,打印 `True` 再往下走。
-2. 按上文改 `app/llm.py`、加 `app/pricing.py`、`app/ledger.py`,给每个节点套上 `@node(...)`,入口套上 `@observe` 和 `propagate_attributes`。
+2. 按上文改 `llm.py`,加 `obs/pricing.py`、`obs/ledger.py`、`obs/tracing.py`,在 `build_graph` 里给节点套上 `traced`,脚本和 SSE 接口用 `ticket_trace` 包住整次运行,别忘了替换 `_sse`。
 3. 用当前版本(还没做两招优化)跑一遍 Day 50 的评测集,跑完 `get_client().flush()`。在 Langfuse 里随便点开三张工单,确认树的结构是「handle_ticket 下面挂着各节点,节点下面挂着 generation」。
 4. 跑 `uv run python scripts/cost_report.py --since <今天日期>`,把结果填进下表的「基线」行。
 5. 做第一招(稳定前缀),再跑一遍评测和报表,填「+ 稳定前缀」行。
