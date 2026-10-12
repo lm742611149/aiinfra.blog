@@ -21,22 +21,22 @@ const years = [...byYear.keys()].sort((a, b) => b - a);
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 	<head>
 		<BaseHead
-			title={`Writing — ${SITE_TITLE}`}
-			description="Every post on aiinfra.blog: GPU profiling, kernels, roofline analysis, and inference engine internals, plus the day-by-day AI Infra course."
+			title={`全部文章 — ${SITE_TITLE}`}
+			description="60 天 AI Agent 工程师速成课的全部文章。"
 			schema={[
 				{
 					'@type': 'Blog',
 					'@id': new URL('/blog/#blog', Astro.site).toString(),
-					name: `${SITE_TITLE} — Writing`,
+					name: `${SITE_TITLE} — 全部文章`,
 					url: new URL('/blog/', Astro.site).toString(),
 					blogPost: posts.map((p) => ({ '@type': 'BlogPosting', headline: p.data.title, url: new URL(`/blog/${p.id}/`, Astro.site).toString() })),
 				},
 				breadcrumbSchema(Astro.site, [
 					{ name: SITE_TITLE, path: '/' },
-					{ name: 'Writing', path: '/blog/' },
+					{ name: '全部文章', path: '/blog/' },
 				]),
 			]}
 		/>
@@ -46,10 +46,10 @@ const years = [...byYear.keys()].sort((a, b) => b - a);
 		<main class="shell">
 			<div class="page-head">
 				<p class="label">Archive</p>
-				<h1>Writing</h1>
+				<h1>全部文章</h1>
 				<p class="count">
 					{posts.length}
-					{posts.length === 1 ? 'post' : 'posts'}
+					篇
 				</p>
 			</div>
 

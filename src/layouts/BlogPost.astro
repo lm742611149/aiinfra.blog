@@ -26,7 +26,7 @@ const schema = [
 	blogPostingSchema(Astro.site, post, { image, wordCount }),
 	breadcrumbSchema(Astro.site, [
 		{ name: SITE_TITLE, path: '/' },
-		inCourse ? { name: COURSE_TITLE, path: '/course/' } : { name: 'Writing', path: '/blog/' },
+		inCourse ? { name: COURSE_TITLE, path: '/course/' } : { name: '全部文章', path: '/blog/' },
 		{ name: title, path: `/blog/${post.id}/` },
 	]),
 ];
@@ -56,7 +56,7 @@ const schema = [
 					<div class="meta">
 						{inCourse ? <a class="day" href="/course">Day {day}</a> : <FormattedDate date={pubDate} />}
 						{regime !== 'none' && <span class="regime">{regime}-bound</span>}
-						{readingTime && <span>{readingTime} min read</span>}
+						{readingTime && <span>{lang === 'zh' ? `约 ${readingTime} 分钟` : `${readingTime} min read`}</span>}
 					</div>
 					<h1>{title}</h1>
 					<p class="description">{description}</p>
@@ -110,7 +110,7 @@ const schema = [
 
 			{COMMENTS_ENABLED && <Comments slug={post.id} lang={lang} />}
 
-			<a class="back" href={inCourse ? '/course' : '/blog'}>{inCourse ? '← 365 天课程目录' : '← All posts'}</a>
+			<a class="back" href={inCourse ? '/course' : '/blog'}>{inCourse ? '← 课程目录' : '← 全部文章'}</a>
 		</main>
 		<Footer />
 	</body>

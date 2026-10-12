@@ -74,7 +74,7 @@ export function blogPostingSchema(site: URL | undefined, post: Post, opts: { ima
 		publisher: { '@id': abs(site, '/about/#person') },
 		isPartOf: inCourse
 			? { '@type': 'Blog', '@id': abs(site, '/course/#series'), name: COURSE_TITLE, url: abs(site, '/course/') }
-			: { '@type': 'Blog', '@id': abs(site, '/blog/#blog'), name: `${SITE_TITLE} — Writing`, url: abs(site, '/blog/') },
+			: { '@type': 'Blog', '@id': abs(site, '/blog/#blog'), name: `${SITE_TITLE} — 全部文章`, url: abs(site, '/blog/') },
 		...(inCourse && day !== undefined ? { position: day } : {}),
 		...(opts.wordCount ? { wordCount: opts.wordCount } : {}),
 	};

@@ -7,16 +7,17 @@ import { breadcrumbSchema, personSchema } from '../lib/seo';
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 	<head>
 		<BaseHead
-			title={`About — ${SITE_TITLE}`}
-			description={`${AUTHOR}: a backend engineer moving from B2B billing systems into GPU inference infrastructure. Why this site exists and what gets written here.`}
+			title={`关于 — ${SITE_TITLE}`}
+			description={`${AUTHOR}:做了几年 B2B SaaS 计费系统的后端工程师,在这里写 60 天 AI Agent 工程师速成课。`}
+			lang="zh"
 			schema={[
 				{ '@type': 'ProfilePage', mainEntity: personSchema(Astro.site) },
 				breadcrumbSchema(Astro.site, [
 					{ name: SITE_TITLE, path: '/' },
-					{ name: 'About', path: '/about/' },
+					{ name: '关于', path: '/about/' },
 				]),
 			]}
 		/>
@@ -26,50 +27,39 @@ import { breadcrumbSchema, personSchema } from '../lib/seo';
 		<main class="shell shell--narrow">
 			<div class="page-head">
 				<p class="label">About</p>
-				<h1>Learning inference infrastructure the slow way</h1>
+				<h1>为什么有这个站</h1>
 			</div>
 
 			<div class="prose body">
 				<p>
-					I'm {AUTHOR}. For the past several years I've built B2B SaaS billing systems — subscription
-					lifecycles, proration, invoice generation, the kind of software where a rounding error
-					shows up on someone's bank statement. It taught me to chase a number until it reconciles.
+					我是 {AUTHOR},这几年一直在做 B2B SaaS 的计费系统:订阅、按天折算、出发票,算错一分钱都会有客户来找。
+					工作里每天用 Claude Code 写代码、修 bug,用着用着发现,招聘网站上「AI Agent 工程师」这个岗位越来越多,
+					要的东西跟后端工程师差得并不远:会调大模型 API,会设计工具,会做 RAG,会写评测,能把东西稳稳地跑在线上。
 				</p>
 				<p>
-					I'm now pointing that habit at GPUs. This site is the working log: what I measure, what I
-					got wrong, and what the arithmetic actually says. Not tutorials — I'm not far enough along
-					to teach anyone. Closer to lab notes that happen to be public.
+					网上资料很多,但很散。B 站一堆几分钟的短视频,官方文档全是英文,框架三个月一个大版本。
+					所以我把自己要学的东西排成了 60 天,每天一篇,把当天该读的文档、该看的视频、该翻的书、该写的代码放在一起,
+					朋友想学也可以直接照着走。
 				</p>
 
-				<h2>What gets written here</h2>
-				<p>The plan, roughly in order:</p>
-				<ul>
-					<li>
-						<strong>Reading the hardware.</strong> Roofline analysis, arithmetic intensity, and using
-						a profiler to tell memory stalls from launch overhead.
-					</li>
-					<li>
-						<strong>Kernels.</strong> Triton, then the fused patterns that matter for attention and
-						normalisation.
-					</li>
-					<li>
-						<strong>Engines.</strong> Building a minimal inference engine end to end — KV cache,
-						batching, scheduling — then reading vLLM to find out how wrong I was.
-					</li>
-					<li>
-						<strong>Scale.</strong> Sharding, and what actually happens when a node fails mid-run.
-					</li>
-				</ul>
-
-				<h2>House rules</h2>
+				<h2>这门课怎么用</h2>
 				<p>
-					Every performance claim comes with the hardware, the shapes, and how it was measured. If a
-					number is from a spec sheet rather than my own run, it says so. Posts get corrected in
-					place, with the change noted at the bottom — I'd rather be usefully wrong in public than
-					quietly vague.
+					从 <a href="/course">课程目录</a> 的 Day 0 开始,按顺序往下走。每篇都有一个「动手练习」,代码一定要自己敲一遍、跑起来,
+					光看视频是学不会的。每周最后一天是复习加一个小项目,第 43 天开始做毕业项目 SupportPilot,
+					最后几天讲简历、面试和找工作。
+				</p>
+				<p>
+					不限每天学多久,有时间就往前推。认真跟完,手里会有两个能放进简历的项目和一套能讲清楚的知识体系。
+					能不能拿到好 offer 还要看你原来的工作年限和面试发挥,这个我没法打包票。
 				</p>
 
-				<h2>Elsewhere</h2>
+				<h2>几条规矩</h2>
+				<p>
+					视频和链接都是实际点开核对过的,失效了请在文章底下留言。模型名字和价格变得很快,文中都写了查证日期,
+					以官方最新文档为准。写错的地方我会直接改。
+				</p>
+
+				<h2>其他</h2>
 				<p>
 					<a href={SOCIALS.github} rel="me noopener" target="_blank">GitHub</a> ·
 					<a href="/rss.xml">RSS</a>

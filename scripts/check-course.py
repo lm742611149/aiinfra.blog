@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Sanity checks for the aiinfra-365 course posts.
+"""Sanity checks for the agent-60 course posts.
 
 Run from the repo root:  python3 scripts/check-course.py [--links]
 
-Checks every post under src/content/blog/aiinfra-365/:
+Checks every post under src/content/blog/agent-60/:
   * frontmatter has the seven course fields, and `day` matches the filename
   * pubDate is a real date, never in the future (it is metadata for search engines; the UI only shows Day N)
   * the seven skeleton sections are present, in order
@@ -23,9 +23,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-POSTS = ROOT / 'src/content/blog/aiinfra-365'
+POSTS = ROOT / 'src/content/blog/agent-60'
 TODAY = dt.date.today()
-SECTIONS = ['今天要解决的问题', '名词解释', '常见误区', '参考资料', '自测']
+SECTIONS = ['今天要解决的问题', '动手练习', '名词解释', '常见误区', '学习资料', '自测', '明天预告']
+RESOURCE_GROUPS = ['文档与文章', 'B 站视频', '其他经典视频', '书籍', '开源项目与代码']
 CJK = re.compile(r'[一-鿿]')
 
 
@@ -96,18 +97,14 @@ def main() -> int:
                 problems.append(f'{p.name}: pubDate {pub} is in the future')
         except ValueError:
             problems.append(f'{p.name}: bad pubDate {fm.get("pubDate")!r}')
-        if fm.get('series') != 'aiinfra-365' or fm.get('lang') != 'zh':
+        if fm.get('series') != 'agent-60' or fm.get('lang') != 'zh':
             problems.append(f'{p.name}: series/lang wrong')
         if fm.get('regime') not in ('memory', 'compute', 'none'):
             problems.append(f'{p.name}: regime {fm.get("regime")!r}')
 
         heads = re.findall(r'^## (.+)$', text, re.M)
         pos = -1
-        review = day > 0 and day % 6 == 0  # Day 6/12/18/24/30 are review days with their own skeleton
-        required = ['错题本'] if review else SECTIONS
-        if review and not any(('验收' in h or '自测' in h) for h in heads):
-            problems.append(f'{p.name}: review day without 验收/自测 section')
-        for s in required:
+        for s in SECTIONS:
             idx = next((i for i, h in enumerate(heads) if h.startswith(s)), None)
             if idx is None:
                 problems.append(f'{p.name}: missing section `## {s}`')
@@ -117,7 +114,13 @@ def main() -> int:
                 pos = idx
         if not any(h.startswith(('明天预告', '下周预告', '下个月预告', 'M2 预告')) for h in heads):
             problems.append(f'{p.name}: missing 预告 section')
-        if heads and not review and not heads[0].startswith('今天要解决的问题'):
+        subs = re.findall(r'^### (.+)$', text, re.M)
+        for g in RESOURCE_GROUPS:
+            if not any(h.startswith(g) for h in subs):
+                problems.append(f'{p.name}: 学习资料 missing `### {g}`')
+        if 'player.bilibili.com' not in text:
+            problems.append(f'{p.name}: no Bilibili embed')
+        if heads and not heads[0].startswith('今天要解决的问题'):
             problems.append(f'{p.name}: first section is `{heads[0]}`, expected 今天要解决的问题')
 
         # <details> blocks need blank lines around their content for markdown to render inside.
@@ -125,11 +128,11 @@ def main() -> int:
             problems.append(f'{p.name}: <details> answer lacks blank line after summary (offset {bad.start()})')
             break
 
-        if info['figures'] < 2:
+        if info['figures'] < 1:
             problems.append(f'{p.name}: only {info["figures"]} figure(s)')
-        if info['videos'] < 1:
-            problems.append(f'{p.name}: no video embed')
-        if info["cjk"] < 4000:
+        if info['videos'] < 2:
+            problems.append(f'{p.name}: only {info["videos"]} video embed(s)')
+        if info["cjk"] < 4500:
             problems.append(f'{p.name}: only {info["cjk"]} CJK chars')
 
     # prev/next consistency: the 预告 section should mention the next day's title words.

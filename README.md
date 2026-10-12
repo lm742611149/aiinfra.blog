@@ -1,7 +1,7 @@
-# AI Infra · aiinfra.blog
+# Agent 60 · aiinfra.blog
 
-A technical blog about GPU inference performance, plus a 365-day AI Infra study log. Astro, static
-output, deployed on Cloudflare Pages at https://aiinfra.blog.
+60 天 AI Agent 工程师速成课(中文)。Astro static output, deployed on Cloudflare Pages at https://aiinfra.blog.
+The earlier AI Infra 365-day course is preserved at git tag `archive/aiinfra-365`.
 
 ## Running it
 
@@ -30,36 +30,20 @@ draft: false # true keeps it out of the build entirely
 ---
 ```
 
-### The 365-day course
+### The agent-60 course
 
-Study-log posts live in `src/content/blog/aiinfra-365/` and carry three extra fields:
+Posts live in `src/content/blog/agent-60/day-NN-<slug>.md` with `series: 'agent-60'`, `day: N`,
+`lang: 'zh'`, `regime: none`. Title convention: `Day N · 标题`. The full writing guide and the
+day-by-day plan are in `docs/course-writing-guide-agent.md` — read it before adding or editing a day.
 
-```yaml
-series: 'aiinfra-365'   # membership in the course
-day: 7                  # orders the course page and drives prev/next links
-lang: 'zh'              # sets <html lang>; course posts are written in Chinese
-```
+Skeleton: 今天要解决的问题 → 正文 → 动手练习 → 名词解释 → 常见误区 → 学习资料 (文档与文章 / B 站视频 /
+其他经典视频 / 书籍 / 开源项目与代码) → 自测 → 明天预告. Videos are embedded only after the ID is
+verified through YouTube oEmbed or the Bilibili view API.
 
-Title convention: `Day N · 标题` — the `Day N · ` prefix is stripped on the course index and in
-prev/next navigation. Every course post follows the same skeleton: 今天要解决的问题 → 正文 → 名词解释
-→ 常见误区 → 参考资料 → 自测 (answers inside `<details>`) → 明天预告. Reading time counts CJK
-characters at 400/min.
+`python3 scripts/check-course.py` validates frontmatter, skeleton, resource groups, video counts and
+prev/next previews; add `--links` to curl every URL and embed ID. Run `npm run og` after adding posts.
 
-Every course post also carries **figures and video**:
-
-- Diagrams are inline SVG inside `<figure>…<figcaption>` (theme-aware: colour only with the tokens
-  `--ink`, `--ink-soft`, `--ink-faint`, `--rule`, `--paper-raised`, `--mem`/`--mem-wash` for the
-  memory-bound side, `--compute`/`--compute-wash` for the compute-bound side). No hot-linked images.
-- Videos use `<figure class="video"><div class="video-frame"><iframe …></iframe></div></figure>` with
-  a `youtube-nocookie.com/embed/ID` or `player.bilibili.com/player.html?bvid=BV…` source. Embed only
-  IDs verified through YouTube oEmbed or the Bilibili view API.
-- Measured numbers that have not actually been measured are written as expected ranges with their
-  derivation, plus an empty table to fill in later. Spec numbers cite the vendor page.
-
-`python3 scripts/check-course.py` validates frontmatter, skeleton order, day/date consistency,
-prev/next previews, figure and video counts; add `--links` to curl every URL and embed ID.
-
-The course index is `/course` (`src/pages/course/index.astro`), grouped by month of the study plan.
+The course index is `/course`, grouped by week.
 
 `regime` is the one bit of colour logic in the design: `memory` marks a post as living on the
 bandwidth-bound side of the roofline (indigo), `compute` on the FLOP-bound side (amber), `none`

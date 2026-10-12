@@ -22,9 +22,9 @@ const FORCE = process.argv.includes('--force');
 
 const W = 1200;
 const H = 630;
-const SITE_TITLE = 'AI Infra';
+const SITE_TITLE = 'Agent 60';
 const DOMAIN = 'aiinfra.blog';
-const COURSE_TITLE = '365 天 AI Infra 自学课程';
+const COURSE_TITLE = '60 天 AI Agent 工程师速成课';
 
 // Light palette from global.css. OG cards are always light — dark cards vanish on X's dark UI borders.
 const C = {
@@ -100,7 +100,7 @@ function rooflineMark(x, y, scale, accent) {
 
 function card({ title, description, regime, series, day, kicker }) {
 	const accent = regime === 'compute' ? C.compute : C.mem;
-	const inCourse = series === 'aiinfra-365';
+	const inCourse = series === 'agent-60';
 	const cjk = [...title].some(isWide);
 
 	// Title: shrink until it fits in 3 lines.
@@ -151,7 +151,7 @@ function card({ title, description, regime, series, day, kicker }) {
 	</text>
 
 	<line x1="80" y1="${H - 84}" x2="${W - 80}" y2="${H - 84}" stroke="${C.rule}" stroke-width="1.5"/>
-	<text x="80" y="${H - 44}" font-family="${FONT_MONO}" font-size="20" fill="${C.inkFaint}" letter-spacing="2">MIN LIU · GPU INFERENCE PERFORMANCE</text>
+	<text x="80" y="${H - 44}" font-family="${FONT_MONO}" font-size="20" fill="${C.inkFaint}" letter-spacing="2">MIN LIU · AI AGENT ENGINEERING</text>
 	${
 		regime !== 'none'
 			? `<text x="${W - 80}" y="${H - 44}" text-anchor="end" font-family="${FONT_MONO}" font-size="20" fill="${accent}" letter-spacing="2">${regime.toUpperCase()}-BOUND</text>`
@@ -183,10 +183,10 @@ const defaultOut = join(OUT, 'default.png');
 if (stale(new URL(import.meta.url).pathname, defaultOut)) {
 	await render(
 		card({
-			title: 'GPU inference performance, from the arithmetic up',
-			description: 'Roofline analysis, profiling, kernels, inference engines — and a 365-day AI Infra self-study course in Chinese.',
+			title: '60 天,从写业务代码到做 AI Agent',
+			description: '大模型 API、工具调用、RAG、MCP、LangGraph、评测、生产化,最后做一个能放进简历的完整项目。',
 			regime: 'memory',
-			kicker: 'AIINFRA.BLOG',
+			kicker: '60 天 AI AGENT 工程师速成课',
 		}),
 		defaultOut,
 	);

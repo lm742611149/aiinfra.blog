@@ -6,40 +6,40 @@ import Header from '../../components/Header.astro';
 import { COURSE_SERIES, COURSE_TITLE, SITE_TITLE } from '../../consts';
 import { breadcrumbSchema } from '../../lib/seo';
 
-const TOTAL_DAYS = 365;
+const TOTAL_DAYS = 61; // Day 0 + Day 1–60
 
 const days = (
 	await getCollection('blog', ({ data }) => !data.draft && data.series === COURSE_SERIES && data.day !== undefined)
 ).sort((a, b) => a.data.day! - b.data.day!);
 
-// Group into the study plan's months: Day 0 is the prologue, then 30 days per month.
-const monthOf = (day: number) => (day === 0 ? 0 : Math.ceil(day / 30));
-const MONTH_TITLES: Record<number, string> = {
-	0: '序章 · 为什么走这条路',
-	1: 'M1 · 地基:算力和内存花在哪',
-	2: 'M2 · 推理机制:KV cache、batching、量化',
-	3: 'M3 · 推理深度:读 vLLM',
-	4: 'M4 · 产出物 01:推理优化报告',
-	5: 'M5 · GPU 编程:Triton 入门',
-	6: 'M6 · 产出物 02:自己的 kernel',
-	7: 'M7 · 最小推理引擎:设计与分配器',
-	8: 'M8 · 产出物 03:开源引擎',
-	9: 'M9 · 训练侧:DDP 与 FSDP',
-	10: 'M10 · 产出物 04:故障恢复',
-	11: 'M11 · 收口:作品集',
-	12: 'M12 · 投递与面试',
+// Group into the plan's weeks. Day 0 is the prologue; W7–W8 (Day 43–54) are the capstone.
+const weekOf = (day: number) => {
+	if (day === 0) return 0;
+	if (day <= 42) return Math.ceil(day / 7);
+	if (day <= 54) return 7;
+	return 9;
+};
+const WEEK_TITLES: Record<number, string> = {
+	0: '序章',
+	1: 'W1 · 地基:大模型与 API',
+	2: 'W2 · 工具调用与 Agent 循环',
+	3: 'W3 · 上下文工程与 RAG',
+	4: 'W4 · MCP、框架与多 Agent',
+	5: 'W5 · 评测与可观测',
+	6: 'W6 · 生产化',
+	7: 'W7–W8 · 毕业项目 SupportPilot',
+	9: 'W9 · 第二作品与求职',
 };
 const byMonth = new Map<number, typeof days>();
 for (const d of days) {
-	const m = monthOf(d.data.day!);
+	const m = weekOf(d.data.day!);
 	byMonth.set(m, [...(byMonth.get(m) ?? []), d]);
 }
 const months = [...byMonth.keys()].sort((a, b) => a - b);
-const latest = days.at(-1);
 const pct = Math.round((days.length / TOTAL_DAYS) * 1000) / 10;
 
 const description =
-	'从 transformer 零基础到能写推理引擎的 365 天 AI Infra 自学课程:roofline、KV cache、profiler、CUDA、vLLM、Triton。每天一篇中文学习日志,记录算出的每个数字和犯过的每个错。';
+	'60 天 AI Agent 工程师速成课:大模型 API、function calling、手写 Agent 循环、RAG、MCP、LangGraph、评测、安全与部署,最后做一个完整的智能客服 Agent 项目并准备面试。每天一篇,配文档、B 站视频、书单和可运行代码。';
 const schema = [
 	{
 		'@type': 'CollectionPage',
@@ -77,32 +77,27 @@ const schema = [
 		<Header />
 		<main class="shell">
 			<div class="page-head">
-				<p class="label">aiinfra-365</p>
+				<p class="label">agent-60</p>
 				<h1>{COURSE_TITLE}</h1>
 				<p class="lede">
-					一个 transformer 零基础的后端工程师,用 12 个月把自己改造成能做推理优化的人。每天一篇,写给三个月后复习的自己:
-					每个概念从最小单元讲起,每个数字都要自己算出来,每道错题都留档。
+					写给有编程经验、想转 AI Agent 工程师的人。不讲模型训练和数学,只讲招聘要的东西:调 API、设计工具、做 RAG、
+					接 MCP、写评测、上生产。每天一篇,不限时,有空就学。从 Day 0 开始按顺序走,第 60 天带着两个项目去面试。
 				</p>
 				<div class="progress" role="group" aria-label="Progress">
 					<div class="progress-meta">
-						<span class="num">{days.length} / {TOTAL_DAYS} 天</span>
+						<span class="num">已发布 {days.length} / {TOTAL_DAYS} 篇</span>
 						<span class="num">{pct}%</span>
 					</div>
 					<div class="track"><div class="fill" style={`width:${Math.max(pct, 0.6)}%`}></div></div>
-					{
-						latest && (
-							<p class="latest">
-								最新:<a href={`/blog/${latest.id}/`}>Day {latest.data.day} · {latest.data.title.replace(/^Day \d+ · /, '')}</a>
-							</p>
-						)
-					}
+					{days[0] && <p class="latest"><a href={`/blog/${days[0].id}/`}>从 Day 0 开始 →</a></p>}
+					<p class="latest"><a href="/blog/agent-jd-report-2026-10/">先看看招聘方要什么:880 条真实 JD 拆解 →</a></p>
 				</div>
 			</div>
 
 			{
 				months.map((m) => (
 					<section class="month">
-						<h2 class="month-title">{MONTH_TITLES[m] ?? `M${m}`}</h2>
+						<h2 class="month-title">{WEEK_TITLES[m] ?? `W${m}`}</h2>
 						<ol class="days">
 							{byMonth.get(m)!.map((d) => (
 								<li class:list={['day', `regime-${d.data.regime}`]}>
@@ -130,12 +125,12 @@ const schema = [
 			{days.length === 0 && <p class="empty">还没有开始。</p>}
 
 			<section class="rules">
-				<h2 class="month-title">这个系列的规则</h2>
+				<h2 class="month-title">怎么学</h2>
 				<ul>
-					<li>一次只推进一小块,每块结尾都要能回答「哪句没跟上」。</li>
-					<li>算不出数字就是没过,跟读了几篇文章无关。</li>
-					<li>每篇都有名词解释、参考资料和自测题,答案折叠,先自己写再展开。</li>
-					<li>错题本照实记:错在哪、为什么会错、纠正后的规律是什么。</li>
+					<li>每篇先看「今天要解决的问题」,学完回来对照,答不上来就是没学会。</li>
+					<li>视频和文档挑着看,「动手练习」一定要做,代码自己敲,跑通了才算过。</li>
+					<li>每周最后一天是复习和小项目,前面几周的代码会一路拼成毕业项目。</li>
+					<li>自测题先自己写答案再展开。标了「面试题」的,试着用一分钟口头讲清楚。</li>
 				</ul>
 			</section>
 		</main>

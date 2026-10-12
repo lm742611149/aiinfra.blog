@@ -1,9 +1,9 @@
 // Global site data. Imported anywhere with `import { SITE_TITLE } from '../consts'`.
 
-export const SITE_TITLE = 'AI Infra';
-export const SITE_TAGLINE = 'GPU inference performance, from the arithmetic up';
+export const SITE_TITLE = 'Agent 60';
+export const SITE_TAGLINE = '60 天从后端工程师到 AI Agent 工程师';
 export const SITE_DESCRIPTION =
-	'Notes on GPU inference performance: profiling, kernels, and the arithmetic that decides which side of the roofline you land on. Plus a 365-day AI infrastructure self-study course, written in Chinese.';
+	'60 天 AI Agent 工程师速成课:大模型 API、工具调用、RAG、MCP、LangGraph、评测、生产化,最后做一个能放进简历的完整项目。每天一篇,配文档、B 站视频、书单和可运行代码。';
 
 export const AUTHOR = 'Min Liu';
 
@@ -18,8 +18,8 @@ export const OG_IMAGE_WIDTH = 1200;
 export const OG_IMAGE_HEIGHT = 630;
 
 // Course series identifier, shared by the content schema, the /course page and the OG generator.
-export const COURSE_SERIES = 'aiinfra-365';
-export const COURSE_TITLE = '365 天 AI Infra 自学课程';
+export const COURSE_SERIES = 'agent-60';
+export const COURSE_TITLE = '60 天 AI Agent 工程师速成课';
 
 /** BCP 47 tag for <html lang> and og:locale, from the content schema's short `lang`. */
 export const LANG_TAG: Record<'en' | 'zh', string> = { en: 'en', zh: 'zh-CN' };
