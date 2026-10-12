@@ -14,6 +14,16 @@ const href = (day: number) => {
 	return d ? `/blog/${d.id}/` : '/course';
 };
 
+const ADV = [
+	{ tag: 'W10', title: 'Agent 架构深水区', body: 'Harness 设计、长任务上下文、记忆系统、持久化执行、编排取舍', start: 61 },
+	{ tag: 'W11', title: '评测科学', body: '样本量与显著性、大规模 LLM 评审、线上 A/B、自动化红队', start: 68 },
+	{ tag: 'W12', title: '模型层', body: '选型、vLLM 自部署、LoRA 微调、DPO、蒸馏路由、RL 入门', start: 75 },
+	{ tag: 'W13', title: '平台化与规模', body: '多租户平台、模型网关、MCP 鉴权、可观测、合规、事故复盘', start: 82 },
+	{ tag: 'W14', title: '前沿形态', body: 'Coding Agent 内部、Computer Use、语音、Deep Research、A2A', start: 89 },
+	{ tag: 'W15–16', title: '进阶毕业项目 AgentOps', body: '把 SupportPilot 升级成多租户 Agent 平台', start: 96 },
+	{ tag: 'W17', title: '资深求职', body: '设计文档、Staff 系统设计面试、带人、开源影响力', start: 106 },
+];
+
 const WEEKS = [
 	{ tag: 'W1', range: 'Day 1–7', start: 1, title: '大模型与 API', body: 'token 和上下文窗口、Python 速成、调通 DeepSeek / 通义 / Claude、提示词、结构化输出。', out: '命令行聊天机器人' },
 	{ tag: 'W2', range: 'Day 8–14', start: 8, title: '工具调用与 Agent 循环', body: 'function calling、不用框架手写 Agent 循环、ReAct、工具设计、失败处理、五种 workflow 模式。', out: '会查天气、读文件、搜网页的 Agent' },
@@ -138,6 +148,31 @@ const JD = [
 						))
 					}
 				</ol>
+			</section>
+
+			<section class="adv">
+				<div class="shell adv-inner">
+					<div class="adv-head">
+						<p class="adv-tag">进阶篇 · Day 61–110</p>
+						<h2>60 天之后,往资深走</h2>
+						<p>
+							基础篇让你拿到入场券。进阶篇对准国内 JD 里标题带「资深、专家、架构师」的那一档,挂牌年包中位 66 万。
+							讲的是判断力和规模:为什么这样设计,十倍流量下还成不成立,怎么用数据说服别人。
+						</p>
+						<a class="btn btn-primary" href={href(61)}>看进阶篇第一课</a>
+					</div>
+					<ol class="adv-list">
+						{ADV.map((a) => (
+							<li>
+								<a href={href(a.start)}>
+									<span class="adv-w">{a.tag}</span>
+									<span class="adv-t">{a.title}</span>
+									<span class="adv-b">{a.body}</span>
+								</a>
+							</li>
+						))}
+					</ol>
+				</div>
 			</section>
 
 			<section class="shell build">
@@ -657,6 +692,108 @@ const JD = [
 
 	.tl-item:nth-child(7) a::before {
 		border-color: var(--compute);
+	}
+
+
+	/* Senior track band */
+	.adv {
+		margin-top: clamp(3rem, 7vw, 5rem);
+		background:
+			radial-gradient(circle at 1px 1px, #2b3139 1px, transparent 0) 0 0 / 22px 22px,
+			#0b0e11;
+		color: #eaecef;
+	}
+
+	.adv-inner {
+		display: grid;
+		grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+		gap: clamp(2rem, 5vw, 4rem);
+		padding-block: clamp(3rem, 7vw, 4.5rem);
+		align-items: start;
+	}
+
+	.adv-tag {
+		display: inline-block;
+		margin: 0 0 1rem;
+		padding: 0.2rem 0.75rem;
+		border-radius: 999px;
+		background: #f0b90b;
+		color: #0b0e11;
+		font-family: var(--font-display);
+		font-weight: 700;
+		font-size: 0.85rem;
+	}
+
+	.adv-head h2 {
+		color: #eaecef;
+		font-size: clamp(1.8rem, 3.6vw, 2.5rem);
+		letter-spacing: 0;
+		margin: 0 0 0.9rem;
+	}
+
+	.adv-head p:not(.adv-tag) {
+		color: #b7bdc6;
+		line-height: 1.85;
+		margin: 0 0 1.6rem;
+	}
+
+	.adv .btn-primary {
+		background: #f0b90b;
+		color: #0b0e11;
+	}
+
+	.adv-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: grid;
+		gap: 0.5rem;
+	}
+
+	.adv-list a {
+		display: grid;
+		grid-template-columns: 4.6rem minmax(0, 1fr);
+		gap: 0.15rem 1rem;
+		padding: 0.85rem 1.1rem;
+		border: 1px solid #2b3139;
+		border-radius: 10px;
+		background: #181a20;
+		text-decoration: none;
+		color: #eaecef;
+	}
+
+	.adv-list a:hover {
+		border-color: #f0b90b;
+	}
+
+	.adv-list a:focus-visible {
+		outline: 2px solid #f0b90b;
+		outline-offset: 2px;
+	}
+
+	.adv-w {
+		grid-row: span 2;
+		font-family: var(--font-display);
+		font-weight: 800;
+		font-size: 1.05rem;
+		color: #f0b90b;
+	}
+
+	.adv-t {
+		font-family: var(--font-display);
+		font-weight: 600;
+	}
+
+	.adv-b {
+		font-size: 0.88rem;
+		color: #848e9c;
+		line-height: 1.65;
+	}
+
+	@media (max-width: 960px) {
+		.adv-inner {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	/* Build section */

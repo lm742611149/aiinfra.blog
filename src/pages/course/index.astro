@@ -11,6 +11,11 @@ const days = (
 	await getCollection('blog', ({ data }) => !data.draft && data.series === COURSE_SERIES && data.day !== undefined)
 ).sort((a, b) => a.data.day! - b.data.day!);
 
+const byWeek = new Map<number, typeof days>();
+for (const d of days) byWeek.set(weekOf(d.data.day!), [...(byWeek.get(weekOf(d.data.day!)) ?? []), d]);
+const byWeekHas = (w: number) => byWeek.has(w);
+const firstAdv = 10;
+
 const WEEKS = [
 	{ w: 0, tag: '00', name: '序章', title: '先把岗位看清楚', out: '知道要学什么、花多少钱、两个月能到哪', range: 'Day 0' },
 	{ w: 1, tag: 'W1', name: '第一周', title: '大模型与 API', out: '命令行聊天机器人', range: 'Day 1–7' },
@@ -21,9 +26,14 @@ const WEEKS = [
 	{ w: 6, tag: 'W6', name: '第六周', title: '生产化', out: '公网能访问的 Agent 服务', range: 'Day 36–42' },
 	{ w: 7, tag: 'W7', name: '第七、八周', title: '毕业项目 SupportPilot', out: '能放进简历的完整项目', range: 'Day 43–54', capstone: true },
 	{ w: 9, tag: 'W9', name: '第九周', title: '第二个作品和求职', out: '简历和两个作品', range: 'Day 55–60' },
-];
-const byWeek = new Map<number, typeof days>();
-for (const d of days) byWeek.set(weekOf(d.data.day!), [...(byWeek.get(weekOf(d.data.day!)) ?? []), d]);
+	{ w: 10, tag: 'W10', name: '进阶 · 第十周', title: 'Agent 架构深水区', out: '一份 Agent 运行时设计文档', range: 'Day 61–67', adv: true },
+	{ w: 11, tag: 'W11', name: '进阶 · 第十一周', title: '评测科学', out: '评测平台设计和统计检验脚本', range: 'Day 68–74', adv: true },
+	{ w: 12, tag: 'W12', name: '进阶 · 第十二周', title: '模型层:自部署、微调与强化学习', out: '一个微调过的路由小模型', range: 'Day 75–81', adv: true },
+	{ w: 13, tag: 'W13', name: '进阶 · 第十三周', title: '平台化与规模', out: '多租户 Agent 平台架构', range: 'Day 82–88', adv: true },
+	{ w: 14, tag: 'W14', name: '进阶 · 第十四周', title: '前沿形态', out: '一份技术选型报告', range: 'Day 89–95', adv: true },
+	{ w: 15, tag: 'W15', name: '进阶 · 第十五、十六周', title: '进阶毕业项目 AgentOps', out: '资深级作品:多租户 Agent 平台', range: 'Day 96–105', adv: true, capstone: true },
+	{ w: 17, tag: 'W17', name: '进阶 · 第十七周', title: '资深求职与影响力', out: '设计文档、Staff 面试准备', range: 'Day 106–110', adv: true },
+].filter((w) => byWeekHas(w.w));
 const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 const total = days.length;
 
@@ -70,10 +80,10 @@ const schema = [
 					<div>
 						<h1>课程目录</h1>
 						<p class="lede">
-							61 篇,9 周。按顺序走,每天学完回来把那一天勾上。勾选只存在你自己的浏览器里,换设备不会同步。
+							{total} 篇。Day 0–60 是基础篇,学完能投 Agent 工程师岗;Day 61 以后是进阶篇,目标资深。按顺序走,每天学完回来把那一天勾上。勾选只存在你自己的浏览器里,换设备不会同步。
 						</p>
 						<nav class="jump" aria-label="按周跳转">
-							{WEEKS.map((w) => <a href={`#w${w.w}`} class:list={{ cap: w.capstone }}>{w.tag === '00' ? '序章' : w.capstone ? 'W7–8' : w.tag}</a>)}
+							{WEEKS.map((w) => <a href={`#w${w.w}`} class:list={{ cap: w.capstone, adv: w.adv }}>{w.tag === '00' ? '序章' : w.w === 7 ? 'W7–8' : w.w === 15 ? 'W15–16' : w.tag}</a>)}
 						</nav>
 					</div>
 
@@ -94,6 +104,14 @@ const schema = [
 			<div class="shell weeks">
 				{
 					WEEKS.map((w) => (
+						<>
+						{w.w === firstAdv && (
+							<div class="phase" id="advanced">
+								<p class="phase-tag">进阶篇</p>
+								<h2>资深 Agent 工程师</h2>
+								<p>前 60 天让你拿到入场券,这 50 天往资深走:架构取舍、评测科学、微调与自部署、平台化、前沿形态,最后做一个多租户 Agent 平台,准备 Staff 级面试。</p>
+							</div>
+						)}
 						<section class:list={['week', { capstone: w.capstone }]} id={`w${w.w}`}>
 							<header class="week-head">
 								<p class="week-tag" aria-hidden="true">{w.tag}</p>
@@ -120,6 +138,7 @@ const schema = [
 								))}
 							</ol>
 						</section>
+						</>
 					))
 				}
 
@@ -272,6 +291,10 @@ const schema = [
 		border-color: var(--s-blue);
 	}
 
+	.jump a.adv {
+		border-style: dashed;
+	}
+
 	.jump a.cap {
 		color: var(--s-amber);
 		border-color: rgba(14, 203, 129, 0.45);
@@ -351,6 +374,43 @@ const schema = [
 	}
 
 	/* ---------- Weeks ---------- */
+	.phase {
+		margin-top: 3.5rem;
+		padding: 2.2rem 2.4rem;
+		border-radius: 14px;
+		background:
+			radial-gradient(circle at 1px 1px, #2b3139 1px, transparent 0) 0 0 / 22px 22px,
+			#0b0e11;
+		color: #eaecef;
+		scroll-margin-top: 4rem;
+	}
+
+	.phase-tag {
+		display: inline-block;
+		margin: 0 0 0.8rem;
+		padding: 0.2rem 0.7rem;
+		border-radius: 999px;
+		background: #f0b90b;
+		color: #0b0e11;
+		font-family: var(--font-display);
+		font-weight: 700;
+		font-size: 0.85rem;
+	}
+
+	.phase h2 {
+		color: #eaecef;
+		font-size: clamp(1.7rem, 3.5vw, 2.4rem);
+		letter-spacing: 0;
+		margin: 0 0 0.7rem;
+	}
+
+	.phase p:last-child {
+		margin: 0;
+		color: #b7bdc6;
+		line-height: 1.85;
+		max-width: 46rem;
+	}
+
 	.weeks {
 		padding-block: 1rem 4rem;
 	}

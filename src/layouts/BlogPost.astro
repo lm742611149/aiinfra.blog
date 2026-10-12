@@ -7,7 +7,7 @@ import FormattedDate from '../components/FormattedDate.astro';
 import Comments from '../components/Comments.astro';
 import Header from '../components/Header.astro';
 import { COMMENTS_ENABLED, COURSE_SERIES, COURSE_TITLE, LANG_TAG, SITE_TITLE } from '../consts';
-import { WEEK_TITLES, weekOf } from '../lib/course';
+import { WEEK_TITLES, isAdvanced, weekOf } from '../lib/course';
 import { blogPostingSchema, breadcrumbSchema, ogImageFor, tagSlug } from '../lib/seo';
 
 type Entry = CollectionEntry<'blog'>;
@@ -21,11 +21,15 @@ type Props = {
 	headings?: MarkdownHeading[];
 };
 
-const { post, readingTime, wordCount, prev, next, course = [], headings = [] } = Astro.props;
+const { post, readingTime, wordCount, prev, next, course: allCourse = [], headings = [] } = Astro.props;
 const { title, description, pubDate, updatedDate, tags, series, day, lang } = post.data;
 const inCourse = series === COURSE_SERIES && day !== undefined;
 const bareTitle = inCourse ? title.replace(/^Day \d+ · /, '') : title;
 const week = inCourse ? weekOf(day!) : undefined;
+const adv = inCourse && isAdvanced(day!);
+// The strip shows one track at a time: Day 0–60 for the base course, Day 61+ for the senior track.
+const course = allCourse.filter((c) => isAdvanced(c.day) === adv);
+const firstDay = course[0]?.day ?? 0;
 const lastDay = course.at(-1)?.day ?? 60;
 
 const image = ogImageFor(post.id);
@@ -104,11 +108,11 @@ const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 						inCourse && course.length > 0 && (
 							<div class="course-strip">
 								<p class="strip-label">
-									第 {day} 天,共 {lastDay} 天
+									{adv ? `进阶篇 · 第 ${day! - firstDay + 1} 天,共 ${lastDay - firstDay + 1} 天` : `基础篇 · 第 ${day} 天,共 ${lastDay} 天`}
 								</p>
 								<ol class="ticks">
 									{course.map((c) => (
-										<li class:list={['tick', { done: c.day < day!, here: c.day === day, 'wk-start': c.day > 0 && weekOf(c.day) !== weekOf(c.day - 1) }]}>
+										<li class:list={['tick', { done: c.day < day!, here: c.day === day, 'wk-start': c.day > firstDay && weekOf(c.day) !== weekOf(c.day - 1) }]}>
 											<a href={`/blog/${c.id}/`} title={`Day ${c.day} · ${strip(c.title)}`} aria-label={`Day ${c.day}`} aria-current={c.day === day ? 'page' : undefined} />
 										</li>
 									))}

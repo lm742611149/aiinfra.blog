@@ -17,7 +17,9 @@
 		position: fixed;
 		inset: 0;
 		z-index: 9999;
-		background: #0b0e11;
+		background: rgba(11, 14, 17, 0.42);
+		-webkit-backdrop-filter: blur(16px) saturate(140%);
+		backdrop-filter: blur(16px) saturate(140%);
 		display: grid;
 		place-items: center;
 		transition: opacity 0.45s ease, visibility 0.45s ease;
@@ -31,6 +33,7 @@
 		font-size: 1.55rem;
 		letter-spacing: -0.022em;
 		color: #eaecef;
+		text-shadow: 0 1px 12px rgba(0, 0, 0, 0.5);
 		overflow: hidden;
 	}
 	#boot .bmark::after {
