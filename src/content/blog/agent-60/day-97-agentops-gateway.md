@@ -17,7 +17,7 @@ Day 96 定好了网关的接口:租户用平台签发的 key,调 OpenAI 兼容�
 2. 实现按租户的令牌桶限流,并解释为什么一个租户被限流不能影响别的租户。
 3. 实现主备供应商的故障切换,分清哪些错误该换供应商重试、哪些错误该直接还给租户。
 4. 让每一次上游调用(包括失败的)都按租户、功能、供应商、模型记账,能按功能查出钱花在哪。
-5. 用 7 个不联网的测试证明以上行为。
+5. 用 10 个不联网的测试证明以上行为。
 
 预计用时 5 到 6 小时。前置:Day 96 的仓库骨架;Day 38 的成本算式;Day 83 讲过网关职责和 LiteLLM、Portkey 的对比,今天是动手版。
 
@@ -145,10 +145,15 @@ class OpenAICompatProvider:
 
     async def complete(self, model: str, body: dict) -> dict:
         if self._client is None:
-            self._client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout_s,
-                                             headers={"Authorization": f"Bearer {self.api_key}"})
+            # 自部署的 vLLM 可以不要 key;没 key 就不发这个头,别拼出一个非法的 "Bearer "
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            self._client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout_s, headers=headers)
         try:
             r = await self._client.post("/chat/completions", json={**body, "model": model})
+        except (httpx.LocalProtocolError, httpx.UnsupportedProtocol, httpx.InvalidURL) as e:
+            # 请求还没发出去就在本地失败了:是我们的配置写错了(URL、请求头),换一家上游也没用
+            raise ProviderError(f"{self.name}: bad upstream config ({type(e).__name__}), "
+                                f"check base_url / api_key", retryable=False, status=500) from e
         except (httpx.TimeoutException, httpx.TransportError) as e:
             raise ProviderError(f"{self.name}: {type(e).__name__}", retryable=True) from e
         if r.status_code >= 500 or r.status_code == 429:
@@ -190,8 +195,11 @@ class FakeProvider:
 - **超时、连接失败、5xx**:是上游自己的问题,换一家很可能就好了,可以切换。
 - **429**:上游限流。这一条有争议。如果是你在这家供应商的总额度被打满了,换一家是对的;但如果你的请求本身就太多,换一家只是把问题转移过去。我这里选择切换,同时在 `usage` 表里记下,Day 102 的看板会监控 429 的比例,比例异常时告警,让人判断是要扩额度还是要排查哪个租户在刷。
 - **其他 4xx**:请求本身有问题,比如参数不对、内容被安全审核拦截、上下文超长。换一家大概率还是同样的错误,还白白多花一次时间。直接还给租户,让调用方修自己的请求。
+- **请求在本地就失败了**:`LocalProtocolError`、`UnsupportedProtocol`、`InvalidURL`。这三个都是请求还没发出去,httpx 在我们自己这边就拒绝了,原因几乎总是配置写错:base_url 少了 `https://`,或者 key 是空的、拼出了一个非法的 `Authorization: Bearer ` 头。换一家不会好,反而会把真正的原因藏起来,所以不切换,返回 500 并在错误信息里直接说「检查 base_url / api_key」。
 
 这条规则看起来简单,但很多自己写重试的代码都在这里出错:对所有错误一律重试三次,结果一个参数错误的请求在三家供应商各失败一次,租户等了十几秒才拿到一个本来一秒就能告诉他的 400。
+
+最后那一条要单独说一下,因为它很容易被「传输层错误都可以重试」这条直觉盖过去。`LocalProtocolError` 在 httpx 里是 `TransportError` 的子类,如果只按父类判断,一个漏配了 key 的部署会这样出事:deepseek 本地拼头失败,切到 qwen,qwen 的 key 也是空的,又失败,最后网关回一个 `502 all upstreams failed`。值班的人看到 502,第一反应是供应商挂了,去翻供应商的状态页,半小时后才发现是自己少配了一个环境变量。所以判断顺序是先挑出本地错误,再处理其余的传输错误。另外,没有 key 的时候干脆不发 `Authorization` 头,Day 101 接内网 vLLM 时用得上,它本来就可以不要 key。
 
 `FakeProvider` 是测试的主角。它可以配置前几次失败、失败的状态码、返回的 token 数,这样故障切换和计费都能精确断言。
 
@@ -280,6 +288,7 @@ class RateLimiter:
 """记账与预算。每一次上游尝试都记一行,失败的也记。"""
 from datetime import UTC, datetime
 
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, insert, select
 from sqlalchemy.engine import Engine
 
@@ -298,6 +307,16 @@ def month_spend(engine: Engine, tenant_id: str, now: datetime | None = None) -> 
         v = c.execute(select(func.coalesce(func.sum(usage.c.cost_cny), 0.0))
                       .where(usage.c.tenant_id == tenant_id, usage.c.ts >= start)).scalar_one()
     return float(v)
+
+
+# 网关的路由是 async def,同步的 SQLAlchemy 调用不能直接写在里面,否则一次慢查询会卡住整个事件循环。
+# 这两个包装把它们丢进线程池;同步版本留着,脚本和测试里直接用。
+async def record_async(engine: Engine, **row) -> None:
+    await run_in_threadpool(record, engine, **row)
+
+
+async def month_spend_async(engine: Engine, tenant_id: str) -> float:
+    return await run_in_threadpool(month_spend, engine, tenant_id)
 
 
 def spend_by_feature(engine: Engine, tenant_id: str) -> list[dict]:
@@ -320,12 +339,14 @@ def spend_by_feature(engine: Engine, tenant_id: str) -> list[dict]:
 ```python
 # agentops/src/agentops/gateway/app.py
 """POST /v1/chat/completions:鉴权 → 路由权限 → 限流 → 预算 → 按顺序尝试上游 → 记账 → 返回。"""
+import logging
 import time
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from agentops.config import Settings
 from agentops.deps import tenant
 from agentops.gateway import ledger
 from agentops.gateway.pricing import cost_cny
@@ -334,21 +355,37 @@ from agentops.gateway.ratelimit import RateLimiter
 from agentops.gateway.routes import ROUTES, allowed_routes
 from agentops.tenancy.keys import TenantContext
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 MAX_BODY_CHARS = 400_000          # 约 10 万汉字,超过直接拒,别让一个请求吃掉网关内存
 
 
+def build_providers(s: Settings) -> dict[str, Provider]:
+    """按配置构造上游。必须有 key 的供应商缺了 key,就不注册它,并打一行说清楚缺的是哪个环境变量。
+    第二项是 key 对应的环境变量名;写 None 表示这家可以不要 key(比如内网自部署的 vLLM)。"""
+    candidates: dict[str, tuple[OpenAICompatProvider, str | None]] = {
+        "deepseek": (OpenAICompatProvider("deepseek", s.deepseek_base_url, s.deepseek_api_key, s.upstream_timeout_s),
+                     "AGENTOPS_DEEPSEEK_API_KEY"),
+        "qwen": (OpenAICompatProvider("qwen", s.qwen_base_url, s.qwen_api_key, s.upstream_timeout_s),
+                 "AGENTOPS_QWEN_API_KEY"),
+    }
+    providers: dict[str, Provider] = {}
+    for name, (prov, key_env) in candidates.items():
+        if key_env and not prov.api_key:
+            log.warning("upstream %s disabled: %s is not set", name, key_env)
+            continue
+        providers[name] = prov
+    return providers
+
+
+def init_gateway(app) -> None:
+    """create_app 里调用一次:启动时就把上游构造好,缺配置的在启动日志里就能看到。"""
+    ov = app.state.overrides
+    app.state.providers = ov["providers"] if "providers" in ov else build_providers(app.state.settings)
+
+
 def providers_for(request: Request) -> dict[str, Provider]:
-    app = request.app
-    if "providers" in app.state.overrides:
-        return app.state.overrides["providers"]
-    if not hasattr(app.state, "providers"):
-        s = app.state.settings
-        app.state.providers = {
-            "deepseek": OpenAICompatProvider("deepseek", s.deepseek_base_url, s.deepseek_api_key, s.upstream_timeout_s),
-            "qwen": OpenAICompatProvider("qwen", s.qwen_base_url, s.qwen_api_key, s.upstream_timeout_s),
-        }
-    return app.state.providers
+    return request.app.state.providers
 
 
 def limiter_for(request: Request) -> RateLimiter:
@@ -378,11 +415,14 @@ async def chat_completions(request: Request, ctx: TenantContext = Depends(tenant
                             headers={"Retry-After": f"{retry_after:.1f}"})
 
     engine = request.app.state.engine
-    if ledger.month_spend(engine, ctx.tenant_id) >= ctx.monthly_budget_cny:
+    if await ledger.month_spend_async(engine, ctx.tenant_id) >= ctx.monthly_budget_cny:
         raise HTTPException(402, "monthly budget exhausted")
 
     trace_id = request.headers.get("X-Trace-Id") or uuid.uuid4().hex
     providers = providers_for(request)
+    if not any(t.provider in providers for t in ROUTES[route]):
+        # 这条路由背后一个能用的上游都没有,多半是部署漏配了 key。说清楚,别让人以为是供应商挂了
+        raise HTTPException(503, f"route '{route}' has no configured upstream; check the AGENTOPS_*_API_KEY settings")
     last_err: ProviderError | None = None
     for i, target in enumerate(ROUTES[route]):
         prov = providers.get(target.provider)
@@ -392,7 +432,7 @@ async def chat_completions(request: Request, ctx: TenantContext = Depends(tenant
         try:
             resp = await prov.complete(target.model, body)
         except ProviderError as e:
-            ledger.record(engine, tenant_id=ctx.tenant_id, feature=feature, route=route, provider=target.provider,
+            await ledger.record_async(engine, tenant_id=ctx.tenant_id, feature=feature, route=route, provider=target.provider,
                           model=target.model, prompt_tokens=0, cached_tokens=0, completion_tokens=0, cost_cny=0.0,
                           latency_ms=int((time.perf_counter() - t0) * 1000), status="upstream_error",
                           trace_id=trace_id)
@@ -404,7 +444,7 @@ async def chat_completions(request: Request, ctx: TenantContext = Depends(tenant
         pt, ct = int(u.get("prompt_tokens", 0)), int(u.get("completion_tokens", 0))
         cached = int((u.get("prompt_tokens_details") or {}).get("cached_tokens", 0))
         cost = cost_cny(target.provider, target.model, pt, cached, ct)
-        ledger.record(engine, tenant_id=ctx.tenant_id, feature=feature, route=route, provider=target.provider,
+        await ledger.record_async(engine, tenant_id=ctx.tenant_id, feature=feature, route=route, provider=target.provider,
                       model=target.model, prompt_tokens=pt, cached_tokens=cached, completion_tokens=ct, cost_cny=cost,
                       latency_ms=int((time.perf_counter() - t0) * 1000), status="ok" if i == 0 else "fallback_ok",
                       trace_id=trace_id)
@@ -423,23 +463,33 @@ async def chat_completions(request: Request, ctx: TenantContext = Depends(tenant
 
 **失败的尝试也记一行。** 主供应商失败、切到备用成功时,`usage` 里有两行:一行 `upstream_error`,一行 `fallback_ok`。这样能统计每家供应商的失败率。
 
-最后在 `main.py` 里把 Day 96 留的注释换成真正的挂载:
+**缺 key 的供应商在启动时就剔除。** `build_providers` 在 `create_app` 里跑一次,哪家没配 key,就不注册它,并在启动日志里打一行 `upstream deepseek disabled: AGENTOPS_DEEPSEEK_API_KEY is not set`。请求打到一条背后一个可用上游都没有的路由时,直接回 503,错误信息指向 `AGENTOPS_*_API_KEY`。我考虑过另一种做法:缺 key 就让进程起不来。它更严格,但 Day 98 到 Day 100 的测试和本地开发都要单独起应用、根本不碰网关,如果缺 key 就起不来,每个测试都得塞两把假 key。所以选了「标为不可用 + 启动日志 + 请求时说清楚」。生产上想要更严格,在部署检查里加一条「启动日志里不能出现 disabled」就行。
+
+**数据库调用不在事件循环上跑。** 路由是 `async def`,而 `ledger` 用的是同步的 SQLAlchemy。同步调用直接写在 async 函数里,执行的那几毫秒整个事件循环都停着,所有在途请求一起等;平时只有一两毫秒看不出来,哪天数据库抖一下、一次查询卡了两秒,网关上所有请求就一起卡两秒,健康检查也会超时。所以这里用 `month_spend_async` 和 `record_async`,它们用 FastAPI 自带的 `run_in_threadpool` 把同步调用丢进线程池。另一个选择是整个换成 SQLAlchemy 的异步引擎,那是更彻底的做法,但 `db.py` 的引擎、Day 98 的审计、Day 99 的任务存储、Day 100 的评测都在用同步接口,一起改动面太大。线程池的方案只多了两个小函数,其他模块一行不用动。鉴权依赖 `tenant()` 本来就是普通的 `def`,FastAPI 会自动把它放进线程池,不用管。Day 104 压测时会看到,在 SQLite 上线程池并不会让吞吐变高,它买的是隔离,不是速度。
+
+最后在 `main.py` 里把 Day 96 留的注释换成真正的挂载,顺带在启动时把上游构造好:
 
 ```python
-    from agentops.gateway.app import router as gateway_router   # Day 97
+    from agentops.gateway.app import init_gateway, router as gateway_router   # Day 97
     app.include_router(gateway_router)
+    init_gateway(app)
 ```
 
-## 测试:七个场景
+## 测试:十个场景
 
 ```python
 # agentops/tests/test_gateway.py
+import asyncio
+import logging
+
+import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from agentops.config import Settings
 from agentops.db import usage
-from agentops.gateway.providers import FakeProvider
+from agentops.gateway import ledger
+from agentops.gateway.providers import FakeProvider, OpenAICompatProvider
 from agentops.gateway.ratelimit import RateLimiter
 from agentops.main import create_app
 from tests.conftest import PEPPER
@@ -521,13 +571,56 @@ def test_token_bucket_refills_over_time():
     assert not ok and 0.9 < wait <= 1.0
     now[0] += 1.0
     assert rl.allow("t", per_minute=60)[0]
+
+
+def test_missing_upstream_keys_fail_clearly(engine, keys, caplog):
+    # 不注入假上游,也不配 key:两家都应该在启动时被剔除,请求拿到 503 和一句指向配置的话
+    with caplog.at_level(logging.WARNING, logger="agentops.gateway.app"):
+        c = TestClient(create_app(Settings(key_pepper=PEPPER), engine=engine))
+    assert "AGENTOPS_DEEPSEEK_API_KEY is not set" in caplog.text
+    r = c.post("/v1/chat/completions", json={"model": "fast", **MSG}, headers=auth(keys["cloudledger"]))
+    assert r.status_code == 503 and "AGENTOPS_" in r.json()["detail"]
+
+
+def test_local_config_errors_are_not_retried(engine, keys):
+    # 模拟「请求在本地就拼坏了」:httpx 在发出去之前抛 LocalProtocolError
+    def broken(request: httpx.Request) -> httpx.Response:
+        raise httpx.LocalProtocolError("Illegal header value b'Bearer '")
+    bad = OpenAICompatProvider("deepseek", "https://upstream.invalid", "k")
+    bad._client = httpx.AsyncClient(base_url="https://upstream.invalid", transport=httpx.MockTransport(broken))
+    c, provs = make(engine, deepseek=bad)
+    r = c.post("/v1/chat/completions", json={"model": "fast", **MSG}, headers=auth(keys["cloudledger"]))
+    assert r.status_code == 500 and "check base_url / api_key" in r.json()["detail"]
+    assert provs["qwen"].calls == []          # 配置错误不切到下一家
+
+
+def test_ledger_calls_run_off_the_event_loop(engine, keys, monkeypatch):
+    # 在线程池里跑的函数拿不到正在运行的事件循环;直接在 async 路由里跑的能拿到
+    seen = []
+
+    def on_loop() -> bool:
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+
+    real_record, real_spend = ledger.record, ledger.month_spend
+    monkeypatch.setattr(ledger, "record", lambda *a, **k: (seen.append(on_loop()), real_record(*a, **k))[1])
+    monkeypatch.setattr(ledger, "month_spend", lambda *a, **k: (seen.append(on_loop()), real_spend(*a, **k))[1])
+    c, _ = make(engine)
+    r = c.post("/v1/chat/completions", json={"model": "fast", **MSG}, headers=auth(keys["cloudledger"]))
+    assert r.status_code == 200
+    assert seen == [False, False]              # 查花费一次、记账一次,都不在事件循环线程上
 ```
 
 第一个测试的成本断言值得手算一遍:3000 个输入 token 里有 2000 个命中缓存,未命中 1000 个;输出 400 个。按 flash 高峰价:(1000 × 2 + 2000 × 0.04 + 400 × 8) ÷ 1,000,000 = (2000 + 80 + 3200) ÷ 1,000,000 = 0.00528 元。如果你算出来不是这个数,检查一下是不是把命中缓存的 token 又按全价算了一遍,这正是上面说的最容易算错的地方。
 
 限流测试里,acme 每分钟 5 次,前 5 个请求通过,第 6、7 个返回 429,紧接着 cloudledger 的请求照常通过。这一条就是 Day 96 验收指标里「不影响其他租户」的证据。
 
-我本机运行 `uv run pytest -q` 的输出是 `10 passed`(Day 96 的 3 个加今天的 7 个)。
+后面三个测试是为上面两个决定写的。`test_missing_upstream_keys_fail_clearly` 不注入假上游、也不配 key,确认启动日志里有那行提示、请求拿到的是 503 而不是 502。`test_local_config_errors_are_not_retried` 用 httpx 的 `MockTransport` 在本地直接抛 `LocalProtocolError`,确认网关回 500 而且没有去调 qwen。`test_ledger_calls_run_off_the_event_loop` 的思路是:在线程池里执行的函数拿不到正在运行的事件循环,直接在 async 路由里执行的能拿到,所以把 `ledger.record` 和 `ledger.month_spend` 换成会记下这一点的包装,断言两次调用都不在事件循环线程上。我把这三个测试放到改之前的代码上跑过,三个都失败,改完之后全部通过,说明它们确实在检查这两处行为。
+
+我本机运行 `uv run pytest -q` 的输出是 `13 passed`(Day 96 的 3 个加今天的 10 个)。
 
 ## 接入 SupportPilot
 
@@ -569,11 +662,11 @@ curl -s localhost:8000/v1/chat/completions \
 
 看响应头里的 `X-AgentOps-Cost-CNY`,再去 DeepSeek 控制台核对这次调用的 token 数,确认计费对得上。
 
-**步骤 3:故障注入。** 把 deepseek 的 base_url 故意改成一个不存在的地址,再调一次,确认请求通过 qwen 成功返回,`usage` 表里有一行 `upstream_error` 和一行 `fallback_ok`。
+**步骤 3:故障注入。** 把 deepseek 的 base_url 故意改成一个解析不到的域名,比如 `https://deepseek.invalid`,再调一次,确认请求通过 qwen 成功返回,`usage` 表里有一行 `upstream_error` 和一行 `fallback_ok`。再试一次把 base_url 写成没有 `https://` 的 `deepseek.invalid`:这次是本地配置错误,网关应该直接回 500,不会切到 qwen。两次的区别就是上面「请求在本地就失败了」那条规则。
 
 **步骤 4:写一份网关 ADR。** 记录「429 是否触发供应商切换」这个决定,写出你的选择、理由、以及什么监控信号出现时要重新考虑。
 
-**验收标准:** 10 个测试全绿;能口头解释七个测试各自证明了什么;ADR 写完。
+**验收标准:** 13 个测试全绿;能口头解释今天十个测试各自证明了什么;步骤 3 的两种故障表现不同,能说清为什么;ADR 写完。
 
 ## 名词解释
 

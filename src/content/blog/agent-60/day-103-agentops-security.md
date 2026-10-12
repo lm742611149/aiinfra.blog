@@ -414,12 +414,17 @@ def allow(conn: Connection, ctx: TenantContext, fraction: float, now: datetime |
 
 ```python
 # agentops/src/agentops/gateway/app.py(Day 97 的路由函数里加这几行)
+from fastapi.concurrency import run_in_threadpool
+
 from agentops.security import spend_guard
 
-    with engine.connect() as c:
-        if not spend_guard.allow(c, ctx, request.app.state.settings.spend_guard_hourly_fraction):
-            raise HTTPException(429, detail={"code": "spend_guard",
-                                              "message": "最近一小时花费超过上限,请联系平台管理员"})
+    def _spend_ok() -> bool:
+        with engine.connect() as c:
+            return spend_guard.allow(c, ctx, request.app.state.settings.spend_guard_hourly_fraction)
+
+    if not await run_in_threadpool(_spend_ok):     # 和 Day 97 的记账一样,同步查库不放在事件循环上
+        raise HTTPException(429, detail={"code": "spend_guard",
+                                          "message": "最近一小时花费超过上限,请联系平台管理员"})
 ```
 
 返回 429 而不是 402,是因为对调用方来说这和限流是同一类事情,openai SDK 会把它当成可重试的错误;`code` 字段区分是普通限流还是花费熔断,方便租户排查。

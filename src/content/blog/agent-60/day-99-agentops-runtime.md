@@ -600,7 +600,7 @@ def test_other_tenant_gets_404(engine, setup, keys):
 
 **跨租户。** 别的租户查我的任务,404。
 
-我本机跑全部测试的输出是 `19 passed`。
+我本机跑全部测试的输出是 `22 passed`。
 
 ## 至少一次和恰好一次
 

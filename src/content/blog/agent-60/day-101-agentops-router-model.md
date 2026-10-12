@@ -267,12 +267,12 @@ def _reason(policy: CascadePolicy, s: Attempt, label, conf, ok) -> str:
 TIER_ROUTES = {"free": {"fast"}, "standard": {"fast", "smart", "triage"}, "enterprise": {"fast", "smart", "triage"}}
 ```
 
-`providers_for` 里注册 vLLM,超时单独配:
+`build_providers` 里注册 vLLM,超时单独配。第二项写 `None`,意思是这家可以不要 key:内网的 vLLM 通常不设 key,Day 97 的 provider 在 key 为空时也不会发 `Authorization` 头:
 
 ```python
-# agentops/src/agentops/gateway/app.py(providers_for 的字典里加一项)
-            # Day 101 自部署的分诊小模型。超时设短:小模型慢了不如直接回退
-            "vllm": OpenAICompatProvider("vllm", s.vllm_base_url, s.vllm_api_key, s.vllm_timeout_s),
+# agentops/src/agentops/gateway/app.py(build_providers 的 candidates 字典里加一项)
+        # Day 101 自部署的分诊小模型。内网 vLLM 可以不要 key;超时设短:小模型慢了不如直接回退
+        "vllm": (OpenAICompatProvider("vllm", s.vllm_base_url, s.vllm_api_key, s.vllm_timeout_s), None),
 ```
 
 ```python
@@ -313,12 +313,13 @@ route_decisions = Table(
 )
 ```
 
-处理函数把这些串起来:跑级联,每一次上游调用都记账(shadow 期间小模型那次也算钱,回退时小模型失败的那次记 `upstream_error`),写一条决策,响应头里告诉调用方这次是谁答的、为什么:
+处理函数把这些串起来:跑级联,每一次上游调用都记账(shadow 期间小模型那次也算钱,回退时小模型失败的那次记 `upstream_error`),写一条决策,响应头里告诉调用方这次是谁答的、为什么。写库的部分和 Day 97 一样走线程池:记账用 `ledger.record_async`,决策这一行用 `run_in_threadpool` 包一下,别在 async 函数里直接做同步的数据库操作:
 
 ```python
 # agentops/src/agentops/router_model/route.py
 """网关里的级联路由入口。chat_completions 发现逻辑路由名在 CASCADES 里,就交给这里处理。"""
 from fastapi import HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from sqlalchemy import insert
 
@@ -347,6 +348,12 @@ def policies_for(request: Request) -> dict[str, CascadePolicy]:
     return app.state.cascades
 
 
+def _save_decision(engine, row: dict) -> None:
+    # 同步写库,由 handle 丢进线程池,和 Day 97 的记账一样不占事件循环
+    with engine.begin() as c:
+        c.execute(insert(route_decisions).values(**row))
+
+
 def _usage(resp: dict) -> tuple[int, int, int]:
     u = resp.get("usage") or {}
     return (int(u.get("prompt_tokens", 0)), int((u.get("prompt_tokens_details") or {}).get("cached_tokens", 0)),
@@ -366,22 +373,21 @@ async def handle(request: Request, ctx: TenantContext, route: str, body: dict, f
     total = 0.0
     for a in d.attempts:                     # 每一次上游调用都记账,shadow 模式下小模型那次也要算钱
         if a.resp is None:
-            ledger.record(engine, tenant_id=ctx.tenant_id, feature=feature, route=route, provider=a.target.provider,
+            await ledger.record_async(engine, tenant_id=ctx.tenant_id, feature=feature, route=route, provider=a.target.provider,
                           model=a.target.model, prompt_tokens=0, cached_tokens=0, completion_tokens=0, cost_cny=0.0,
                           latency_ms=a.ms, status="upstream_error", trace_id=trace_id)
             continue
         pt, cached, ct = _usage(a.resp)
         cost = cost_cny(a.target.provider, a.target.model, pt, cached, ct)
         total += cost
-        ledger.record(engine, tenant_id=ctx.tenant_id, feature=feature, route=route, provider=a.target.provider,
+        await ledger.record_async(engine, tenant_id=ctx.tenant_id, feature=feature, route=route, provider=a.target.provider,
                       model=a.target.model, prompt_tokens=pt, cached_tokens=cached, completion_tokens=ct,
                       cost_cny=cost, latency_ms=a.ms, status="ok" if a.role == d.chosen else "shadow_or_fallback",
                       trace_id=trace_id)
-    with engine.begin() as c:
-        c.execute(insert(route_decisions).values(
-            tenant_id=ctx.tenant_id, route=route, feature=feature, small_label=d.small_label,
-            small_conf=d.small_conf, big_label=d.big_label, chosen=d.chosen, reason=d.reason,
-            shadow=policy.shadow_mode, trace_id=trace_id))
+    await run_in_threadpool(_save_decision, engine, dict(
+        tenant_id=ctx.tenant_id, route=route, feature=feature, small_label=d.small_label,
+        small_conf=d.small_conf, big_label=d.big_label, chosen=d.chosen, reason=d.reason,
+        shadow=policy.shadow_mode, trace_id=trace_id))
     chosen = next(a for a in d.attempts if a.role == d.chosen)
     return JSONResponse(d.response, headers={
         "X-AgentOps-Cost-CNY": f"{total:.6f}", "X-AgentOps-Provider": chosen.target.provider,
@@ -645,7 +651,7 @@ Day 97 的价格表查不到价格就报错。vLLM 上的小模型没有账单,�
 
 **目标**:AgentOps 网关有一个可用的 `triage` 级联路由,先跑 shadow,有报告,有成本对比,能按配置回滚。
 
-1. `uv add pyyaml`,在 `src/agentops/router_model/` 下写 `confidence.py`、`policy.py`、`cascade.py`、`route.py`、`report.py`,按「接进网关」一节改路由表、`providers_for`、`config.py`、`db.py` 和 `chat_completions`。
+1. `uv add pyyaml`,在 `src/agentops/router_model/` 下写 `confidence.py`、`policy.py`、`cascade.py`、`route.py`、`report.py`,按「接进网关」一节改路由表、`build_providers`、`config.py`、`db.py` 和 `chat_completions`。
 2. 写 `tests/test_router_model.py`,全部测试跑通。
 3. 把 Day 81 离线评测脚本里的置信度计算改成 `from agentops.router_model.confidence import label_confidence`,确认扫阈值的结果和改之前一样。
 4. 有 GPU 的话,按 Day 81 的 `make serve` 起 vLLM,把 `vllm_base_url` 指过去,用 SupportPilot 跑 50 张工单,确认决策表里有数据、响应头正确。没有 GPU 的话,把路由表里小模型换成 `deepseek-flash` 跑同样的流程。

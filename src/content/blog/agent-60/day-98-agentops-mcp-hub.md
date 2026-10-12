@@ -460,8 +460,9 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None, *
         return {"ok": True}
 
     # 各天逐步挂载:
-    from agentops.gateway.app import router as gateway_router   # Day 97
+    from agentops.gateway.app import init_gateway, router as gateway_router   # Day 97
     app.include_router(gateway_router)
+    init_gateway(app)
     from agentops.mcphub.app import mount_mcp, router as mcp_admin_router   # Day 98
     app.include_router(mcp_admin_router)
     mount_mcp(app)
@@ -592,7 +593,7 @@ def test_role_header_cannot_escalate(engine, keys):
 asyncio_mode = "auto"
 ```
 
-我本机跑 `uv run pytest -q` 的结果是 `15 passed`(Day 96 的 3 个,Day 97 的 7 个,今天的 5 个)。
+我本机跑 `uv run pytest -q` 的结果是 `18 passed`(Day 96 的 3 个,Day 97 的 10 个,今天的 5 个)。
 
 ## 端到端:用官方客户端走一次 HTTP
 
