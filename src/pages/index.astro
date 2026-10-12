@@ -2,7 +2,6 @@
 import { getCollection } from 'astro:content';
 import BaseHead from '../components/BaseHead.astro';
 import Footer from '../components/Footer.astro';
-import AgentLoop from '../components/AgentLoop.astro';
 import Header from '../components/Header.astro';
 import { COURSE_SERIES, COURSE_TITLE, SITE_DESCRIPTION, SITE_TITLE } from '../consts';
 import { personSchema, websiteSchema } from '../lib/seo';
@@ -16,14 +15,23 @@ const href = (day: number) => {
 };
 
 const WEEKS = [
-	{ tag: 'W1', range: 'Day 1–7', start: 1, title: '大模型与 API', body: 'token 和上下文窗口、Python 速成、调通 DeepSeek/通义/Claude、提示词、结构化输出。', out: '命令行聊天机器人' },
-	{ tag: 'W2', range: 'Day 8–14', start: 8, title: '工具调用与 Agent 循环', body: 'function calling、不用框架手写 Agent 循环、ReAct、工具设计、失败处理、五种 workflow 模式。', out: '能查天气、读文件、搜网页的 Agent' },
-	{ tag: 'W3', range: 'Day 15–21', start: 15, title: '上下文工程与 RAG', body: 'embedding、切块、pgvector、混合检索与 rerank、RAG 评估、记忆。', out: '带引用的文档问答' },
-	{ tag: 'W4', range: 'Day 22–28', start: 22, title: 'MCP、框架与多 Agent', body: 'MCP 协议和自己写 server、LangGraph、人工审批、多 Agent、框架横评。', out: '工单分流 Agent' },
-	{ tag: 'W5', range: 'Day 29–35', start: 29, title: '评测与可观测', body: '错误分析、测试集、LLM-as-judge、轨迹评测、Langfuse tracing。', out: '评测集 + CI 回归门禁' },
-	{ tag: 'W6', range: 'Day 36–42', start: 36, title: '生产化', body: 'FastAPI 流式服务、长任务可靠性、成本与延迟、prompt injection、沙箱、Docker 部署。', out: '公网可访问的 Agent 服务' },
-	{ tag: 'W7–8', range: 'Day 43–54', start: 43, title: '毕业项目 SupportPilot', body: '从零做一个智能客服工单 Agent:知识库、业务工具、审批、评测、可观测、上线、包装。', out: '能放进简历的完整项目' },
-	{ tag: 'W9', range: 'Day 55–60', start: 55, title: '第二作品与求职', body: '一天做出代码审查 Agent,写简历,刷面试题和系统设计,找渠道、谈薪资。', out: '简历 + 两个作品' },
+	{ tag: 'W1', range: 'Day 1–7', start: 1, title: '大模型与 API', body: 'token 和上下文窗口、Python 速成、调通 DeepSeek / 通义 / Claude、提示词、结构化输出。', out: '命令行聊天机器人' },
+	{ tag: 'W2', range: 'Day 8–14', start: 8, title: '工具调用与 Agent 循环', body: 'function calling、不用框架手写 Agent 循环、ReAct、工具设计、失败处理、五种 workflow 模式。', out: '会查天气、读文件、搜网页的 Agent' },
+	{ tag: 'W3', range: 'Day 15–21', start: 15, title: '上下文工程与 RAG', body: 'embedding、切块、pgvector、混合检索与 rerank、RAG 评估、记忆和上下文压缩。', out: '带引用出处的文档问答' },
+	{ tag: 'W4', range: 'Day 22–28', start: 22, title: 'MCP、框架与多 Agent', body: '自己写 MCP server、LangGraph、人工审批、多 Agent、Skills、框架横评。', out: '工单分流 Agent' },
+	{ tag: 'W5', range: 'Day 29–35', start: 29, title: '评测与可观测', body: '错误分析、测试集、LLM-as-judge、轨迹评测、Langfuse 和 OpenTelemetry。', out: '评测集和 CI 回归门禁' },
+	{ tag: 'W6', range: 'Day 36–42', start: 36, title: '生产化', body: 'FastAPI 流式服务、长任务、成本与 ROI、prompt injection、沙箱、Docker 部署。', out: '公网能访问的 Agent 服务' },
+	{ tag: 'W7–8', range: 'Day 43–54', start: 43, title: '毕业项目 SupportPilot', body: '从零做一个智能客服工单 Agent:知识库、业务工具、审批、评测、成本、上线、包装。', out: '能放进简历的完整项目' },
+	{ tag: 'W9', range: 'Day 55–60', start: 55, title: '第二个作品和求职', body: '一天做出代码审查 Agent,改简历,练面试题和系统设计,看渠道、谈薪资。', out: '简历和两个作品' },
+];
+
+// From docs/jd-research/summary.md (880 postings, 2026-10). Share of postings mentioning each skill.
+const JD = [
+	{ skill: '评测 / eval', cn: 48, os: 62, day: 29 },
+	{ skill: '工具调用', cn: 55, os: 39, day: 8 },
+	{ skill: '上下文工程', cn: 52, os: 25, day: 20 },
+	{ skill: '多 Agent', cn: 37, os: 22, day: 26 },
+	{ skill: 'MCP', cn: 17, os: 16, day: 22 },
 ];
 ---
 
@@ -39,188 +47,880 @@ const WEEKS = [
 	<body>
 		<Header />
 		<main>
-			<section class="shell hero">
-				<div class="thesis">
-				<p class="label">agent-60</p>
-				<h1>60 天,从写业务代码到做 AI Agent</h1>
-				<p class="lede">
-					给有编程经验的人准备的一门速成课。不讲模型训练,不推公式,只学招聘 JD 上真正要的东西:调大模型 API、
-					设计工具、手写 Agent 循环、做 RAG、接 MCP、写评测、把 Agent 稳稳地放上线。
-				</p>
-				<p class="lede">
-					每天一篇,文档、B 站视频、书和代码都放在一起。每天不限时,有空就往前推。走完 60 天,你手里会有一个完整的
-					智能客服 Agent 项目、一个代码审查 Agent,还有一套面试能讲清楚的东西。
-				</p>
-				<div class="cta-row">
-					<a class="cta" href={href(0)}>从 Day 0 开始 →</a>
-					<a class="cta cta--ghost" href="/course">看完整目录</a>
-					<a class="cta cta--ghost" href="/blog/agent-jd-report-2026-10/">880 条 JD 拆解</a>
-				</div>
-				<p class="byline">已发布 {days.length} / 61 篇 · 代码统一用 Python + OpenAI 兼容接口,国内直连 DeepSeek 就能跑</p>
-				</div>
-				<div class="plot">
-					<AgentLoop />
+			<section class="stage">
+				<div class="shell stage-grid">
+					<div class="pitch">
+						<h1>60 天,<br />学会造一个<br />能干活的 Agent</h1>
+						<p class="lede">
+							演示里这个客服 Agent 是这门课的毕业项目。它会读工单、查账单、翻帮助中心,该找人审批的时候停下来等人。
+							60 天后,这套东西你能从零写出来,也能在面试里讲清楚每一步为什么这么做。
+						</p>
+						<div class="actions">
+							<a class="btn btn-primary" href={href(0)}>从 Day 0 开始学</a>
+							<a class="btn btn-ghost" href="/course">看 61 篇目录</a>
+						</div>
+						<p class="fine">写给有编程经验的人。代码统一用 Python,国内直连 DeepSeek 就能跑,整门课 API 费用一两百块。</p>
+					</div>
+
+					<div class="console" aria-label="SupportPilot 处理一张退款工单的回放">
+						<div class="console-bar">
+							<span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+							<span class="console-title">supportpilot 回放:工单 T-1042</span>
+							<span class="meter" aria-hidden="true">
+								<span><b data-meter="steps">0</b> 步</span>
+								<span><b data-meter="cost">¥0.000</b></span>
+							</span>
+						</div>
+						<ol class="trace" data-trace>
+							<li class="ln ln-user" data-step="0" data-cost="0">
+								<span class="who">客户</span>
+								<span class="msg">上个月年付被扣了两次 468 块,能退一笔吗?</span>
+							</li>
+							<li class="ln ln-think" data-step="1" data-cost="0.002">
+								<span class="who">LLM</span>
+								<span class="msg">分类 = 退款。先确认是不是重复扣款,再查退款政策。</span>
+							</li>
+							<li class="ln ln-call" data-step="2" data-cost="0.004">
+								<span class="who">tool</span>
+								<span class="msg"><em>list_invoices</em>(customer_id="C007", months=2)</span>
+							</li>
+							<li class="ln ln-obs" data-step="2" data-cost="0.004">
+								<span class="who"></span>
+								<span class="msg">INV-2290 ¥468 已付 09-03 · INV-2291 ¥468 已付 09-03</span>
+							</li>
+							<li class="ln ln-call" data-step="3" data-cost="0.007">
+								<span class="who">tool</span>
+								<span class="msg"><em>search_kb</em>(query="重复扣款 退款")</span>
+							</li>
+							<li class="ln ln-obs" data-step="3" data-cost="0.007">
+								<span class="who"></span>
+								<span class="msg">kb-002#3 重复扣款全额退回,3 个工作日到账</span>
+							</li>
+							<li class="ln ln-call" data-step="4" data-cost="0.010">
+								<span class="who">tool</span>
+								<span class="msg"><em>create_refund</em>(invoice="INV-2291", amount=468)</span>
+							</li>
+							<li class="ln ln-wait" data-step="4" data-cost="0.010" data-hold="1600">
+								<span class="who">暂停</span>
+								<span class="msg">写操作,等主管审批……</span>
+							</li>
+							<li class="ln ln-human" data-step="5" data-cost="0.010">
+								<span class="who">主管</span>
+								<span class="msg">批准</span>
+							</li>
+							<li class="ln ln-answer" data-step="6" data-cost="0.016">
+								<span class="who">回复</span>
+								<span class="msg">查到 9 月 3 日同一笔年费扣了两次,多扣的 468 元已提交退款,3 个工作日内原路退回。<cite>依据:帮助中心《退款政策》第 3 节</cite></span>
+							</li>
+						</ol>
+						<p class="console-foot">示例回放。Day 9 写出这个循环的骨架,Day 25 加上审批暂停,Day 46 接上真实的业务工具。</p>
+					</div>
 				</div>
 			</section>
 
-			<section class="shell weeks">
-				<h2 class="section-title">九周怎么走</h2>
-				<ol class="week-grid">
+			<section class="shell route">
+				<div class="sec-head">
+					<h2>九周,一条线走下来</h2>
+					<p>每周的小项目都会留到下一周继续用,到第七周拼成毕业项目。</p>
+				</div>
+				<ol class="timeline">
 					{
 						WEEKS.map((w) => (
-							<li class="week">
+							<li class="tl-item">
 								<a href={href(w.start)}>
-									<p class="week-tag">
-										<span>{w.tag}</span>
-										<span>{w.range}</span>
-									</p>
-									<h3>{w.title}</h3>
-									<p class="week-body">{w.body}</p>
-									<p class="week-out">产出:{w.out}</p>
+									<span class="tl-tag">{w.tag}</span>
+									<span class="tl-range">{w.range}</span>
+									<span class="tl-title">{w.title}</span>
+									<span class="tl-body">{w.body}</span>
+									<span class="tl-out">做出来:{w.out}</span>
 								</a>
 							</li>
 						))
 					}
 				</ol>
 			</section>
+
+			<section class="shell build">
+				<div class="build-copy">
+					<h2>毕业时,你的 GitHub 上会有这些</h2>
+					<p>
+						SupportPilot 是一个给虚构 SaaS 公司「云簿」做的客服工单 Agent。它不是 demo:有 100 条测试集和评测报告,有成本账本,
+						有注入测试,部署在公网上,README 里有架构图和演示视频。招聘方看项目时想看的,基本都在里面。
+					</p>
+					<ul class="deliver">
+						<li><b>能跑的仓库</b>LangGraph 编排,pgvector 知识库,MCP 业务工具</li>
+						<li><b>评测报告</b>规则断言、LLM 评分、轨迹检查,每次改动有分数对比</li>
+						<li><b>成本和延迟数据</b>单张工单花多少钱,和人工比划不划算</li>
+						<li><b>第二个作品</b>代码审查 Agent,一天做出来</li>
+					</ul>
+					<a class="btn btn-ghost-ink" href={href(43)}>看毕业项目怎么开题</a>
+				</div>
+				<figure class="arch" aria-label="SupportPilot 架构">
+					<svg viewBox="0 0 560 400" role="img">
+						<title>SupportPilot 架构</title>
+						<g class="a-edge">
+							<path d="M 280 64 L 280 104"></path>
+							<path d="M 280 176 L 280 214"></path>
+							<path d="M 200 140 L 95 140 L 95 214"></path>
+							<path d="M 360 140 L 465 140 L 465 214"></path>
+							<path d="M 280 286 L 280 320"></path>
+						</g>
+						<g>
+							<rect x="200" y="20" width="160" height="44" rx="8" class="a-plain"></rect>
+							<text x="280" y="47" class="a-t">工单 / 多轮对话</text>
+						</g>
+						<g>
+							<rect x="200" y="104" width="160" height="72" rx="8" class="a-mem"></rect>
+							<text x="280" y="132" class="a-t a-strong">LangGraph 主流程</text>
+							<text x="280" y="154" class="a-t a-soft">分类 检索 执行 自检</text>
+						</g>
+						<g>
+							<rect x="20" y="214" width="150" height="72" rx="8" class="a-cmp"></rect>
+							<text x="95" y="242" class="a-t a-strong">知识库 RAG</text>
+							<text x="95" y="264" class="a-t a-soft">pgvector 混合检索</text>
+						</g>
+						<g>
+							<rect x="205" y="214" width="150" height="72" rx="8" class="a-cmp"></rect>
+							<text x="280" y="242" class="a-t a-strong">人工审批</text>
+							<text x="280" y="264" class="a-t a-soft">写操作先停下</text>
+						</g>
+						<g>
+							<rect x="390" y="214" width="150" height="72" rx="8" class="a-cmp"></rect>
+							<text x="465" y="242" class="a-t a-strong">MCP 业务工具</text>
+							<text x="465" y="264" class="a-t a-soft">账单 / 只读 SQL</text>
+						</g>
+						<g>
+							<rect x="120" y="320" width="320" height="56" rx="8" class="a-plain a-dash"></rect>
+							<text x="280" y="343" class="a-t a-strong">评测 + Langfuse 追踪 + 成本账本</text>
+							<text x="280" y="363" class="a-t a-soft">每次改 prompt 都跑一遍回归</text>
+						</g>
+					</svg>
+				</figure>
+			</section>
+
+			<section class="shell market">
+				<div class="sec-head">
+					<h2>招聘方到底要什么</h2>
+					<p>
+						2026 年 10 月抓了 880 条 AI Agent 工程师 JD,国内 695 条,海外 185 条。下面是几项技能在 JD 里出现的比例,每一项课程里都有对应的一天。
+						国内挂牌年包中位数 48 万,明确要硕士的约一成。
+					</p>
+				</div>
+				<div class="bars">
+					<p class="legend"><span class="key key-cn"></span>国内 <span class="key key-os"></span>海外</p>
+					{
+						JD.map((r) => (
+							<a class="bar-row" href={href(r.day)}>
+								<span class="bar-skill">{r.skill}</span>
+								<span class="bar-pair">
+									<span class="bar bar-cn" style={`--v:${r.cn}`}><span>{r.cn}%</span></span>
+									<span class="bar bar-os" style={`--v:${r.os}`}><span>{r.os}%</span></span>
+								</span>
+								<span class="bar-day">Day {r.day}</span>
+							</a>
+						))
+					}
+				</div>
+				<a class="btn btn-ghost-ink" href="/blog/agent-jd-report-2026-10/">读完整的 880 条 JD 拆解</a>
+			</section>
+
+			<section class="shell closing">
+				<p>今天就能开始。Day 0 讲清楚这个岗位做什么、要准备什么、两个月能做到哪一步。</p>
+				<a class="btn btn-primary" href={href(0)}>打开 Day 0</a>
+			</section>
 		</main>
 		<Footer />
+
+		<script>
+			const trace = document.querySelector<HTMLOListElement>('[data-trace]');
+			const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+			if (trace) {
+				const lines = [...trace.querySelectorAll<HTMLLIElement>('.ln')];
+				const steps = document.querySelector<HTMLElement>('[data-meter="steps"]');
+				const cost = document.querySelector<HTMLElement>('[data-meter="cost"]');
+				const show = (li: HTMLLIElement) => {
+					li.classList.add('on');
+					if (steps) steps.textContent = li.dataset.step ?? '0';
+					if (cost) cost.textContent = `¥${Number(li.dataset.cost ?? 0).toFixed(3)}`;
+				};
+				if (reduce) {
+					lines.forEach(show);
+				} else {
+					trace.classList.add('animated');
+					const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+					const run = async () => {
+						for (;;) {
+							lines.forEach((l) => l.classList.remove('on'));
+							await sleep(700);
+							for (const li of lines) {
+								show(li);
+								await sleep(Number(li.dataset.hold ?? 0) + (li.classList.contains('ln-obs') ? 650 : 1050));
+							}
+							await sleep(5200);
+						}
+					};
+					run();
+				}
+			}
+		</script>
 	</body>
 </html>
 
 <style>
-	.hero {
+	/* ---------- Stage: the one loud element. Always dark, in both themes. ---------- */
+	.stage {
+		--s-bg: #0b1018;
+		--s-raised: #111826;
+		--s-rule: #1f2a3a;
+		--s-ink: #eef1f6;
+		--s-soft: #a9b3c3;
+		--s-faint: #6f7b8d;
+		--s-blue: #7d9bff;
+		--s-amber: #e3a54e;
+		--s-green: #7fcf9a;
+		position: relative;
+		background:
+			radial-gradient(circle at 1px 1px, var(--s-rule) 1px, transparent 0) 0 0 / 22px 22px,
+			var(--s-bg);
+		color: var(--s-ink);
+		border-bottom: 1px solid var(--s-rule);
+		overflow: hidden;
+	}
+
+	.stage::after {
+		content: '';
+		position: absolute;
+		inset: auto 0 0 0;
+		height: 120px;
+		background: linear-gradient(to bottom, transparent, var(--s-bg));
+		pointer-events: none;
+	}
+
+	.stage-grid {
+		position: relative;
+		z-index: 1;
 		display: grid;
-		grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
-		gap: clamp(2rem, 5vw, 3.5rem);
+		grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+		gap: clamp(2rem, 5vw, 4rem);
 		align-items: center;
-		padding-block: clamp(3rem, 8vw, 5.5rem) clamp(2rem, 5vw, 3rem);
-		border-bottom: var(--rule-weight) solid var(--rule);
+		padding-block: clamp(3rem, 7vw, 5.5rem);
+		max-width: 72rem;
 	}
 
-	@media (max-width: 860px) {
-		.hero {
-			grid-template-columns: 1fr;
-		}
-	}
-
-	.hero .label {
-		margin-bottom: 0.9rem;
-	}
-
-	h1 {
-		font-size: clamp(1.9rem, 4.5vw, 2.9rem);
-		letter-spacing: 0;
-		margin-bottom: 1.25rem;
-		max-width: 14em;
+	.pitch h1 {
+		color: var(--s-ink);
+		font-size: clamp(2.4rem, 5.4vw, 3.9rem);
+		line-height: 1.08;
+		letter-spacing: -0.01em;
+		margin: 0 0 1.4rem;
 	}
 
 	.lede {
-		font-size: 1.05rem;
-		line-height: 1.85;
-		color: var(--ink-soft);
-		max-width: 40rem;
-		margin: 0 0 1rem;
+		color: var(--s-soft);
+		font-size: 1.06rem;
+		line-height: 1.9;
+		margin: 0 0 1.8rem;
+		max-width: 30rem;
 	}
 
-	.cta-row {
+	.actions {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.8rem;
-		margin-top: 1.6rem;
+		gap: 0.75rem;
 	}
 
-	.cta {
+	.btn {
 		display: inline-block;
-		padding: 0.65rem 1.15rem;
-		border: 1px solid var(--mem);
-		border-radius: 4px;
-		background: var(--mem);
-		color: var(--paper);
+		padding: 0.7rem 1.25rem;
+		border-radius: 6px;
+		font-family: var(--font-display);
+		font-size: 0.98rem;
+		font-weight: 600;
 		text-decoration: none;
-		font-size: 0.95rem;
+		border: 1px solid transparent;
 	}
 
-	.cta:hover {
-		opacity: 0.9;
+	.btn:focus-visible {
+		outline: 2px solid var(--s-blue, var(--mem));
+		outline-offset: 3px;
 	}
 
-	.cta--ghost {
-		background: transparent;
-		color: var(--mem);
+	.stage .btn-primary {
+		background: var(--s-blue);
+		color: #0b1018;
 	}
 
-	.byline {
+	.stage .btn-primary:hover {
+		background: #a3b8ff;
+	}
+
+	.btn-ghost {
+		color: var(--s-ink);
+		border-color: var(--s-rule);
+	}
+
+	.btn-ghost:hover {
+		border-color: var(--s-soft);
+	}
+
+	.fine {
+		color: var(--s-faint);
+		font-size: 0.86rem;
+		line-height: 1.7;
+		margin: 1.4rem 0 0;
+		max-width: 28rem;
+	}
+
+	/* ---------- The trace console ---------- */
+	.console {
+		background: var(--s-raised);
+		border: 1px solid var(--s-rule);
+		border-radius: 10px;
+		box-shadow:
+			0 0 0 1px rgba(125, 155, 255, 0.06),
+			0 30px 80px -20px rgba(0, 0, 0, 0.6);
 		font-family: var(--font-mono);
-		font-size: 0.76rem;
-		line-height: 1.6;
-		color: var(--ink-faint);
-		margin: 1.6rem 0 0;
+		min-width: 0;
 	}
 
-	.weeks {
-		padding-block: 2.5rem 3rem;
+	.console-bar {
+		display: flex;
+		align-items: center;
+		gap: 0.8rem;
+		padding: 0.7rem 1rem;
+		border-bottom: 1px solid var(--s-rule);
+		font-size: 0.74rem;
+		color: var(--s-faint);
 	}
 
-	.section-title {
-		font-family: var(--font-mono);
+	.lights {
+		display: inline-flex;
+		gap: 6px;
+	}
+
+	.lights i {
+		width: 9px;
+		height: 9px;
+		border-radius: 50%;
+		background: var(--s-rule);
+	}
+
+	.console-title {
+		flex: 1;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.meter {
+		display: inline-flex;
+		gap: 0.9rem;
+		color: var(--s-soft);
+	}
+
+	.meter b {
+		color: var(--s-amber);
 		font-weight: 500;
-		font-size: 0.76rem;
-		letter-spacing: 0.14em;
-		color: var(--ink-faint);
-		margin-bottom: 1.1rem;
 	}
 
-	.week-grid {
+	.trace {
+		list-style: none;
+		margin: 0;
+		padding: 1rem 1rem 0.6rem;
+		min-height: 27rem;
+	}
+
+	.ln {
+		display: grid;
+		grid-template-columns: 3.4rem 1fr;
+		gap: 0.6rem;
+		padding: 0.32rem 0;
+		font-size: 0.8rem;
+		line-height: 1.65;
+	}
+
+	.trace.animated .ln {
+		opacity: 0;
+		transform: translateY(4px);
+		transition:
+			opacity 0.35s ease,
+			transform 0.35s ease;
+	}
+
+	.trace.animated .ln.on {
+		opacity: 1;
+		transform: none;
+	}
+
+	.who {
+		color: var(--s-faint);
+		text-align: right;
+	}
+
+	.msg {
+		color: var(--s-soft);
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+
+	.ln-user .msg {
+		color: var(--s-ink);
+	}
+
+	.ln-think .who,
+	.ln-think .msg {
+		color: var(--s-blue);
+	}
+
+	.ln-call .who {
+		color: var(--s-amber);
+	}
+
+	.ln-call em {
+		font-style: normal;
+		color: var(--s-amber);
+	}
+
+	.ln-obs .msg {
+		color: var(--s-faint);
+		border-left: 2px solid var(--s-rule);
+		padding-left: 0.6rem;
+	}
+
+	.ln-wait .who,
+	.ln-wait .msg {
+		color: var(--s-amber);
+	}
+
+	.trace.animated .ln-wait.on .msg {
+		animation: blink 1s steps(2, start) 2;
+	}
+
+	.ln-human .who,
+	.ln-human .msg {
+		color: var(--s-green);
+	}
+
+	.ln-answer {
+		margin-top: 0.5rem;
+	}
+
+	.ln-answer .who {
+		color: var(--s-ink);
+	}
+
+	.ln-answer .msg {
+		color: var(--s-ink);
+		background: rgba(125, 155, 255, 0.08);
+		border: 1px solid rgba(125, 155, 255, 0.25);
+		border-radius: 6px;
+		padding: 0.6rem 0.75rem;
+	}
+
+	.ln-answer cite {
+		display: block;
+		margin-top: 0.35rem;
+		font-style: normal;
+		color: var(--s-blue);
+		font-size: 0.74rem;
+	}
+
+	.console-foot {
+		margin: 0;
+		padding: 0.7rem 1rem 0.85rem;
+		border-top: 1px solid var(--s-rule);
+		color: var(--s-faint);
+		font-size: 0.72rem;
+		line-height: 1.6;
+	}
+
+	@keyframes blink {
+		to {
+			visibility: hidden;
+		}
+	}
+
+	/* ---------- Quiet sections below ---------- */
+	.sec-head {
+		max-width: 40rem;
+		margin-bottom: 2rem;
+	}
+
+	.sec-head h2,
+	.build-copy h2 {
+		font-size: clamp(1.5rem, 3vw, 2rem);
+		letter-spacing: 0;
+		margin: 0 0 0.6rem;
+	}
+
+	.sec-head p,
+	.build-copy p {
+		color: var(--ink-soft);
+		line-height: 1.85;
+		margin: 0;
+	}
+
+	.route,
+	.build,
+	.market {
+		padding-block: clamp(3rem, 7vw, 5rem) 0;
+	}
+
+	.shell.route,
+	.shell.build,
+	.shell.market,
+	.shell.closing {
+		max-width: 72rem;
+	}
+
+	/* Timeline: a real sequence, so it gets a rail and numbered stops. */
+	.timeline {
 		list-style: none;
 		margin: 0;
 		padding: 0;
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
-		gap: 1rem;
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+		gap: 2.2rem 1.6rem;
+		position: relative;
 	}
 
-	.week a {
-		display: block;
+	.tl-item a {
+		display: grid;
+		gap: 0.35rem;
+		padding-top: 1.3rem;
+		border-top: 2px solid var(--rule);
+		text-decoration: none;
+		color: var(--ink);
+		position: relative;
 		height: 100%;
-		padding: 1.1rem 1.2rem 1.2rem;
+	}
+
+	.tl-item a::before {
+		content: '';
+		position: absolute;
+		top: -7px;
+		left: 0;
+		width: 12px;
+		height: 12px;
+		border-radius: 50%;
+		background: var(--paper);
+		border: 2px solid var(--mem);
+	}
+
+	.tl-item a:hover {
+		border-top-color: var(--mem);
+	}
+
+	.tl-item a:hover::before {
+		background: var(--mem);
+	}
+
+	.tl-item a:focus-visible {
+		outline: 2px solid var(--mem);
+		outline-offset: 4px;
+	}
+
+	.tl-tag {
+		font-family: var(--font-display);
+		font-weight: 700;
+		font-size: 1.5rem;
+		color: var(--mem);
+		line-height: 1.1;
+	}
+
+	.tl-range {
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+		color: var(--ink-faint);
+	}
+
+	.tl-title {
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: 1.08rem;
+		margin-top: 0.2rem;
+	}
+
+	.tl-body {
+		font-size: 0.9rem;
+		line-height: 1.75;
+		color: var(--ink-soft);
+	}
+
+	.tl-out {
+		font-size: 0.86rem;
+		color: var(--compute);
+		margin-top: 0.2rem;
+	}
+
+	.tl-item:nth-child(7) .tl-tag {
+		color: var(--compute);
+	}
+
+	.tl-item:nth-child(7) a::before {
+		border-color: var(--compute);
+	}
+
+	/* Build section */
+	.build {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+		gap: clamp(2rem, 5vw, 4rem);
+		align-items: center;
+	}
+
+	.deliver {
+		list-style: none;
+		margin: 1.4rem 0 1.6rem;
+		padding: 0;
+		display: grid;
+		gap: 0.8rem;
+	}
+
+	.deliver li {
+		padding-left: 1rem;
+		border-left: 2px solid var(--compute);
+		color: var(--ink-soft);
+		line-height: 1.7;
+		font-size: 0.95rem;
+	}
+
+	.deliver b {
+		display: block;
+		color: var(--ink);
+		font-family: var(--font-display);
+		font-weight: 600;
+	}
+
+	.btn-ghost-ink {
+		color: var(--mem);
+		border-color: var(--mem);
+	}
+
+	.btn-ghost-ink:hover {
+		background: var(--mem-wash);
+	}
+
+	.btn-ghost-ink:focus-visible {
+		outline: 2px solid var(--mem);
+	}
+
+	.arch {
+		margin: 0;
 		background: var(--paper-raised);
 		border: 1px solid var(--rule);
-		border-radius: 4px;
+		border-radius: 10px;
+		padding: 1rem;
+	}
+
+	.arch svg {
+		width: 100%;
+		height: auto;
+		display: block;
+	}
+
+	.a-edge path {
+		fill: none;
+		stroke: var(--rule);
+		stroke-width: 1.5;
+	}
+
+	.a-plain {
+		fill: var(--paper);
+		stroke: var(--rule);
+	}
+
+	.a-dash {
+		stroke-dasharray: 5 4;
+	}
+
+	.a-mem {
+		fill: var(--mem-wash);
+		stroke: var(--mem);
+	}
+
+	.a-cmp {
+		fill: var(--compute-wash);
+		stroke: var(--compute);
+	}
+
+	.a-t {
+		text-anchor: middle;
+		font-family: var(--font-mono);
+		font-size: 13px;
+		fill: var(--ink);
+	}
+
+	.a-strong {
+		font-weight: 600;
+		font-size: 14px;
+	}
+
+	.a-soft {
+		fill: var(--ink-soft);
+		font-size: 11.5px;
+	}
+
+	/* Market bars */
+	.bars {
+		display: grid;
+		gap: 0.2rem;
+		max-width: 48rem;
+		margin-bottom: 1.8rem;
+	}
+
+	.legend {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 0.85rem;
+		color: var(--ink-faint);
+		margin: 0 0 0.6rem;
+	}
+
+	.key {
+		display: inline-block;
+		width: 12px;
+		height: 12px;
+		border-radius: 2px;
+		margin-left: 0.6rem;
+	}
+
+	.key:first-child {
+		margin-left: 0;
+	}
+
+	.key-cn {
+		background: var(--mem);
+	}
+
+	.key-os {
+		background: var(--compute);
+	}
+
+	.bar-row {
+		display: grid;
+		grid-template-columns: 7.5rem 1fr 4rem;
+		gap: 1rem;
+		align-items: center;
+		padding: 0.55rem 0;
+		border-bottom: 1px solid var(--rule-soft);
 		text-decoration: none;
 		color: var(--ink);
 	}
 
-	.week a:hover {
-		border-color: var(--mem);
+	.bar-row:hover .bar-skill {
+		color: var(--mem);
 	}
 
-	.week-tag {
-		display: flex;
-		justify-content: space-between;
+	.bar-skill {
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: 0.95rem;
+	}
+
+	.bar-pair {
+		display: grid;
+		gap: 4px;
+	}
+
+	.bar {
+		display: block;
+		height: 14px;
+		width: calc(var(--v) * 1%);
+		border-radius: 0 3px 3px 0;
+		position: relative;
+	}
+
+	.bar span {
+		position: absolute;
+		left: calc(100% + 6px);
+		top: 50%;
+		transform: translateY(-50%);
 		font-family: var(--font-mono);
 		font-size: 0.72rem;
-		letter-spacing: 0.08em;
-		color: var(--mem);
-		margin: 0 0 0.55rem;
-	}
-
-	.week h3 {
-		font-size: 1.12rem;
-		letter-spacing: 0;
-		margin: 0 0 0.5rem;
-	}
-
-	.week-body {
-		font-size: 0.92rem;
-		line-height: 1.75;
 		color: var(--ink-soft);
-		margin: 0 0 0.7rem;
 	}
 
-	.week-out {
-		font-size: 0.85rem;
-		color: var(--compute);
+	.bar-cn {
+		background: var(--mem);
+	}
+
+	.bar-os {
+		background: var(--compute);
+	}
+
+	.bar-day {
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+		color: var(--ink-faint);
+		text-align: right;
+	}
+
+	/* Closing */
+	.closing {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1.2rem;
+		margin-block: clamp(3rem, 7vw, 5rem);
+		padding-block: 1.8rem;
+		border-top: 1px solid var(--rule);
+		border-bottom: 1px solid var(--rule);
+	}
+
+	.closing p {
 		margin: 0;
+		font-size: 1.08rem;
+		max-width: 36rem;
+		line-height: 1.8;
+	}
+
+	.closing .btn-primary {
+		background: var(--mem);
+		color: var(--paper);
+	}
+
+	.closing .btn-primary:hover {
+		opacity: 0.9;
+	}
+
+	@media (max-width: 960px) {
+		.stage-grid,
+		.build {
+			grid-template-columns: 1fr;
+		}
+
+		.timeline {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+	}
+
+	@media (max-width: 560px) {
+		.timeline {
+			grid-template-columns: 1fr;
+		}
+
+		.trace {
+			min-height: 0;
+		}
+
+		.ln {
+			grid-template-columns: 2.6rem 1fr;
+			font-size: 0.76rem;
+		}
+
+		.meter span:first-child {
+			display: none;
+		}
+
+		.bar-row {
+			grid-template-columns: 5.5rem 1fr;
+		}
+
+		.bar-day {
+			display: none;
+		}
 	}
 </style>
