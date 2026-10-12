@@ -1,11 +1,13 @@
 ---
 import type { CollectionEntry } from 'astro:content';
+import type { MarkdownHeading } from 'astro';
 import BaseHead from '../components/BaseHead.astro';
 import Footer from '../components/Footer.astro';
 import FormattedDate from '../components/FormattedDate.astro';
 import Comments from '../components/Comments.astro';
 import Header from '../components/Header.astro';
 import { COMMENTS_ENABLED, COURSE_SERIES, COURSE_TITLE, LANG_TAG, SITE_TITLE } from '../consts';
+import { WEEK_TITLES, weekOf } from '../lib/course';
 import { blogPostingSchema, breadcrumbSchema, ogImageFor, tagSlug } from '../lib/seo';
 
 type Entry = CollectionEntry<'blog'>;
@@ -15,11 +17,16 @@ type Props = {
 	wordCount?: number;
 	prev?: Entry | null;
 	next?: Entry | null;
+	course?: { id: string; day: number; title: string }[];
+	headings?: MarkdownHeading[];
 };
 
-const { post, readingTime, wordCount, prev, next } = Astro.props;
-const { title, description, pubDate, updatedDate, regime, tags, series, day, lang } = post.data;
-const inCourse = series === COURSE_SERIES;
+const { post, readingTime, wordCount, prev, next, course = [], headings = [] } = Astro.props;
+const { title, description, pubDate, updatedDate, tags, series, day, lang } = post.data;
+const inCourse = series === COURSE_SERIES && day !== undefined;
+const bareTitle = inCourse ? title.replace(/^Day \d+ · /, '') : title;
+const week = inCourse ? weekOf(day!) : undefined;
+const lastDay = course.at(-1)?.day ?? 60;
 
 const image = ogImageFor(post.id);
 const schema = [
@@ -30,6 +37,7 @@ const schema = [
 		{ name: title, path: `/blog/${post.id}/` },
 	]),
 ];
+const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 ---
 
 <!doctype html>
@@ -49,108 +57,422 @@ const schema = [
 		/>
 	</head>
 	<body>
+		<div class="read-progress" aria-hidden="true"><span data-progress></span></div>
 		<Header />
-		<main class="shell shell--narrow">
-			<article class:list={[`regime-${regime}`]}>
-				<div class="post-head">
-					<div class="meta">
-						{inCourse ? <a class="day" href="/course">Day {day}</a> : <FormattedDate date={pubDate} />}
-						{regime !== 'none' && <span class="regime">{regime}-bound</span>}
-						{readingTime && <span>{lang === 'zh' ? `约 ${readingTime} 分钟` : `${readingTime} min read`}</span>}
-					</div>
-					<h1>{title}</h1>
-					<p class="description">{description}</p>
-					{
-						tags.length > 0 && (
-							<ul class="tags" aria-label="Tags">
-								{tags.map((t) => (
-									<li>
-										<a href={`/tags/${tagSlug(t)}/`} rel="tag">{t}</a>
-									</li>
-								))}
-							</ul>
-						)
-					}
-				</div>
-
-				<div class="prose">
-					<slot />
-					{
-						updatedDate && !inCourse && (
-							<p class="updated">
-								Updated <FormattedDate date={updatedDate} />
-							</p>
-						)
-					}
-				</div>
-			</article>
-
-			{
-				inCourse && (prev || next) && (
-					<nav class="series-nav" aria-label="Course navigation">
-						{prev ? (
-							<a class="series-link" href={`/blog/${prev.id}/`}>
-								<span class="series-label">← Day {prev.data.day}</span>
-								<span class="series-title">{prev.data.title.replace(/^Day \d+ · /, '')}</span>
-							</a>
-						) : (
-							<span />
-						)}
-						{next ? (
-							<a class="series-link series-link--next" href={`/blog/${next.id}/`}>
-								<span class="series-label">Day {next.data.day} →</span>
-								<span class="series-title">{next.data.title.replace(/^Day \d+ · /, '')}</span>
-							</a>
-						) : (
-							<span />
-						)}
+		<main>
+			<header class="post-stage">
+				<div class="shell stage-inner">
+					<nav class="crumbs" aria-label="位置">
+						{
+							inCourse ? (
+								<>
+									<a href="/course">课程</a>
+									<span>/</span>
+									<span>{WEEK_TITLES[week!]}</span>
+								</>
+							) : (
+								<a href="/blog">全部文章</a>
+							)
+						}
 					</nav>
-				)
-			}
 
-			{COMMENTS_ENABLED && <Comments slug={post.id} lang={lang} />}
+					<div class="title-row">
+						{inCourse && (
+							<p class="day-big" aria-label={`第 ${day} 天`}>
+								<span class="day-word">Day</span>
+								<span class="day-num">{String(day).padStart(2, '0')}</span>
+							</p>
+						)}
+						<div class="title-block">
+							<h1>{bareTitle}</h1>
+							<p class="description">{description}</p>
+							<p class="meta">
+								{readingTime && <span>{lang === 'zh' ? `读完约 ${readingTime} 分钟` : `${readingTime} min read`}</span>}
+								{!inCourse && <FormattedDate date={pubDate} />}
+								{tags
+									.filter((t) => t !== COURSE_SERIES)
+									.map((t) => (
+										<a class="tag" href={`/tags/${tagSlug(t)}/`} rel="tag">
+											{t}
+										</a>
+									))}
+							</p>
+						</div>
+					</div>
 
-			<a class="back" href={inCourse ? '/course' : '/blog'}>{inCourse ? '← 课程目录' : '← 全部文章'}</a>
+					{
+						inCourse && course.length > 0 && (
+							<div class="course-strip">
+								<p class="strip-label">
+									第 {day} 天,共 {lastDay} 天
+								</p>
+								<ol class="ticks">
+									{course.map((c) => (
+										<li class:list={['tick', { done: c.day < day!, here: c.day === day, 'wk-start': c.day > 0 && weekOf(c.day) !== weekOf(c.day - 1) }]}>
+											<a href={`/blog/${c.id}/`} title={`Day ${c.day} · ${strip(c.title)}`} aria-label={`Day ${c.day}`} aria-current={c.day === day ? 'page' : undefined} />
+										</li>
+									))}
+								</ol>
+							</div>
+						)
+					}
+				</div>
+			</header>
+
+			<div class="shell post-grid">
+				<article class="post-body">
+					<div class="prose">
+						<slot />
+						{
+							updatedDate && !inCourse && (
+								<p class="updated">
+									更新于 <FormattedDate date={updatedDate} />
+								</p>
+							)
+						}
+					</div>
+
+					{
+						inCourse && (prev || next) && (
+							<nav class="series-nav" aria-label="上一天和下一天">
+								{prev ? (
+									<a class="series-link" href={`/blog/${prev.id}/`}>
+										<span class="series-label">上一天 · Day {prev.data.day}</span>
+										<span class="series-title">{strip(prev.data.title)}</span>
+									</a>
+								) : (
+									<span />
+								)}
+								{next ? (
+									<a class="series-link series-link--next" href={`/blog/${next.id}/`}>
+										<span class="series-label">下一天 · Day {next.data.day}</span>
+										<span class="series-title">{strip(next.data.title)}</span>
+									</a>
+								) : (
+									<span />
+								)}
+							</nav>
+						)
+					}
+
+					{COMMENTS_ENABLED && <Comments slug={post.id} lang={lang} />}
+				</article>
+
+				{
+					headings.length > 1 && (
+						<aside class="toc" aria-label="本篇目录">
+							<div class="toc-inner">
+								<p class="toc-title">本篇目录</p>
+								<ol>
+									{headings.map((h) => (
+										<li>
+											<a href={`#${h.slug}`} data-toc={h.slug}>
+												{h.text}
+											</a>
+										</li>
+									))}
+								</ol>
+								<a class="toc-back" href={inCourse ? '/course' : '/blog'}>
+									{inCourse ? '回到课程目录' : '全部文章'}
+								</a>
+							</div>
+						</aside>
+					)
+				}
+			</div>
 		</main>
 		<Footer />
+
+		<script>
+			const bar = document.querySelector<HTMLElement>('[data-progress]');
+			const body = document.querySelector<HTMLElement>('.post-body');
+			const links = [...document.querySelectorAll<HTMLAnchorElement>('[data-toc]')];
+			const targets = links
+				.map((a) => document.getElementById(a.dataset.toc ?? ''))
+				.filter((x): x is HTMLElement => x !== null);
+
+			let ticking = false;
+			const update = () => {
+				ticking = false;
+				if (bar && body) {
+					const r = body.getBoundingClientRect();
+					const total = r.height - window.innerHeight;
+					const p = total > 0 ? Math.min(1, Math.max(0, -r.top / total)) : 1;
+					bar.style.transform = `scaleX(${p})`;
+				}
+				let current = '';
+				for (const t of targets) {
+					if (t.getBoundingClientRect().top < 140) current = t.id;
+				}
+				for (const a of links) a.classList.toggle('active', a.dataset.toc === current);
+			};
+			window.addEventListener(
+				'scroll',
+				() => {
+					if (!ticking) {
+						ticking = true;
+						requestAnimationFrame(update);
+					}
+				},
+				{ passive: true },
+			);
+			update();
+		</script>
 	</body>
 </html>
 
 <style>
-	.post-head {
-		padding-block: clamp(2.5rem, 6vw, 4rem) 1.6rem;
-		border-bottom: var(--rule-weight) solid var(--rule);
+	.read-progress {
+		position: fixed;
+		inset: 0 0 auto 0;
+		height: 3px;
+		z-index: 50;
+		pointer-events: none;
+	}
+
+	.read-progress span {
+		display: block;
+		height: 100%;
+		background: #7d9bff;
+		transform: scaleX(0);
+		transform-origin: 0 50%;
+	}
+
+	/* ---------- Dark header band, same stage as the home page ---------- */
+	.post-stage {
+		--s-bg: #0b1018;
+		--s-rule: #1f2a3a;
+		--s-ink: #eef1f6;
+		--s-soft: #a9b3c3;
+		--s-faint: #6f7b8d;
+		--s-blue: #7d9bff;
+		--s-amber: #e3a54e;
+		background:
+			radial-gradient(circle at 1px 1px, var(--s-rule) 1px, transparent 0) 0 0 / 22px 22px,
+			var(--s-bg);
+		color: var(--s-ink);
+		border-bottom: 1px solid var(--s-rule);
+	}
+
+	.stage-inner {
+		max-width: 72rem;
+		padding-block: clamp(2rem, 5vw, 3.2rem) clamp(1.6rem, 4vw, 2.4rem);
+	}
+
+	.crumbs {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		font-size: 0.86rem;
+		color: var(--s-faint);
+		margin-bottom: 1.6rem;
+	}
+
+	.crumbs a {
+		color: var(--s-soft);
+		text-decoration: none;
+	}
+
+	.crumbs a:hover {
+		color: var(--s-blue);
+	}
+
+	.title-row {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		gap: clamp(1.2rem, 3vw, 2.5rem);
+		align-items: start;
+	}
+
+	.title-row:not(:has(.day-big)) {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.day-big {
+		margin: 0;
+		display: grid;
+		justify-items: start;
+		line-height: 0.9;
+		font-family: var(--font-display);
+	}
+
+	.day-word {
+		font-size: 0.95rem;
+		font-weight: 600;
+		color: var(--s-blue);
+		padding-left: 0.2rem;
+	}
+
+	.day-num {
+		font-size: clamp(4rem, 9vw, 6.5rem);
+		font-weight: 800;
+		color: transparent;
+		-webkit-text-stroke: 1.5px var(--s-blue);
+		letter-spacing: -0.03em;
+	}
+
+	h1 {
+		color: var(--s-ink);
+		font-size: clamp(1.8rem, 3.8vw, 2.7rem);
+		line-height: 1.22;
+		letter-spacing: 0;
+		margin: 0.2rem 0 0.9rem;
+		max-width: 30em;
+	}
+
+	.description {
+		color: var(--s-soft);
+		font-size: 1.05rem;
+		line-height: 1.85;
+		margin: 0 0 1.1rem;
+		max-width: 46rem;
 	}
 
 	.meta {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.9rem;
+		gap: 0.5rem 0.9rem;
+		margin: 0;
+		font-size: 0.84rem;
+		color: var(--s-faint);
+	}
+
+	.tag {
 		font-family: var(--font-mono);
-		font-size: 0.72rem;
-		letter-spacing: 0.1em;
-		text-transform: uppercase;
-		color: var(--ink-faint);
-		margin-bottom: 1.1rem;
-	}
-
-	.regime {
-		border-left: 2px solid var(--rule);
-		padding-left: 0.55rem;
-	}
-
-	.day {
+		font-size: 0.74rem;
+		color: var(--s-soft);
 		text-decoration: none;
-		color: var(--ink);
-		background: var(--paper-raised);
-		border: 1px solid var(--rule);
-		border-radius: 3px;
-		padding: 0.15rem 0.5rem;
+		border: 1px solid var(--s-rule);
+		border-radius: 4px;
+		padding: 0.1rem 0.45rem;
 	}
 
-	.day:hover {
-		border-color: var(--mem);
+	.tag:hover {
+		color: var(--s-blue);
+		border-color: var(--s-blue);
+	}
+
+	/* 61 ticks: where this day sits in the whole course. Each tick links to its day. */
+	.course-strip {
+		margin-top: 2rem;
+	}
+
+	.strip-label {
+		margin: 0 0 0.55rem;
+		font-size: 0.8rem;
+		color: var(--s-faint);
+	}
+
+	.ticks {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		gap: 3px;
+	}
+
+	.tick {
+		flex: 1 1 0;
+		min-width: 0;
+	}
+
+	.tick.wk-start {
+		margin-left: 6px;
+	}
+
+	.tick a {
+		display: block;
+		height: 18px;
+		border-radius: 2px;
+		background: var(--s-rule);
+		transition: background 0.15s ease;
+	}
+
+	.tick.done a {
+		background: #2c3e6e;
+	}
+
+	.tick.here a {
+		background: var(--s-blue);
+		box-shadow: 0 0 0 3px rgba(125, 155, 255, 0.25);
+	}
+
+	.tick a:hover,
+	.tick a:focus-visible {
+		background: var(--s-amber);
+		outline: none;
+	}
+
+	/* ---------- Body: article + sticky table of contents ---------- */
+	.post-grid {
+		max-width: 72rem;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 15rem;
+		gap: clamp(2rem, 4vw, 3.5rem);
+		align-items: start;
+	}
+
+	.post-grid:not(:has(.toc)) {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.post-body .prose {
+		max-width: none;
+		padding-top: 2.4rem;
+	}
+
+	.toc {
+		position: sticky;
+		top: 1.5rem;
+		padding-top: 2.4rem;
+		max-height: calc(100vh - 3rem);
+		overflow-y: auto;
+	}
+
+	.toc-inner {
+		border-left: 1px solid var(--rule);
+		padding-left: 1rem;
+	}
+
+	.toc-title {
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: 0.9rem;
+		margin: 0 0 0.8rem;
+		color: var(--ink);
+	}
+
+	.toc ol {
+		list-style: none;
+		margin: 0 0 1.4rem;
+		padding: 0;
+		display: grid;
+		gap: 0.15rem;
+	}
+
+	.toc a {
+		display: block;
+		font-size: 0.86rem;
+		line-height: 1.5;
+		padding: 0.3rem 0 0.3rem 0.7rem;
+		margin-left: calc(-1rem - 1px);
+		border-left: 2px solid transparent;
+		color: var(--ink-faint);
+		text-decoration: none;
+	}
+
+	.toc a:hover {
+		color: var(--ink);
+	}
+
+	.toc a.active {
+		color: var(--mem);
+		border-left-color: var(--mem);
+	}
+
+	.toc .toc-back {
+		font-size: 0.84rem;
 		color: var(--mem);
 	}
 
@@ -159,16 +481,22 @@ const schema = [
 		grid-template-columns: 1fr 1fr;
 		gap: 1rem;
 		margin-top: 3.5rem;
-		padding-top: 1.5rem;
-		border-top: var(--rule-weight) solid var(--rule);
 	}
 
 	.series-link {
 		display: flex;
 		flex-direction: column;
-		gap: 0.3rem;
+		gap: 0.35rem;
+		padding: 1rem 1.2rem;
+		border: 1px solid var(--rule);
+		border-radius: 8px;
+		background: var(--paper-raised);
 		text-decoration: none;
 		color: var(--ink);
+	}
+
+	.series-link:hover {
+		border-color: var(--mem);
 	}
 
 	.series-link--next {
@@ -176,23 +504,67 @@ const schema = [
 	}
 
 	.series-label {
-		font-family: var(--font-mono);
-		font-size: 0.72rem;
-		letter-spacing: 0.1em;
-		text-transform: uppercase;
+		font-size: 0.8rem;
 		color: var(--ink-faint);
 	}
 
 	.series-title {
-		font-size: 0.95rem;
-		color: var(--ink-soft);
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: 1rem;
+		line-height: 1.5;
 	}
 
 	.series-link:hover .series-title {
 		color: var(--mem);
 	}
 
-	@media (max-width: 560px) {
+	.updated {
+		margin-top: 3rem;
+		padding-top: 1rem;
+		border-top: var(--rule-weight) solid var(--rule-soft);
+		font-size: 0.84rem;
+		color: var(--ink-faint);
+	}
+
+	@media (max-width: 1080px) {
+		.post-grid {
+			grid-template-columns: minmax(0, 1fr);
+		}
+
+		.toc {
+			display: none;
+		}
+	}
+
+	@media (max-width: 640px) {
+		.title-row {
+			grid-template-columns: minmax(0, 1fr);
+			gap: 0.4rem;
+		}
+
+		.day-big {
+			display: flex;
+			align-items: baseline;
+			gap: 0.5rem;
+		}
+
+		.day-num {
+			font-size: 3rem;
+		}
+
+		.ticks {
+			gap: 2px;
+		}
+
+		.tick.wk-start {
+			margin-left: 3px;
+		}
+
+		.tick a {
+			height: 14px;
+		}
+
 		.series-nav {
 			grid-template-columns: 1fr;
 		}
@@ -202,78 +574,9 @@ const schema = [
 		}
 	}
 
-	.regime-memory .regime {
-		border-left-color: var(--mem);
-		color: var(--mem);
-	}
-
-	.regime-compute .regime {
-		border-left-color: var(--compute);
-		color: var(--compute);
-	}
-
-	h1 {
-		margin-bottom: 0.9rem;
-		max-width: 26em;
-	}
-
-	.description {
-		font-size: 1.08rem;
-		color: var(--ink-soft);
-		max-width: 46rem;
-		margin-bottom: 1.1rem;
-	}
-
-	.tags a {
-		text-decoration: none;
-		color: inherit;
-	}
-
-	.tags a:hover {
-		color: var(--mem);
-	}
-
-	.tags {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.9rem;
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		font-family: var(--font-mono);
-		font-size: 0.68rem;
-		letter-spacing: 0.1em;
-		text-transform: uppercase;
-		color: var(--ink-faint);
-	}
-
-	.prose {
-		padding-top: 2.25rem;
-	}
-
-	.updated {
-		margin-top: 3rem;
-		padding-top: 1rem;
-		border-top: var(--rule-weight) solid var(--rule-soft);
-		font-family: var(--font-mono);
-		font-size: 0.72rem;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--ink-faint);
-	}
-
-	.back {
-		display: inline-block;
-		margin-top: 3.5rem;
-		font-family: var(--font-mono);
-		font-size: 0.72rem;
-		letter-spacing: 0.1em;
-		text-transform: uppercase;
-		text-decoration: none;
-		color: var(--ink-faint);
-	}
-
-	.back:hover {
-		color: var(--mem);
+	@media (prefers-reduced-motion: reduce) {
+		.tick a {
+			transition: none;
+		}
 	}
 </style>

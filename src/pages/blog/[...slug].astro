@@ -1,23 +1,24 @@
 ---
 import { getCollection, render } from 'astro:content';
 import BlogPost from '../../layouts/BlogPost.astro';
+import { COURSE_SERIES } from '../../consts';
 
 export async function getStaticPaths() {
 	const posts = await getCollection('blog', ({ data }) => !data.draft);
 	const course = posts
-		.filter((p) => p.data.series === 'aiinfra-365' && p.data.day !== undefined)
+		.filter((p) => p.data.series === COURSE_SERIES && p.data.day !== undefined)
 		.sort((a, b) => a.data.day! - b.data.day!);
 	return posts.map((post) => {
 		const i = course.findIndex((p) => p.id === post.id);
 		return {
 			params: { slug: post.id },
-			props: { post, prev: i > 0 ? course[i - 1] : null, next: i >= 0 && i < course.length - 1 ? course[i + 1] : null },
+			props: { post, course: course.map((c) => ({ id: c.id, day: c.data.day!, title: c.data.title })), prev: i > 0 ? course[i - 1] : null, next: i >= 0 && i < course.length - 1 ? course[i + 1] : null },
 		};
 	});
 }
 
-const { post, prev, next } = Astro.props;
-const { Content, remarkPluginFrontmatter } = await render(post);
+const { post, prev, next, course } = Astro.props;
+const { Content, headings, remarkPluginFrontmatter } = await render(post);
 ---
 
 <BlogPost
@@ -26,6 +27,8 @@ const { Content, remarkPluginFrontmatter } = await render(post);
 	wordCount={remarkPluginFrontmatter.wordCount}
 	prev={prev}
 	next={next}
+	course={course}
+	headings={headings.filter((h) => h.depth === 2)}
 >
 	<Content />
 </BlogPost>

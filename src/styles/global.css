@@ -426,3 +426,7 @@ html[lang^='zh'] .prose h2,
 html[lang^='zh'] .prose h3 {
 	letter-spacing: 0;
 }
+
+.prose h2 {
+	scroll-margin-top: 1.5rem;
+}
