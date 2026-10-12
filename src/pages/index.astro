@@ -2,6 +2,7 @@
 import { getCollection } from 'astro:content';
 import BaseHead from '../components/BaseHead.astro';
 import Footer from '../components/Footer.astro';
+import AgentLoop from '../components/AgentLoop.astro';
 import Header from '../components/Header.astro';
 import { COURSE_SERIES, COURSE_TITLE, SITE_DESCRIPTION, SITE_TITLE } from '../consts';
 import { personSchema, websiteSchema } from '../lib/seo';
@@ -39,6 +40,7 @@ const WEEKS = [
 		<Header />
 		<main>
 			<section class="shell hero">
+				<div class="thesis">
 				<p class="label">agent-60</p>
 				<h1>60 天,从写业务代码到做 AI Agent</h1>
 				<p class="lede">
@@ -55,6 +57,10 @@ const WEEKS = [
 					<a class="cta cta--ghost" href="/blog/agent-jd-report-2026-10/">880 条 JD 拆解</a>
 				</div>
 				<p class="byline">已发布 {days.length} / 61 篇 · 代码统一用 Python + OpenAI 兼容接口,国内直连 DeepSeek 就能跑</p>
+				</div>
+				<div class="plot">
+					<AgentLoop />
+				</div>
 			</section>
 
 			<section class="shell weeks">
@@ -84,8 +90,18 @@ const WEEKS = [
 
 <style>
 	.hero {
+		display: grid;
+		grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+		gap: clamp(2rem, 5vw, 3.5rem);
+		align-items: center;
 		padding-block: clamp(3rem, 8vw, 5.5rem) clamp(2rem, 5vw, 3rem);
 		border-bottom: var(--rule-weight) solid var(--rule);
+	}
+
+	@media (max-width: 860px) {
+		.hero {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	.hero .label {
@@ -96,7 +112,7 @@ const WEEKS = [
 		font-size: clamp(1.9rem, 4.5vw, 2.9rem);
 		letter-spacing: 0;
 		margin-bottom: 1.25rem;
-		max-width: 22ch;
+		max-width: 14em;
 	}
 
 	.lede {
