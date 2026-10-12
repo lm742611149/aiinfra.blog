@@ -169,7 +169,7 @@ hr {
 /* Long-form pages: a narrower shell centres the measure, instead of
    stranding a 34rem column on the left of a 62rem page. */
 .shell--narrow {
-	max-width: 41rem;
+	max-width: 52rem;
 }
 
 .shell--narrow .prose {
@@ -275,7 +275,7 @@ pre {
 	overflow-x: auto;
 	margin: 1.8rem 0;
 	/* Code blocks break the measure — they get the full column */
-	max-width: min(100%, 46rem);
+	max-width: 100%;
 }
 
 pre > code {
