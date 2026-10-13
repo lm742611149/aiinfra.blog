@@ -280,7 +280,16 @@ Day 0 已经用过了。原则再说一遍：密钥只放在 `.env` 或者系统
 
 ## pytest：最省事的测试框架
 
-pytest 不需要写测试类，函数名以 `test_` 开头、文件名以 `test_` 开头就行，断言直接用 `assert`：
+pytest 不需要写测试类，函数名以 `test_` 开头、文件名以 `test_` 开头就行，断言直接用 `assert`。
+
+先把上面类型标注那节的 `total_cost` 存成项目根目录的 `cost.py`（测试要 import 它，没这个文件会报 `ModuleNotFoundError: No module named 'cost'`），再在 `pyproject.toml` 末尾加两行，让 pytest 从项目根目录找模块：
+
+```toml
+[tool.pytest.ini_options]
+pythonpath = ["."]
+```
+
+然后写测试：
 
 ```python
 # tests/test_cost.py
