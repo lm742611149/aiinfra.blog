@@ -135,7 +135,7 @@ dict 就是键值对，相当于 TS 的对象字面量或 `Map`。课程里存�
 ```python
 VERSIONS: dict[str, str] = {"v1": "你是客服…", "v2": "你是客服，规则如下…"}
 VERSIONS["v1"]               # 取值，键不存在会抛 KeyError
-VERSIONS.get("v9")           # 键不存在返回 None，不报错（相当于 TS 的 obj?.v9）
+VERSIONS.get("v9")           # 键不存在返回 None，不报错（像 TS 里 obj.v9 拿到 undefined）
 VERSIONS["v3"] = "新版本"     # 加一项
 "v1" in VERSIONS             # 判断键在不在，TS: "v1" in obj
 ```
