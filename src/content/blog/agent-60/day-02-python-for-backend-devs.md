@@ -97,7 +97,38 @@ pair: tuple[int, int] = (3, 4)
 
 和 Java、Go 最大的不同：**这些标注在运行时不做任何检查**。你声明了 `int`，传个字符串进去照样能跑，直到某一行真正用错了才炸。类型标注的价值在于：编辑器能补全和提示、mypy / pyright 这类工具能静态检查、读代码的人一眼看懂。
 
-那它和 Agent 有什么关系？关系很大。Day 9 我们会写一个装饰器，**读取函数的类型标注，自动生成给模型看的工具 JSON Schema**。LangChain、MCP 的 Python SDK、OpenAI Agents SDK 全是这么干的。你写：
+### tuple（元组）和解包：后面每天都会用
+
+上面最后一行的 `tuple` 后面几课会频繁出现，单独讲一下。tuple 就是**用圆括号写的、长度固定、不能改的 list**，相当于 TS 的元组类型 `[number, number]`：
+
+```python
+pair: tuple[int, int] = (3, 4)            # TS: const pair: [number, number] = [3, 4]
+price: tuple[float, float, float] = (0.2, 2.0, 3.0)   # 三个位置，各自含义固定
+pair[0]          # 3，和 list 一样按下标取
+pair[0] = 5      # 报错：tuple 不能改
+```
+
+它最常见的两种用法，都和**解包**有关（相当于 TS 的数组解构 `const [a, b] = ...`）：
+
+```python
+# 1. 函数一次返回多个值：return 后面用逗号隔开，其实就是返回一个 tuple
+def run() -> tuple[float, list[str]]:
+    return 0.9, ["错例1"]          # 等价于 return (0.9, ["错例1"])
+
+acc, wrong = run()                 # 解包：acc=0.9，wrong=["错例1"]
+
+# 2. 一条数据由几个固定字段组成，懒得为它定义 class
+TICKETS: list[tuple[str, str]] = [  # 每个元素是 (工单文本, 正确类别)
+    ("扣了两次钱", "billing"),
+    ("忘记密码", "account"),
+]
+for ticket, gold in TICKETS:        # 遍历时直接解包成两个变量
+    print(ticket, gold)
+```
+
+`for name, text in d.items()` 也是同一个道理：`items()` 每次给出一个 `(键, 值)` 的 tuple，`for` 顺手把它解包了。类型标注里 `tuple[str, str]` 读作「两个字符串组成的元组」，`list[tuple[str, str]]` 读作「元组的列表」。字段一多（超过三四个）或者要起名字时，就改用下面讲的 dataclass。
+
+回到类型标注：它和 Agent 有什么关系？关系很大。Day 9 我们会写一个装饰器，**读取函数的类型标注，自动生成给模型看的工具 JSON Schema**。LangChain、MCP 的 Python SDK、OpenAI Agents SDK 全是这么干的。你写：
 
 ```python
 def get_invoice(invoice_id: str, include_lines: bool = False) -> dict:
