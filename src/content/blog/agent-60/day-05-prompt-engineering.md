@@ -363,7 +363,7 @@ TICKETS += [
 
 把你的 v5、准确率和花费记进笔记。
 
-**第 5 步：把提示词拆成文件。** 在 `w1/prompts/` 下建 `classify_v3.md`，把 V3 的**完整文本**放进去（V3 是 `V2 + 示例`，所以文件里要有 V2 的全部内容加上三个 `<example>`，不是只放示例；可以在脚本里临时 `print(V3)` 再复制），代码里改成读文件：
+**第 5 步：把提示词拆成文件。** 在 `w1/prompts/` 下建 `classify_v3.md`，把 V3 的**完整文本**放进去（V3 是 `V2 + 示例`，所以文件里要有 V2 的全部内容加上三个 `<example>`，不是只放示例）。手动复制容易漏，最省事是在项目根目录跑一行，让 Python 把拼好的 V3 原样写进文件：`uv run python -c "from w1.prompt_lab import V3; open('w1/prompts/classify_v3.md', 'w', encoding='utf-8').write(V3)"`。然后代码里改成读文件：
 
 ```python
 from pathlib import Path
