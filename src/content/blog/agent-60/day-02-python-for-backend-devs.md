@@ -406,12 +406,12 @@ async def fetch_repo(client: httpx.AsyncClient, repo: str) -> RepoInfo:
     return RepoInfo.model_validate(r.json())
 
 
-async def fetch_all(repos: list[str]) -> list[RepoInfo | Exception]:
+async def fetch_all(repos: list[str]) -> list[RepoInfo | BaseException]:
     async with httpx.AsyncClient(timeout=15, headers={"User-Agent": "agent-60-lab"}) as client:
         return await asyncio.gather(*(fetch_repo(client, r) for r in repos), return_exceptions=True)
 
 
-def summarize(results: list[RepoInfo | Exception], repos: list[str]) -> tuple[list[RepoInfo], list[str]]:
+def summarize(results: list[RepoInfo | BaseException], repos: list[str]) -> tuple[list[RepoInfo], list[str]]:
     ok: list[RepoInfo] = []
     failed: list[str] = []
     for repo, res in zip(repos, results):
@@ -444,6 +444,8 @@ if __name__ == "__main__":
 ```bash
 uv run python w1/repo_stats.py
 ```
+
+返回值类型写的是 `BaseException`，不是 `Exception`，这是故意的。`gather(..., return_exceptions=True)` 在类型上声明的返回值是 `list[结果 | BaseException]`，因为它连 `KeyboardInterrupt`、`CancelledError` 这类不属于 `Exception` 的异常也会收进列表。如果写成 `Exception`，Zed、VS Code 会在 `return await asyncio.gather(...)` 下面画红线，提示类型对不上。代码照样能跑，但标注应该说实话。
 
 输出大致是：四行仓库信息按星数从高到低排列，一行「失败: this-owner/does-not-exist-404: HTTP 404」，最后是总耗时。GitHub 匿名访问每小时有 60 次的限额，频繁跑可能遇到 403，那也会被当作失败打印出来，不会让程序崩溃。
 
