@@ -194,14 +194,20 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TypeVar
+from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from common.llm import LLMClient
+from common.llm import ChatResult
 
 log = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
+
+
+class ChatClient(Protocol):
+    """任何有这个 chat 方法的对象都行：LLMClient，或者测试里的假客户端。"""
+
+    def chat(self, messages: list[dict[str, Any]], **kw: Any) -> ChatResult: ...
 
 
 class ExtractionError(Exception):
@@ -217,7 +223,7 @@ def schema_prompt(model: type[BaseModel]) -> str:
 
 
 def extract(
-    client: LLMClient,
+    client: ChatClient,
     model: type[T],
     instructions: str,
     text: str,
@@ -259,6 +265,8 @@ def extract(
 ```
 
 `model_validate_json` 一步完成「解析 JSON + 校验」，非法 JSON 也会抛 `ValidationError`，所以一个 except 就能接住两种错误。
+
+`client` 的类型为什么不直接写 `LLMClient`，而是自己定义一个 `ChatClient`？`Protocol` 相当于 TS 的 `interface`：只要求「有一个这样签名的 `chat` 方法」，不要求是哪个类。第 3 步测试要传一个假客户端进来，如果这里写死 `LLMClient`，测试照样能跑（Python 运行时不查类型），但编辑器会在每个 `extract(c, ...)` 下面画红线。
 
 **第 2 步：工单抽取。**
 
@@ -394,18 +402,21 @@ def test_empty_content_is_retried():
 uv run pytest -q
 ```
 
-这里用到一个以后会反复用的测试思路：**把「调用模型」替换成一个假对象，专门测你自己写的控制逻辑**。Python 是鸭子类型，`FakeClient` 只要有一个签名相同的 `chat` 方法就能冒充 `LLMClient`。W5 写评测时，确定性的部分都会这样测。
+这里用到一个以后会反复用的测试思路：**把「调用模型」替换成一个假对象，专门测你自己写的控制逻辑**。Python 是鸭子类型，`FakeClient` 只要有一个签名相同的 `chat` 方法就能冒充 `LLMClient`，第 1 步定义的 `ChatClient` 协议就是把这件事写给类型检查器看。W5 写评测时，确定性的部分都会这样测。
 
 **第 4 步（可选）：试试 instructor。** instructor 是专门做结构化输出的库，把今天这套「schema + 校验 + 重试」都封装好了：
 
 ```python
-# uv add instructor
+# agent-60-lab/w1/try_instructor.py
 import os
 
 import instructor
+from dotenv import load_dotenv
 from openai import OpenAI
 
 from w1.extract_ticket import TicketInfo
+
+load_dotenv()   # 这里没用 LLMClient，要自己加载 .env
 
 client = instructor.from_openai(
     OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"]),
@@ -420,6 +431,14 @@ info = client.chat.completions.create(
 )
 print(info)
 ```
+
+**别用 `uv add instructor`**：我们项目的 openai 是 3.x，instructor 目前最高只支持 openai 2.x，装不上（报 `No solution found when resolving dependencies`）。用 uv 开一个临时环境跑，不动项目依赖：
+
+```bash
+uv run --no-project --with instructor --with python-dotenv python -m w1.try_instructor
+```
+
+第一次会下载 40 来个包，之后就快了。
 
 用过自己写的版本，再看 instructor 就知道它在做什么了。如果换成支持 schema 约束的厂商，把 mode 换成对应的模式，其余代码一行不用改。生产项目里用它没问题，面试时能讲清楚它背后的循环更重要。
 
