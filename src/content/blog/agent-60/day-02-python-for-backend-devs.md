@@ -126,7 +126,53 @@ for ticket, gold in TICKETS:        # 遍历时直接解包成两个变量
     print(ticket, gold)
 ```
 
-`for name, text in d.items()` 也是同一个道理：`items()` 每次给出一个 `(键, 值)` 的 tuple，`for` 顺手把它解包了。类型标注里 `tuple[str, str]` 读作「两个字符串组成的元组」，`list[tuple[str, str]]` 读作「元组的列表」。字段一多（超过三四个）或者要起名字时，就改用下面讲的 dataclass。
+类型标注里 `tuple[str, str]` 读作「两个字符串组成的元组」，`list[tuple[str, str]]` 读作「元组的列表」。字段一多（超过三四个）或者要起名字时，就改用下面讲的 dataclass。
+
+### dict（字典）：遍历要用 .items()
+
+dict 就是键值对，相当于 TS 的对象字面量或 `Map`。课程里存「版本名 → 提示词」「价格名 → 单价」都用它：
+
+```python
+VERSIONS: dict[str, str] = {"v1": "你是客服…", "v2": "你是客服，规则如下…"}
+VERSIONS["v1"]               # 取值，键不存在会抛 KeyError
+VERSIONS.get("v9")           # 键不存在返回 None，不报错（相当于 TS 的 obj?.v9）
+VERSIONS["v3"] = "新版本"     # 加一项
+"v1" in VERSIONS             # 判断键在不在，TS: "v1" in obj
+```
+
+**遍历是最容易卡住的地方**：直接 `for x in 字典` 只拿到键。要键和值一起拿，用 `.items()`：
+
+```python
+for name in VERSIONS:                   # 只有键：v1, v2
+    ...
+for name, system in VERSIONS.items():   # 键和值，TS: for (const [name, system] of Object.entries(VERSIONS))
+    ...
+```
+
+`.keys()` / `.values()` / `.items()` 分别对应 TS 的 `Object.keys` / `Object.values` / `Object.entries`。`.items()` 每次给出一个 `(键, 值)` 的 tuple，`for` 顺手把它解包成两个变量，就是上面讲的解包。
+
+### set（集合）：只关心「在不在」
+
+set 是不重复、无序的一组值，相当于 TS 的 `Set`。Day 5 用它装合法的分类标签：
+
+```python
+LABELS: set[str] = {"billing", "technical", "account", "other"}
+"billing" in LABELS          # True，TS: LABELS.has("billing")
+LABELS[0]                    # 报错：set 无序，没有下标
+```
+
+用 set 不用 list，是因为它查「在不在」很快（哈希查找），而且自动去重。
+
+注意 set 和 dict 都用花括号，**有冒号是 dict，没冒号是 set**；空的 `{}` 是 dict，空 set 要写 `set()`。
+
+四种容器放一起对照：
+
+| Python | 字面量 | 类型标注 | TS 里对应 | 什么时候用 |
+| --- | --- | --- | --- | --- |
+| list | `[1, 2]` | `list[int]` | `number[]` | 一串同类数据，要按顺序、会增删 |
+| tuple | `(1, 2)` | `tuple[int, int]` | `[number, number]`（只读） | 几个位置固定的字段、函数返回多个值 |
+| dict | `{"k": 1}` | `dict[str, int]` | 对象 / `Map` | 按名字查值 |
+| set | `{1, 2}` | `set[int]` | `Set<number>` | 去重、判断在不在 |
 
 回到类型标注：它和 Agent 有什么关系？关系很大。Day 9 我们会写一个装饰器，**读取函数的类型标注，自动生成给模型看的工具 JSON Schema**。LangChain、MCP 的 Python SDK、OpenAI Agents SDK 全是这么干的。你写：
 
