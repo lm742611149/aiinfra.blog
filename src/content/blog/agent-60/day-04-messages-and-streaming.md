@@ -235,6 +235,16 @@ data: [DONE]
 - 自动累计调用次数、token 和花费，随时能打印一张账单。
 - 流式和非流式两种用法，流式结束后同样能拿到完整结果和用量。
 
+**这段 180 行不用全手敲。** 一半是工程细节（厂商字段兼容、成本计算、流式统计），整份粘进 `common/llm.py`，然后分三层读：
+
+1. **先看怎么用。** 跳到后面的 `w1/chat_stream.py`，看 `LLMClient()`、`Conversation(...)`、`client.stream(conv.messages())`、`conv.add_assistant(r.message)` 这四步（非流式就把 `stream` 换成 `chat`，直接拿到 `r`）。核心就一句：API 没有记忆，`Conversation` 负责存历史，每轮整份重发。
+2. **再看每个类管什么。** `Price` / `ChatResult` / `Ledger` 都是 `@dataclass`，相当于 TS 的 interface 加自动生成的构造函数，只装数据；`LLMClient` 是对 `openai` SDK 的一层包装（调用前拼参数 `_kwargs`，调用后算钱 `_cost`、记账）；`Conversation` 就是一个数组，system 钉在最前，只留最近 N 轮。
+3. **只手敲 `chat()` 一个方法。** 计时 → 调 API → 取 `choices[0].message` → 读 `usage` 算成本 → 装进 `ChatResult` → 记账。这是后面每一课都在用的骨架。
+
+`_cache_hit`（兼容两家的缓存字段名）、`stream()`（生成器，`yield` 相当于 TS 的 `function*`，第 4 步练流式时再回来看）、`extra_body`（Day 5 才用）第一遍可以跳过。自测两个问题：为什么存回历史的是整条 `r.message` 而不只是 `content`？为什么聊得越久越贵？答得上来就够了。
+
+粘贴时注意：光标先放在行首第 0 列再粘，否则 Zed 会把整段跟着光标缩进，报 `IndentationError: unexpected indent`，而且有语法错误的文件保存时也不会自动格式化。
+
 ```python
 # agent-60-lab/common/llm.py
 """全课复用的大模型客户端。依赖：uv add openai python-dotenv"""
