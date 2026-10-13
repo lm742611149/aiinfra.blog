@@ -256,7 +256,11 @@ SDK 抛出的异常类型和状态码对应：`openai.AuthenticationError`（401
 
 写一个叫 `ask.py` 的命令行工具：从命令行接收问题，调用模型，打印回复、finish_reason、token 用量和花费；只改环境变量就能切换厂商。
 
-**第 1 步：准备多个厂商的配置。** 在 `.env` 旁边建几个配置文件，想切换时用 `--env` 参数指定。没有的厂商可以不建。
+**第 1 步：准备多个厂商的配置。** 在 `.env` 旁边建几个配置文件，想切换时用 `--env` 参数指定。没有的厂商可以不建，只有 DeepSeek 的话建一个 `.env.deepseek` 就够了。最省事的办法是复制一份现有的 `.env`，再对照下面补齐缺的行（主要是 `LLM_EXTRA_BODY` 和 `LLM_PRICE`）：
+
+```bash
+cp .env .env.deepseek
+```
 
 ```bash
 # agent-60-lab/.env.deepseek
@@ -279,7 +283,7 @@ LLM_EXTRA_BODY={}
 LLM_PRICE=0.71,14.2,71
 ```
 
-记得把 `.env.*` 也加进 `.gitignore`：
+记得把 `.env.*` 也加进 `.gitignore`。如果你在 Day 0 已经按那里的内容建过 `.gitignore`，这两行已经有了，跳过这一步，用 `git check-ignore -v .env.deepseek` 确认能输出一行就行：
 
 ```bash
 echo ".env.*" >> .gitignore
@@ -367,6 +371,7 @@ def main() -> int:
     if choice.finish_reason == "length":
         print("⚠ 回答被 max_tokens 截断了，调大 --max-tokens 再试")
     u = resp.usage
+    assert u is not None  # 和 Day 1 一样，SDK 把 usage 标成可能为空
     print(f"tokens: 输入 {u.prompt_tokens} / 输出 {u.completion_tokens}，花费约 ¥{cost_yuan(u, price):.5f}")
     return 0
 
