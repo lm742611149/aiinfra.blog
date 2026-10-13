@@ -526,6 +526,13 @@ def test_price_parse():
 uv run pytest -q
 ```
 
+如果报 `ModuleNotFoundError: No module named 'common'`，说明 Day 2 练习里那段 pytest 配置还没加。pytest 默认不会把仓库根目录放进模块搜索路径，在 `pyproject.toml` 末尾加上这两行再跑：
+
+```toml
+[tool.pytest.ini_options]
+pythonpath = ["."]
+```
+
 **验收标准：** 能连续流式聊天，每轮显示 TTFT、token、缓存命中和花费；能复现「第 1 轮信息被滑出窗口后模型忘记」的现象；记录了思考开关前后的 TTFT 对比；`Conversation` 的测试通过。
 
 ## 名词解释
