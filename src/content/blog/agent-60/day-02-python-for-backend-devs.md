@@ -402,6 +402,22 @@ print(get_weather.__annotations__)  # {'city': <class 'str'>, 'return': <class '
 
 **字典就是 JSON。** Python 的 dict 和 list 跟 JSON 一一对应，`json.loads` 把字符串变成 dict，`json.dumps(obj, ensure_ascii=False)` 变回字符串。`ensure_ascii=False` 记得加，不然中文会变成 `云簿` 这种转义，日志里没法看，发给模型也白白多占 token。
 
+**泛型（TypeVar）。** 想让函数「传进什么类、就返回什么类的实例」时用。Day 6 的 `extract()` 就是这样：
+
+```python
+from typing import TypeVar
+from pydantic import BaseModel
+
+T = TypeVar("T", bound=BaseModel)      # TS: <T extends BaseModel>
+
+def extract(model: type[T], text: str) -> T:   # type[T] 是「类本身」，T 是「它的实例」
+    return model.model_validate_json(text)
+
+info = extract(TicketInfo, raw)        # 编辑器知道 info 是 TicketInfo，能补全字段
+```
+
+`bound=BaseModel` 就是 TS 的 `extends`，限定 T 必须是某个 pydantic 模型。返回类型如果只写 `-> BaseModel`，编辑器就不知道 `info` 有哪些字段了。Python 3.12 起也可以写成和 TS 更像的 `def extract[T: BaseModel](model: type[T], text: str) -> T:`，效果一样；不过库和框架的代码里大多还是 `TypeVar` 老写法，两种都要认识。
+
 ## 密钥：.env + python-dotenv
 
 Day 0 已经用过了。原则再说一遍：密钥只放在 `.env` 或者系统环境变量里，代码里用 `os.environ["LLM_API_KEY"]` 读。用 `os.environ[...]` 而不是 `os.getenv(...)`，前者没配置时会立刻报 `KeyError`，比拿到一个 `None` 跑到一半再报奇怪的 401 好排查得多。
@@ -455,6 +471,14 @@ log.warning("工具返回过长，已截断到 %d 字符", 2000)
 ```
 
 用 `%s` 占位而不是 f-string，是 logging 的惯例：日志级别不够时字符串根本不会被拼接，省一点开销。调试时把 level 改成 `DEBUG`，上线时改回 `INFO`。W5 会把日志升级成 trace，那时你会感谢现在养成的习惯。
+
+上面的 `getLogger("agent")` 是手动起名。写在公共模块里时，惯用写法是：
+
+```python
+log = logging.getLogger(__name__)
+```
+
+`__name__` 是 Python 自动给每个文件的变量，值是模块名，比如在 `common/structured.py` 里就是 `"common.structured"`。用它当 logger 名，日志里（格式串的 `%(name)s`）就能看出是哪个文件打的，也能单独调某个模块的级别。分工记住一句：**每个模块开头写 `getLogger(__name__)` 只管打日志，入口脚本里写一次 `basicConfig` 决定日志往哪输出、什么格式**。顺带一提，文件直接运行时 `__name__` 是 `"__main__"`，所以脚本末尾的 `if __name__ == "__main__":` 意思是「只有直接运行这个文件才执行，被别人 import 时不执行」。
 
 ## 课程仓库的目录约定
 
