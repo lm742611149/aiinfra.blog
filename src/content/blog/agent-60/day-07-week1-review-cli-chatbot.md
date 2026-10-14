@@ -275,6 +275,16 @@ path.write_text(json.dumps(self.conv.to_dict(), ensure_ascii=False, indent=2), e
 - `json.dumps(obj, ensure_ascii=False, indent=2)` 相当于 `JSON.stringify(obj, null, 2)`，`ensure_ascii=False` 让中文原样保存；`write_text` 相当于 `fs.writeFileSync`。
 - `/load` 反过来：`read_text()` → `json.loads()` → `Conversation.from_dict()`。
 
+手敲这个文件时最容易错的是**缩进**。Python 没有花括号，靠缩进划分代码块，缩进是语法不是排版：
+
+```python
+for piece in stream:
+    print(piece)      # 属于 for，每次循环都执行
+print("完成")          # 在 for 外面，只执行一次
+```
+
+`ask()` 里一行代码要缩进三四级（类 → 方法 → try → for），缩错有两种后果：一是直接报 `IndentationError`，整个文件解析失败，**代码提示、跳转定义、保存自动格式化全部失灵**，看起来像编辑器坏了；二是语法没错但某行「掉」出了循环或 try，程序能跑、结果不对。习惯：一级固定 4 个空格（Zed 按 Tab 就是 4 个空格）；冒号结尾的行（`def` / `if` / `for` / `try` / `except` / `with`）下一行多缩一级；粘贴前光标放在行首第 0 列；提示突然没了，先找有没有缩进红线。
+
 几处设计说明，面试讲项目时这些就是你的谈资：
 
 **出错时回滚这一轮。** 请求失败后，如果把用户那条消息留在历史里，下一次请求会出现两条连续的 user 消息，有的厂商会报错，有的会让模型困惑。所以失败就 `pop()` 掉。这是一个很小的细节，但它体现的是「状态一致性」的意识。
