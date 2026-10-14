@@ -502,6 +502,11 @@ if __name__ == "__main__":
 uv run python -m w1.chat_stream
 ```
 
+`print(piece, end="", flush=True)` 里的两个参数是流式输出的关键：
+
+- `end=""`：`print` 默认在末尾自动加一个换行（`end="\n"`），流式时每来一小段就换一行会很难看，改成空字符串就是「打完不换行」，几段文字接在同一行上。相当于 Node 里用 `process.stdout.write(piece)` 而不是 `console.log(piece)`。
+- `flush=True`：立刻把文字推到屏幕上。终端输出是有缓冲的，没遇到换行时 Python 会先把字攒着，攒够一批或者遇到换行才一起显示。我们恰好用了 `end=""` 不换行，不加 flush 的话，字会憋到整段回答结束才一下子冒出来，流式就白做了。
+
 用 `python -m w1.chat_stream` 而不是 `python w1/chat_stream.py`，是为了让 Python 从仓库根目录找到 `common` 包。
 
 **第 3 步：观察三件事。**
