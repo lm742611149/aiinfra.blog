@@ -417,7 +417,7 @@ uv run pytest -q
 # agent-60-lab/w1/try_instructor.py
 import os
 
-import instructor
+import instructor  # pyright: ignore[reportMissingImports]
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -445,7 +445,7 @@ print(info)
 uv run --no-project --with instructor --with python-dotenv python -m w1.try_instructor
 ```
 
-第一次会下载 40 来个包，之后就快了。
+第一次会下载 40 来个包，之后就快了。instructor 没装进项目环境，编辑器找不到它，`import instructor` 下面会画红线，所以那一行加了 `# pyright: ignore[reportMissingImports]`，告诉类型检查器这一行的「找不到模块」是故意的，不影响运行。
 
 用过自己写的版本，再看 instructor 就知道它在做什么了。如果换成支持 schema 约束的厂商，把 mode 换成对应的模式，其余代码一行不用改。生产项目里用它没问题，面试时能讲清楚它背后的循环更重要。
 
