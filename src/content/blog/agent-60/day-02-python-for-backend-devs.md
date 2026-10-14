@@ -621,7 +621,33 @@ uv run pytest -q
 
 **在 Jupyter 里调用 `asyncio.run`。** Jupyter 自己已经有一个事件循环在跑，再调用会报「asyncio.run() cannot be called from a running event loop」。在 Notebook 里直接写 `await main()` 就行，在 `.py` 脚本里才用 `asyncio.run(main())`。
 
-**可变默认参数。** `def f(items: list = [])` 是 Python 经典坑，这个列表会在多次调用间共享。用 `None` 做默认值，或者 dataclass 里用 `field(default_factory=list)`。
+**可变默认参数。** Python 经典坑，写 TS 的人尤其容易踩：
+
+```python
+def add_tag(tag: str, tags: list[str] = []) -> list[str]:
+    tags.append(tag)
+    return tags
+
+add_tag("a")   # ['a']
+add_tag("b")   # ['a', 'b']   ← 上一次的 'a' 还在
+```
+
+原因是 Python 的默认值**只在定义函数时算一次**，那个 `[]` 从头到尾只有一个，每次调用拿到的都是同一个列表。TS 的 `tags: string[] = []` 每次调用都会重新算，所以不会这样。list、dict、set 这种建好后还能改的「可变对象」都有这个问题；数字、字符串、`None`、tuple 改不了，当默认值没事。
+
+正确写法：
+
+```python
+def add_tag(tag: str, tags: list[str] | None = None) -> list[str]:
+    if tags is None:
+        tags = []              # 每次调用新建一个
+    tags.append(tag)
+    return tags
+```
+
+类里的字段也一样：
+
+- **dataclass**：写 `tags: list[str] = []` 运行时直接报 `ValueError: mutable default`，必须写 `field(default_factory=list)`。`default_factory` 是「默认值的工厂函数」，每创建一个实例就调用一次 `list()`，得到一个新的空列表。
+- **pydantic**：直接写 `= []` 其实没问题，pydantic 会给每个实例复制一份；但习惯上也写 `Field(default_factory=list)`，和 dataclass 保持一致，不用记两套规则。
 
 ## 学习资料
 
