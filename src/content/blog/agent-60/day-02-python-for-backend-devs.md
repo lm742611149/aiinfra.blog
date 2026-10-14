@@ -402,6 +402,18 @@ print(get_weather.__annotations__)  # {'city': <class 'str'>, 'return': <class '
 
 **字典就是 JSON。** Python 的 dict 和 list 跟 JSON 一一对应，`json.loads` 把字符串变成 dict，`json.dumps(obj, ensure_ascii=False)` 变回字符串。`ensure_ascii=False` 记得加，不然中文会变成 `云簿` 这种转义，日志里没法看，发给模型也白白多占 token。
 
+**type[X]：传「类本身」。** 平时 `x: TicketInfo` 表示 x 是一个**实例**；`model: type[TicketInfo]` 表示传进来的是**类本身**：
+
+```python
+def schema_prompt(model: type[BaseModel]) -> str:
+    return json.dumps(model.model_json_schema(), ensure_ascii=False)
+
+schema_prompt(TicketInfo)                 # 传类，没有括号
+schema_prompt(TicketInfo(category=...))   # 错：这是实例
+```
+
+为什么要传类：`model_json_schema()` 读的是类上定义的字段、类型和 description，这时候还没有任何数据，谈不上实例。TS 里接近 `typeof TicketInfo` 或 `new (...args: any) => BaseModel`。Day 6 的 `extract(client, TicketInfo, ...)` 也是传类进去，函数内部拿它生成 schema、校验模型输出，最后返回一个实例。
+
 **泛型（TypeVar）。** 想让函数「传进什么类、就返回什么类的实例」时用。Day 6 的 `extract()` 就是这样：
 
 ```python
