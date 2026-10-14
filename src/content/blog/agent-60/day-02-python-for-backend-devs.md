@@ -231,6 +231,34 @@ except ValidationError as e:
 
 pydantic 还有一个后面会反复用的能力：`Ticket.model_json_schema()` 能直接导出 JSON Schema。这就是 Structured Outputs 和工具定义的原料。
 
+### 小写 field 和大写 Field：两个库，别用混
+
+上面两段代码里，一个用小写 `field`，一个用大写 `Field`。它们来自不同的库，只是名字碰巧一样：
+
+```python
+from dataclasses import field   # 标准库，给 @dataclass 用
+from pydantic import Field      # pydantic 的，给 BaseModel 用
+```
+
+用哪个看类是什么：`@dataclass` 的类用小写 `field`，继承 `BaseModel` 的类用大写 `Field`。两者都写在 `=` 右边，也就是放默认值的位置：
+
+```python
+@dataclass
+class FakeClient:
+    seen: list[str] = field(default_factory=list)
+
+class TicketInfo(BaseModel):
+    customer_name: str | None = Field(None, description="工单中没有就填 null")
+    invoice_ids: list[str] = Field(default_factory=list, description="原样抄写发票号")
+    urgency: int = Field(ge=1, le=5)
+```
+
+- `Field(None, ...)` 的第一个参数是**默认值**：字段没给就填 `None`，所以这个字段是可选的。注意它和类型里的 `str | None` 管的不是一回事，类型说「值可以是空」，默认值说「不给就当空」。
+- `Field(ge=1, le=5)` 没给默认值，字段就是**必填**的。
+- 大写 `Field` 比小写 `field` 多了 `description`（会进 `model_json_schema()`，模型能看到）和 `ge`/`le`/`max_length` 这类校验，因为 pydantic 本来就是做校验和生成 schema 的。小写 `field` 只管默认值。
+
+大小写的来历：Python 习惯类名大写开头、函数小写。pydantic 的 `Field` 写成了类的样子，标准库的 `field` 就是个普通函数。用混了编辑器会画红线，比如在 BaseModel 里写 `field(description=...)`，小写 `field` 根本没有这个参数。
+
 ## async/await：等网络的时候别闲着
 
 Agent 程序的时间大头花在等网络：等模型 API 返回（几秒到几十秒）、等数据库、等外部 API。如果有 5 个工具调用可以同时做，一个一个串行等就很浪费。
