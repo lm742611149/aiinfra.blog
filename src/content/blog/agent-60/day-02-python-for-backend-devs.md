@@ -396,6 +396,23 @@ print(get_weather.__annotations__)  # {'city': <class 'str'>, 'return': <class '
 
 **推导式和 f-string。** `[m["content"] for m in messages if m["role"] == "user"]` 是列表推导，一行完成过滤和映射，相当于 Java Stream 的 filter + map。`f"花费 {cost:.4f} 元"` 是格式化字符串，冒号后面是格式说明。这两个在 Python 代码里出现频率极高，看几次就熟了。
 
+**常用字符串方法。** 处理模型输出天天要用，对照 JS 记：
+
+| Python | JS | 例子 |
+| --- | --- | --- |
+| `s.strip()` | `s.trim()` | `"  billing\n".strip()` → `"billing"` |
+| `s.lstrip()` / `s.rstrip()` | `trimStart()` / `trimEnd()` | 只去左边 / 右边 |
+| `s.lower()` / `s.upper()` | `toLowerCase()` / `toUpperCase()` | `"Billing".lower()` → `"billing"` |
+| `s.split(",")` | `s.split(",")` | `"a,b".split(",")` → `["a", "b"]` |
+| `",".join(items)` | `items.join(",")` | 注意 Python 是分隔符在前 |
+| `s.replace(a, b)` | `s.replaceAll(a, b)` | Python 默认替换全部 |
+| `s.startswith(x)` | `s.startsWith(x)` | |
+| `x in s` | `s.includes(x)` | `"INV" in text` |
+
+`strip()` 去掉两头的空格、换行、制表符，也可以指定字符：`"**billing**".strip("*")` → `"billing"`。模型输出前后经常多带一个换行，所以拿它和预期值比较前，惯例先 `.strip().lower()`（Day 5 的 `parse()`）；判断「模型实际上什么都没返回」写 `if not r.content.strip():`（Day 6），只有空白的字符串去掉后是 `""`，在 if 里算假。
+
+Python 的字符串不可修改，这些方法都**返回新字符串**，原字符串不变。要写 `s = s.strip()`，只写 `s.strip()` 什么也没发生。
+
 **真值判断。** 空列表、空字符串、0、`None` 在 if 里都是假。`if messages:` 就是「列表非空」。这很方便，但也有坑：一个工具返回了 `0`（比如余额为零），你写 `if result:` 会把它当成「没有结果」。需要区分「没有」和「是零」时，写 `if result is not None:`。
 
 **异常。** Python 用异常处理错误，没有 Go 那种多返回值的 err。`try / except 具体异常类型 as e`，尽量捕获具体类型，不要一个光秃秃的 `except:` 把所有错误都吞掉，那样调试时你会完全不知道发生了什么。Agent 里有一个特殊情况：工具执行出错时，通常不让程序崩溃，而是把错误信息转成字符串交给模型，让它自己决定换个参数重试。Day 12 会专门讲。
