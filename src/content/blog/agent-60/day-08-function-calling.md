@@ -404,12 +404,20 @@ if __name__ == "__main__":
 
 处理方式和单个调用一样:assistant 消息原样放回,每个调用一条 tool 消息。区别在于两个调用之间没有依赖,可以并发执行,省一半等待时间。上面用的就是 Day 2 学的 `asyncio.gather`;`get_weather` 是同步函数,所以先用 `asyncio.to_thread` 包一层放进线程,不然 gather 也只能一个一个跑。Day 13 讲并行模式时还会再用。要注意的是「模型给了多个调用」不等于「它们一定没有依赖」,比如模型同时请求「创建订单」和「查询订单」,并发执行就可能查不到。对有副作用的工具,保守的做法是按顺序执行。OpenAI 提供了 `parallel_tool_calls=False` 参数可以关掉这个行为,其他厂商支持情况不一,用之前查一下。
 
-`tool_choice` 控制模型「要不要用工具」:
+`tool_choice` 控制模型「要不要用工具」。先别和前面的 `tool_calls` 搞混:**`tool_choice` 是你发给模型的请求参数,`tool_calls` 是模型回给你的响应字段**,方向正好相反。前者规定这一轮能不能、必须不必须用工具,后者是模型实际要调的工具和参数。用 TS 类比,`tool_choice` 像传进函数的 `options.mode`,`tool_calls` 是函数的返回值。
 
-- `"auto"`(默认):模型自己决定。
-- `"none"`:这一轮禁止用工具,即使 tools 里有。适合「工具查完了,现在只许总结」的场景。
-- `"required"`:必须至少调一个工具。适合你明确知道这一步就是要分类或抽取的时候。
-- `{"type": "function", "function": {"name": "get_weather"}}`:指定必须调这一个。
+| | `tool_choice` | `tool_calls` |
+| --- | --- | --- |
+| 方向 | 你 → 模型(请求参数) | 模型 → 你(响应字段) |
+| 写在哪 | `create(..., tool_choice=...)` | `resp.choices[0].message.tool_calls` |
+| 取值 | `"auto"` / `"none"` / `"required"` / 指定函数 | 列表,每项有 `id`、`function.name`、`function.arguments` |
+
+它的几种取值,以及各自对 `tool_calls` 的影响:
+
+- `"auto"`(默认):模型自己决定,`tool_calls` 可能有也可能是 `None`。
+- `"none"`:这一轮禁止用工具,即使 tools 里有,`tool_calls` 一定为空。适合「工具查完了,现在只许总结」的场景。
+- `"required"`:必须至少调一个工具,`tool_calls` 至少一项。适合你明确知道这一步就是要分类或抽取的时候。
+- `{"type": "function", "function": {"name": "get_weather"}}`:指定必须调这一个,`tool_calls` 里一定是它。练习 4 就靠这个保证一定能读到抽取结果。
 
 `required` 和指定函数有个很实用的副作用:可以把 function calling 当成「结构化输出」来用。比如你定义一个 `classify_ticket(category, priority)` 工具,强制模型调用它,拿到的 arguments 就是你要的结构化结果,根本不用真的执行什么。在一些不支持 JSON Schema 输出的老模型上,这是最稳的抽取方式。
 
