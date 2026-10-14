@@ -324,18 +324,85 @@ assistant = {"role": "assistant", "content": msg.content, "tool_calls": [tc.mode
 用户问「北京和上海哪个更热?」,模型需要两份天气。聪明的模型会在一次响应里给出两个 tool_calls,而不是查完北京再发一轮请求查上海。这就是并行工具调用(parallel tool calls)。
 
 ```python
-# agent-60-lab/w2/day08_parallel.py(只展示和 roundtrip 不同的部分,运行:uv run python -m w2.day08_parallel)
-messages[-1] = {"role": "user", "content": "北京和上海现在哪个更热?"}
-resp = client.chat.completions.create(model=MODEL, messages=messages, tools=[WEATHER_TOOL])
-for tc in resp.choices[0].message.tool_calls or []:
-    if tc.type == "function":
-        print(tc.id, tc.function.name, tc.function.arguments)
-# 输出大致长这样(两个调用,id 不同):
-# call_0_a1... get_weather {"city": "北京"}
-# call_1_b2... get_weather {"city": "上海"}
+# agent-60-lab/w2/day08_parallel.py
+import asyncio
+import json
+import os
+import time
+from typing import Any
+
+from dotenv import load_dotenv
+from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageFunctionToolCall
+
+from w2.tools_def import WEATHER_TOOL
+from w2.weather import get_weather
+
+load_dotenv()
+client = OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"])
+MODEL = os.environ["LLM_MODEL"]
+
+
+async def run_one(tc: ChatCompletionMessageFunctionToolCall) -> dict:
+    args = json.loads(tc.function.arguments)
+    # get_weather 是普通同步函数,用 to_thread 丢进线程池,gather 才能让两个调用同时跑
+    result = await asyncio.to_thread(get_weather, **args)
+    return {"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result, ensure_ascii=False)}
+
+
+async def main() -> None:
+    messages: list[Any] = [
+        {"role": "system", "content": "你是一个简洁的中文助手。需要实时信息时使用工具,不要编造。"},
+        {"role": "user", "content": "北京和上海现在哪个更热?"},
+    ]
+    resp = client.chat.completions.create(model=MODEL, messages=messages, tools=[WEATHER_TOOL])
+    msg = resp.choices[0].message
+
+    # 只留 function 类型的调用;过滤后编辑器知道每个 tc 都有 .function
+    calls = [tc for tc in msg.tool_calls or [] if tc.type == "function"]
+    print(f"模型一次给了 {len(calls)} 个调用:")
+    for tc in calls:
+        print(" ", tc.id, tc.function.name, tc.function.arguments)
+    if not calls:
+        print("模型没调工具,直接回答:", msg.content)
+        return
+
+    assistant: dict[str, Any] = {
+        "role": "assistant",
+        "content": msg.content,
+        "tool_calls": [tc.model_dump() for tc in calls],
+    }
+    reasoning = getattr(msg, "reasoning_content", None)
+    if reasoning:
+        assistant["reasoning_content"] = reasoning
+    messages.append(assistant)
+
+    t0 = time.perf_counter()
+    tool_msgs = await asyncio.gather(*(run_one(tc) for tc in calls))  # 结果顺序和 calls 一致
+    print(f"并发执行 {len(calls)} 个工具用时 {time.perf_counter() - t0:.2f}s")
+    messages.extend(tool_msgs)
+
+    final = client.chat.completions.create(model=MODEL, messages=messages, tools=[WEATHER_TOOL])
+    print("最终回答:", final.choices[0].message.content)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-处理方式和单个调用一样:assistant 消息原样放回,每个调用一条 tool 消息。区别在于两个调用之间没有依赖,你可以并发执行,省一半等待时间。Day 2 学的 `asyncio.gather` 在这里第一次派上用场,Day 13 讲并行模式时会用到。要注意的是「模型给了多个调用」不等于「它们一定没有依赖」,比如模型同时请求「创建订单」和「查询订单」,并发执行就可能查不到。对有副作用的工具,保守的做法是按顺序执行。OpenAI 提供了 `parallel_tool_calls=False` 参数可以关掉这个行为,其他厂商支持情况不一,用之前查一下。
+在仓库根目录运行 `uv run python -m w2.day08_parallel`,我跑出来是这样(id 每次不同):
+
+```text
+模型一次给了 2 个调用:
+  call_00_R4B8MC1P... get_weather {"city": "北京"}
+  call_01_NEXyvMXv... get_weather {"city": "上海"}
+并发执行 2 个工具用时 …s(看网络)
+最终回答: 上海更热。上海 17.7℃,阴;北京 11.9℃,晴。上海比北京高约 5.8℃。
+```
+
+如果报 `httpx.ConnectTimeout`,是到 Open-Meteo 的网络抖了一下,不是代码问题,重跑一次就行。
+
+处理方式和单个调用一样:assistant 消息原样放回,每个调用一条 tool 消息。区别在于两个调用之间没有依赖,可以并发执行,省一半等待时间。上面用的就是 Day 2 学的 `asyncio.gather`;`get_weather` 是同步函数,所以先用 `asyncio.to_thread` 包一层放进线程,不然 gather 也只能一个一个跑。Day 13 讲并行模式时还会再用。要注意的是「模型给了多个调用」不等于「它们一定没有依赖」,比如模型同时请求「创建订单」和「查询订单」,并发执行就可能查不到。对有副作用的工具,保守的做法是按顺序执行。OpenAI 提供了 `parallel_tool_calls=False` 参数可以关掉这个行为,其他厂商支持情况不一,用之前查一下。
 
 `tool_choice` 控制模型「要不要用工具」:
 
@@ -409,7 +476,78 @@ if resp.stop_reason == "tool_use":
 
 **练习 1:跑通往返并打印完整 messages。** 运行 `day08_roundtrip.py`,在第二次请求前加一行 `print(json.dumps(messages, ensure_ascii=False, indent=2))`,亲眼看一遍发给模型的完整历史。把 `ensure_ascii=False` 去掉再看一次 tool 消息长什么样。
 
+加在 `day08_roundtrip.py` 的这个位置(for 循环结束之后、第二次请求之前):
+
+```python
+    for tc in msg.tool_calls:
+        ...  # 原来的执行代码不动
+
+    print(json.dumps(messages, ensure_ascii=False, indent=2))  # ← 加这一行
+    print(json.dumps(messages[-1], indent=2))                  # ← 对照:不加 ensure_ascii=False 的 tool 消息
+
+    # 第二次请求:模型看到工具结果,写最终回答
+    final = client.chat.completions.create(model=MODEL, messages=messages, tools=[WEATHER_TOOL])
+```
+
+`messages` 里的 assistant 那条已经是普通字典了(上面 `model_dump()` 转过),所以 `json.dumps` 能直接打印。
+
 **练习 2:故意漏回一个结果。** 用「北京和上海哪个热」触发两个 tool_calls,只回传第一个的结果就发第二次请求,记下厂商返回的错误码和报错原文。这个报错你以后一定会再见到,先认识它。
+
+```python
+# agent-60-lab/w2/day08_missing_result.py
+import json
+import os
+from typing import Any
+
+from dotenv import load_dotenv
+from openai import BadRequestError, OpenAI
+
+from w2.tools_def import WEATHER_TOOL
+from w2.weather import get_weather
+
+load_dotenv()
+client = OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"])
+MODEL = os.environ["LLM_MODEL"]
+
+messages: list[Any] = [
+    {"role": "system", "content": "你是一个简洁的中文助手。需要实时信息时使用工具,不要编造。"},
+    {"role": "user", "content": "北京和上海现在哪个更热?"},
+]
+resp = client.chat.completions.create(model=MODEL, messages=messages, tools=[WEATHER_TOOL])
+msg = resp.choices[0].message
+calls = [tc for tc in msg.tool_calls or [] if tc.type == "function"]
+if len(calls) < 2:
+    raise SystemExit(f"这次模型只给了 {len(calls)} 个调用,重跑一次,或者把问题改成「北京、上海、广州哪个最热」")
+
+assistant: dict[str, Any] = {"role": "assistant", "content": msg.content, "tool_calls": [tc.model_dump() for tc in calls]}
+reasoning = getattr(msg, "reasoning_content", None)
+if reasoning:
+    assistant["reasoning_content"] = reasoning
+messages.append(assistant)
+
+# 故意只回传第一个调用的结果,第二个 id 没有对应的 tool 消息
+first = calls[0]
+result = get_weather(**json.loads(first.function.arguments))
+messages.append({"role": "tool", "tool_call_id": first.id, "content": json.dumps(result, ensure_ascii=False)})
+print("已回传:", first.id, "  漏掉:", [tc.id for tc in calls[1:]])
+
+try:
+    client.chat.completions.create(model=MODEL, messages=messages, tools=[WEATHER_TOOL])
+    print("居然没报错:这家厂商对缺失的 tool 结果比较宽容,看看最终回答里它是不是编了上海的温度")
+except BadRequestError as e:
+    print("状态码:", e.status_code)
+    print("报错原文:", e.message)
+```
+
+`uv run python -m w2.day08_missing_result`,DeepSeek 上我跑出来是:
+
+```text
+已回传: call_00_5nwKCaKr...   漏掉: ['call_01_FVBtLS3a...']
+状态码: 400
+报错原文: ... An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message) ...
+```
+
+报错原文直接告诉你违反的是哪条规则:带 `tool_calls` 的 assistant 消息后面,每个 `tool_call_id` 都得有一条 tool 消息回应。`BadRequestError` 是 openai SDK 对 400 的封装,以后写循环时要专门 catch 它。
 
 **练习 3:第二个工具。** 加一个 `calculate(expression: str)` 工具,用下面这个安全的实现(只允许数字和四则运算,绝不用 `eval`):
 
@@ -442,9 +580,156 @@ if __name__ == "__main__":
     print(calculate("__import__('os').system('ls')"))
 ```
 
-然后问模型「北京现在的气温换算成华氏度是多少?」。观察它是直接让天气工具返回华氏度,还是先查摄氏度再调计算器。两种都算对,但你会开始体会到工具设计对模型行为的影响。
+先单独跑 `uv run python -m w2.calc`,确认第二行恶意输入返回的是 error。然后把两个工具一起交给模型:
+
+```python
+# agent-60-lab/w2/day08_two_tools.py
+import json
+import os
+from collections.abc import Callable
+from typing import Any
+
+from dotenv import load_dotenv
+from openai import OpenAI
+from openai.types.chat import ChatCompletionToolParam
+
+from w2.calc import calculate
+from w2.tools_def import WEATHER_TOOL
+from w2.weather import get_weather
+
+load_dotenv()
+client = OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"])
+MODEL = os.environ["LLM_MODEL"]
+
+CALC_TOOL: ChatCompletionToolParam = {
+    "type": "function",
+    "function": {
+        "name": "calculate",
+        "description": "计算一个数学表达式,只支持数字和 + - * / ** %。需要换算、求和、算百分比时使用,不要自己心算。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "expression": {"type": "string", "description": "Python 风格的算式,例如 '(22.4 * 9 / 5) + 32'"},
+            },
+            "required": ["expression"],
+        },
+    },
+}
+TOOLS = [WEATHER_TOOL, CALC_TOOL]
+# 工具名 → 真正执行的函数。加新工具只改这里和 TOOLS 两处
+REGISTRY: dict[str, Callable[..., dict]] = {"get_weather": get_weather, "calculate": calculate}
+
+
+def run_tool(name: str, raw_args: str) -> dict:
+    func = REGISTRY.get(name)
+    if func is None:
+        return {"error": f"未知工具 {name}"}
+    try:
+        return func(**json.loads(raw_args))
+    except Exception as e:  # 参数解析失败、参数名不对、网络错误,都交给模型看
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+messages: list[Any] = [
+    {"role": "system", "content": "你是一个简洁的中文助手。需要实时信息或计算时使用工具,不要编造。"},
+    {"role": "user", "content": "北京现在的气温换算成华氏度是多少?"},
+]
+
+# 模型可能先查天气、看到结果再调计算器,这需要不止一轮,所以套一个最多 5 轮的循环
+# (明天 Day 9 会把它正式写成 Agent 循环)
+for round_no in range(1, 6):
+    resp = client.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS)
+    msg = resp.choices[0].message
+    calls = [tc for tc in msg.tool_calls or [] if tc.type == "function"]
+    if not calls:
+        print(f"[第 {round_no} 轮] 最终回答:", msg.content)
+        break
+
+    assistant: dict[str, Any] = {"role": "assistant", "content": msg.content, "tool_calls": [tc.model_dump() for tc in calls]}
+    reasoning = getattr(msg, "reasoning_content", None)
+    if reasoning:
+        assistant["reasoning_content"] = reasoning
+    messages.append(assistant)
+
+    for tc in calls:
+        result = run_tool(tc.function.name, tc.function.arguments)
+        print(f"[第 {round_no} 轮] {tc.function.name}({tc.function.arguments}) -> {result}")
+        messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result, ensure_ascii=False)})
+else:
+    print("5 轮还没结束,停下来,别让它无限调下去")
+```
+
+这里比往返脚本多了两样东西。一是 `REGISTRY` 字典,按工具名找函数,代替 `if name == ...` 一路写下去,明天 Day 9 的工具注册表就是它的升级版。二是外面套了一个最多 5 轮的 `for` 循环:模型很可能先查天气,看到 11.9 度之后才知道要算什么,第二轮再调计算器,只发一次请求是接不住的。`for ... else` 的 `else` 只在循环没被 `break` 打断时执行,也就是 5 轮都没拿到最终回答。
+
+然后问模型「北京现在的气温换算成华氏度是多少?」。观察它是直接让天气工具返回华氏度,还是先查摄氏度再调计算器。两种都算对,但你会开始体会到工具设计对模型行为的影响。我跑的这次是后一种:
+
+```text
+[第 1 轮] get_weather({"city": "北京", "unit": "celsius"}) -> {'city': '北京', 'temperature': 11.9, 'unit': 'celsius', 'weather': '晴', ...}
+[第 2 轮] calculate({"expression": "(11.9 * 9 / 5) + 32"}) -> {'expression': '(11.9 * 9 / 5) + 32', 'result': 53.42}
+[第 3 轮] 最终回答: 北京现在是晴,气温 11.9°C,换算成华氏度约为 53.4°F。
+```
 
 **练习 4:用 tool_choice 做抽取。** 定义一个 `extract_order(order_id: str, issue: Literal["退款","发票","登录","其他"])` 工具,对「我上周的订单 CL-20931 被扣了两次钱,怎么办」这句话强制调用它,只读 arguments 不执行。
+
+```python
+# agent-60-lab/w2/day08_extract.py
+import json
+import os
+from typing import Any
+
+from dotenv import load_dotenv
+from openai import OpenAI
+from openai.types.chat import ChatCompletionToolParam
+
+load_dotenv()
+client = OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"])
+MODEL = os.environ["LLM_MODEL"]
+
+EXTRACT_TOOL: ChatCompletionToolParam = {
+    "type": "function",
+    "function": {
+        "name": "extract_order",
+        "description": "从客户工单里抽取订单号和问题类型。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string", "description": "订单号,形如 CL-12345;没有就填空字符串"},
+                "issue": {
+                    "type": "string",
+                    "enum": ["退款", "发票", "登录", "其他"],
+                    "description": "问题类型。重复扣款、多扣钱、要求退钱都算 退款",
+                },
+            },
+            "required": ["order_id", "issue"],
+        },
+    },
+}
+
+messages: list[Any] = [{"role": "user", "content": "我上周的订单 CL-20931 被扣了两次钱,怎么办"}]
+
+results = []
+for i in range(5):
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        tools=[EXTRACT_TOOL],
+        # 强制调用 extract_order:模型不能直接说话,只能交出这个函数的参数
+        tool_choice={"type": "function", "function": {"name": "extract_order"}},
+        # DeepSeek 思考模式不支持强制 tool_choice,这里关掉思考;别的厂商不认这个字段时删掉这行
+        extra_body={"thinking": {"type": "disabled"}},
+    )
+    tc = (resp.choices[0].message.tool_calls or [None])[0]
+    if tc is None or tc.type != "function":
+        print(f"第 {i + 1} 次:模型没按要求调用工具")
+        continue
+    args = json.loads(tc.function.arguments)  # 只读参数,不执行任何东西
+    print(f"第 {i + 1} 次:", args)
+    results.append(json.dumps(args, ensure_ascii=False, sort_keys=True))
+
+print("5 次结果一致" if len(results) == 5 and len(set(results)) == 1 else "结果不一致,看看哪次不一样,试着改 description")
+```
+
+注意 `extra_body` 那一行。我实测过,DeepSeek 开着思考模式时指定 `tool_choice` 会直接 400:`Thinking mode does not support this tool_choice`。往返脚本没关思考也能跑,是因为它用的是默认的 `auto`。关掉思考以后,我连跑 5 次都是 `{'order_id': 'CL-20931', 'issue': '退款'}`。如果你的结果偶尔是「其他」,先改 `issue` 的 description,把「重复扣款算退款」写得更明白,这就是上面说的「description 是写给模型看的」。
 
 **验收标准:** 练习 1 能打印出四条消息的完整历史并得到包含真实温度的回答;练习 2 能说出报错是哪一条规则被违反;练习 3 的计算器对恶意输入返回 error 而不是执行;练习 4 稳定抽出 `{"order_id": "CL-20931", "issue": "退款"}`(或你认为合理的分类),连续跑 5 次结果一致。
 
