@@ -475,6 +475,26 @@ Day 0 已经用过了。原则再说一遍：密钥只放在 `.env` 或者系统
 
 再提交一个 `.env.example` 进 git，列出需要哪些变量但不写真实值，方便别人（和面试官）跑你的项目。
 
+`load_dotenv()` 做的事就是读 `.env` 文件，把每行 `KEY=值` 设成环境变量，之后 `os.environ` 就能读到，和 Node 的 `require("dotenv").config()` 一样。它有一个容易忽略的参数 `override`：
+
+```python
+load_dotenv()                                  # 读当前目录的 .env；已经存在的环境变量不覆盖
+load_dotenv(".env.deepseek", override=True)    # 读指定文件，并用文件里的值覆盖已有的
+```
+
+默认**不覆盖**，意思是「外面已经设过的值优先，`.env` 只兜底」。这正是你想要的：服务器上直接配的环境变量比代码目录里的文件优先；测试里用 `monkeypatch.setenv("LLM_API_KEY", "test")` 设的假 key，不会被本地 `.env` 的真 key 顶掉，测试也就不会真的去调 API 花钱。
+
+而**明确指定了某个文件**时，说明你就要这份配置，这时要加 `override=True`。Day 3 的 `LLMClient` 就是这么写的：
+
+```python
+if env_file:
+    load_dotenv(env_file, override=True)   # 指定了文件：以它为准
+else:
+    load_dotenv()                          # 没指定：.env 只兜底
+```
+
+Day 7 聊天机器人的 `/env .env.claude` 切换厂商靠的就是这一点：启动时已经从 `.env` 读进了 `LLM_MODEL=deepseek-flash`，不加 `override=True` 的话，新文件里的值不会生效，等于没切。
+
 ## pytest：最省事的测试框架
 
 pytest 不需要写测试类，函数名以 `test_` 开头、文件名以 `test_` 开头就行，断言直接用 `assert`。
