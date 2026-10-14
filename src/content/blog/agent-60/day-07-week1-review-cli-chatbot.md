@@ -87,7 +87,7 @@ lang: 'zh'
 
 ### 参考实现
 
-先给 `Conversation` 加两个序列化方法。打开 `common/llm.py`，在 `Conversation` 类末尾加上：
+先给 `Conversation` 加两个序列化方法。打开 `common/llm.py`，在 `Conversation` 类末尾加上（和上面的 `messages` 方法之间空一行）：
 
 ```python
     # 追加到 common/llm.py 的 Conversation 类中
@@ -95,11 +95,13 @@ lang: 'zh'
         return {"system": self.system["content"], "max_turns": self.max_turns, "turns": self.turns}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Conversation":
+    def from_dict(cls, data: dict[str, Any]) -> Conversation:
         conv = cls(data["system"], data.get("max_turns", 20))
         conv.turns = data["turns"]
         return conv
 ```
+
+返回类型直接写 `Conversation` 就行，不用加引号：`llm.py` 开头有 `from __future__ import annotations`，类在自己的方法里引用自己不会报错。网上老代码常写成 `-> "Conversation"`，在我们的项目里 Ruff 会提示 `UP037` 让你去掉引号。`@classmethod` 是类方法，第一个参数 `cls` 是类本身，`cls(...)` 就是 `Conversation(...)`，作用和 Day 6 的 `model_validate_json` 一样，是个「造实例」的工厂方法。
 
 然后是主程序：
 
@@ -337,7 +339,7 @@ uv run python -m w1.chatbot --env .env.deepseek
 uv run pytest -q
 ```
 
-**第 2 步：用它做一次真实的提示词调试。** 用 `/system` 把 Day 5 的工单分类 v3 提示词贴进去，然后把 Day 5 的 12 条工单一条条发进去，观察结果。再用 `/think on` 对比开关思考模式时边界工单的表现和花费差别。这就是你接下来几周调提示词的日常姿势。
+**第 2 步：用它做一次真实的提示词调试。** 用 `/system` 把 Day 5 的工单分类 v3 提示词贴进去，然后把 Day 5 的工单（`w1/tickets.py` 里那些）一条条发进去，观察结果。再用 `/think on` 对比开关思考模式时边界工单的表现和花费差别。这就是你接下来几周调提示词的日常姿势。
 
 **第 3 步：整理仓库。** 写一个 `README.md`，包含：这个仓库是什么、怎么装（`uv sync`）、怎么配置（复制 `.env.example`）、W1 每个脚本是干什么的、怎么跑测试。补齐 `.env.example`：
 
@@ -350,15 +352,26 @@ LLM_EXTRA_BODY={"thinking": {"type": "disabled"}}
 LLM_PRICE=0.04,2,8
 ```
 
-**第 4 步：提交并推到 GitHub。** 推之前最后检查一遍有没有密钥混进去：
+**第 4 步：提交并推到 GitHub。** 先确认 `.gitignore` 里至少有 `.env`、`.env.*`、`!.env.example`、`.venv/`、`sessions/`（会话文件可能有隐私内容，Day 0 建的 `.gitignore` 里还没有这一行，记得补上）。然后暂存、查密钥、再提交：
 
 ```bash
-git status
-git diff --cached | grep -iE "sk-|api_key=" && echo "⚠ 有密钥，别提交！"
-git add -A && git commit -m "W1: LLM client, structured extraction, CLI chatbot"
+git add -A
+git status                                                   # 看一眼清单，不该有 .env、sessions/
+git diff --cached | grep -E "sk-[A-Za-z0-9]{20,}" && echo "⚠ 有密钥，别提交！"
+git commit -m "W1: LLM client, structured extraction, CLI chatbot"
 ```
 
-`.gitignore` 里应该至少有 `.env`、`.env.*`、`!.env.example`、`.venv/`、`sessions/`（会话文件可能有隐私内容）。
+顺序很重要：`git diff --cached` 看的是**已暂存**的内容，所以要先 `git add` 再查；在 add 之前查，什么都查不出来。正则要求 `sk-` 后面跟 20 位以上字母数字，是为了只抓真 key，不误报 `.env.example` 里的 `sk-你的key` 这种占位符。
+
+推到 GitHub：先在 github.com 右上角 **New repository** 建一个空仓库，名字 `agent-60-lab`，选 **Private**，不要勾 README / .gitignore（本地已经有了），然后：
+
+```bash
+git branch -M main                                           # uv init 建的默认分支可能叫 master，统一改成 main
+git remote add origin git@github.com:<你的用户名>/agent-60-lab.git
+git push -u origin main
+```
+
+推完到 GitHub 网页上再看一遍文件列表，确认没有 `.env`。
 
 **第 5 步：对照自测题，把答不出来的标出来，回去重看对应的那天。** 面试题汇总里的每一题，都试着对着镜子或者录音讲两分钟，讲不下去的就是没真懂。
 
