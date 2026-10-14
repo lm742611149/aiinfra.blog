@@ -294,6 +294,13 @@ print("完成")          # 在 for 外面，只执行一次
 
 一句话：**先记问题 → 流式拿回答 → 出错撤销这一轮 → 成功记下回答并报账。**这样不管中间出什么事，历史里永远只有完整的轮次。
 
+`run()` 和 `main()` 是外壳：
+
+- `run()` 是一个 `while True` 死循环，每圈：`input("\n你：")` 打印提示后**卡住等你输入**（同步的，像 Node 的 `readline.question`）；输入时按 Ctrl+D（`EOFError`）或 Ctrl+C（`KeyboardInterrupt`）就 `break` 退出，`except (A, B):` 是用一个 tuple 同时接住两种异常；空行 `continue` 回到开头；`/` 开头的交给 `handle_command`，它返回 `False`（只有 `/quit`）就退出；其他交给 `ask()`。跳出循环后打印总花费（切换厂商前累计的 `total_cost` + 当前 `ledger.cost`）。注意两种 Ctrl+C：等输入时按是退出程序，模型回答时按只打断这一轮（被 `ask()` 接住）。
+- `main()` 用标准库 `argparse` 读命令行参数（相当于 Node 的 commander / yargs）：`add_argument("--env", default=None)` 声明参数，`parse_args().env` 取值，不传就是 `None`（读 `.env`），传 `--env .env.deepseek` 就是那个文件；然后建 `ChatBot` 并 `.run()`。
+
+整个调用链：**运行文件 → `main()` 读参数 → 建 ChatBot → `run()` 循环等输入 → 命令给 `handle_command`，聊天给 `ask()`。**
+
 几处设计说明，面试讲项目时这些就是你的谈资：
 
 **出错时回滚这一轮。** 请求失败后，如果把用户那条消息留在历史里，下一次请求会出现两条连续的 user 消息，有的厂商会报错，有的会让模型困惑。所以失败就 `pop()` 掉。这是一个很小的细节，但它体现的是「状态一致性」的意识。
