@@ -174,6 +174,31 @@ LABELS[0]                    # 报错：set 无序，没有下标
 | dict | `{"k": 1}` | `dict[str, int]` | 对象 / `Map` | 按名字查值 |
 | set | `{1, 2}` | `set[int]` | `Set<number>` | 去重、判断在不在 |
 
+### Literal：只能取这几个值
+
+有些字段只能取固定的几个值，比如工单分类。用 `Literal` 写：
+
+```python
+from typing import Literal
+
+category: Literal["billing", "technical", "account", "other"] = "billing"
+# TS: category: "billing" | "technical" | "account" | "other"
+```
+
+`str` 是什么字符串都行，`Literal[...]` 只认列出来的这几个。光是类型标注，运行时照样不检查（`category = "payment"` 能跑，只是编辑器画红线）；放进 pydantic 模型里就会真校验：
+
+```python
+from pydantic import BaseModel
+
+class Ticket(BaseModel):
+    category: Literal["billing", "technical", "account", "other"]
+
+Ticket(category="billing")   # 通过
+Ticket(category="Billing")   # ValidationError：大小写不对也不行
+```
+
+它还会进 `model_json_schema()`，变成 `{"enum": ["billing", "technical", "account", "other"], "type": "string"}`，把 schema 写进提示词，模型就能直接看到只有这几个选项。Day 6 的结构化抽取就是靠这个把模型的输出限制住：Day 5 是自己写 `if word in LABELS` 检查，Day 6 把规则写进类型里，交给 pydantic。
+
 回到类型标注：它和 Agent 有什么关系？关系很大。Day 9 我们会写一个装饰器，**读取函数的类型标注，自动生成给模型看的工具 JSON Schema**。LangChain、MCP 的 Python SDK、OpenAI Agents SDK 全是这么干的。你写：
 
 ```python
