@@ -281,6 +281,7 @@ from common.llm import LLMClient
 from common.structured import extract
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+log = logging.getLogger(__name__)
 
 
 class TicketInfo(BaseModel):
@@ -309,16 +310,18 @@ def verify_ids(info: TicketInfo, text: str) -> TicketInfo:
     found = set(INVOICE_RE.findall(text))
     kept = [i for i in info.invoice_ids if i in found]
     if len(kept) != len(info.invoice_ids):
-        logging.warning("丢弃原文中不存在的发票号：%s", set(info.invoice_ids) - found)
+        log.warning("丢弃原文中不存在的发票号：%s", set(info.invoice_ids) - found)
     missed = found - set(kept)
     if missed:
-        logging.warning("模型漏抽了发票号：%s，已补上", missed)
+        log.warning("模型漏抽了发票号：%s，已补上", missed)
     return info.model_copy(update={"invoice_ids": sorted(found)})
 
 
 TICKETS = [
-    "你好，我是王磊（wanglei@example.com），INV-2026-004417 和 INV-2026-004418 是同一个月的，"
-    "被扣了两次钱！！这是第三次找你们了，再不处理我就投诉到消协。",
+    (
+        "你好，我是王磊（wanglei@example.com），INV-2026-004417 和 INV-2026-004418 是同一个月的，"
+        "被扣了两次钱！！这是第三次找你们了，再不处理我就投诉到消协。"
+    ),
     "导出报表一直失败，提示 E1023，麻烦看一下。",
     "请问专业版和企业版有什么区别？我们团队 12 个人。",
 ]
@@ -339,6 +342,11 @@ if __name__ == "__main__":
 ```bash
 uv run python -m w1.extract_ticket
 ```
+
+两个写法细节：
+
+- `basicConfig` 只在入口脚本里配一次「日志往哪打」，打日志用自己模块的 `log = logging.getLogger(__name__)`。直接写 `logging.warning(...)` 用的是根 logger，Ruff 会提示 `LOG015`。
+- 第一张工单太长，拆成了两行字符串。Python 会把**相邻的两个字符串字面量自动拼成一个**（`"ab" "cd"` 就是 `"abcd"`）。在列表里这么写要套一层括号，不然和「漏写了一个逗号」看起来一模一样，Ruff 会提示 `ISC004`。真漏了逗号的话，两张工单会悄悄合成一张，不报任何错。
 
 跑之前先猜一下每张工单的结果，再对照实际输出。
 
