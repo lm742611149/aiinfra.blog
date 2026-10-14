@@ -163,6 +163,20 @@ LABELS[0]                    # 报错：set 无序，没有下标
 
 用 set 不用 list，是因为它查「在不在」很快（哈希查找），而且自动去重。
 
+set 还能直接做集合运算，比对「两边差了什么」时特别好用：
+
+```python
+model_ids = {"INV-001", "INV-003"}       # 模型抽出来的
+real_ids  = {"INV-001", "INV-002"}       # 正则从原文找到的
+
+model_ids - real_ids    # {"INV-003"}  差集：模型有、原文没有（编造的）
+real_ids - model_ids    # {"INV-002"}  差集：原文有、模型没有（漏抽的）
+model_ids & real_ids    # {"INV-001"}  交集：两边都有
+model_ids | real_ids    # 并集：合在一起去重
+```
+
+JS 的 `Set` 直到最近才有 `difference()`、`intersection()` 这些方法，Python 一个运算符就搞定。差集有方向，`A - B` 和 `B - A` 结果不一样。list 不能这么减，要先用 `set(...)` 转一下。Day 6 的 `verify_ids` 就是靠这两个方向的差集，找出模型编造和漏抽的发票号。
+
 注意 set 和 dict 都用花括号，**有冒号是 dict，没冒号是 set**；空的 `{}` 是 dict，空 set 要写 `set()`。
 
 四种容器放一起对照：
