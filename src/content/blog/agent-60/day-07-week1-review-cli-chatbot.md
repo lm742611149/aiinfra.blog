@@ -262,6 +262,19 @@ arg = arg.strip()
 
 为什么不用 `split(" ")`：它会在**每个**空格处切，`/system` 后面整段带空格的提示词就被拆碎了。我们只想在命令名后面切一刀，partition 正好。最后 `strip()` 去掉参数两头多打的空格。
 
+`/save` 分支里有几个文件操作的写法也值得认一下：
+
+```python
+SESSIONS.mkdir(exist_ok=True)                        # 建 sessions/ 目录，已存在不报错
+path = SESSIONS / f"{arg or 'default'}.json"         # Path 用 / 拼路径，相当于 path.join
+path.write_text(json.dumps(self.conv.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+```
+
+- `SESSIONS` 是 `Path("sessions")`，`pathlib` 重载了 `/`，`Path("sessions") / "s1.json"` 就是 `sessions/s1.json`，看着像除法其实是拼路径。
+- `arg or 'default'`：arg 是空字符串（只输了 `/save`）时用 `'default'`，相当于 JS 的 `arg || "default"`。f-string 外面是双引号，里面就要用单引号。
+- `json.dumps(obj, ensure_ascii=False, indent=2)` 相当于 `JSON.stringify(obj, null, 2)`，`ensure_ascii=False` 让中文原样保存；`write_text` 相当于 `fs.writeFileSync`。
+- `/load` 反过来：`read_text()` → `json.loads()` → `Conversation.from_dict()`。
+
 几处设计说明，面试讲项目时这些就是你的谈资：
 
 **出错时回滚这一轮。** 请求失败后，如果把用户那条消息留在历史里，下一次请求会出现两条连续的 user 消息，有的厂商会报错，有的会让模型困惑。所以失败就 `pop()` 掉。这是一个很小的细节，但它体现的是「状态一致性」的意识。
