@@ -427,6 +427,19 @@ print(get_weather.__annotations__)  # {'city': <class 'str'>, 'return': <class '
 
 Python 的字符串不可修改，这些方法都**返回新字符串**，原字符串不变。要写 `s = s.strip()`，只写 `s.strip()` 什么也没发生。
 
+**比较和逻辑运算。** Python 只有两个等号，没有三等号：
+
+| 意思 | Python | JS |
+| --- | --- | --- |
+| 值相等 / 不等 | `a == b` / `a != b` | `a === b` / `a !== b` |
+| 是不是同一个对象 | `a is b` / `a is not b` | 大致是 `Object.is` |
+| 非 / 且 / 或 | `not x` / `a and b` / `a or b` | `!x` / `a && b` / `a \|\| b` |
+| 不在里面 | `x not in items` | `!items.includes(x)` |
+
+Python 的 `==` 不做类型转换，`1 == "1"` 是 `False`，行为和 JS 的 `===` 一样。一个例外：`True == 1`、`False == 0` 都成立，因为 bool 在 Python 里是 int 的子类。
+
+`==` 比的是值，`is` 比的是是不是同一个对象：两个内容相同的列表 `==` 为真、`is` 为假。日常只在判断 `None` 时用 `is`：写 `if x is None:` / `if x is not None:`，不要写 `x == None`（Ruff 会提示 `E711`）。其他比较一律用 `==` 和 `!=`。
+
 **真值判断。** 空列表、空字符串、0、`None` 在 if 里都是假。`if messages:` 就是「列表非空」。这很方便，但也有坑：一个工具返回了 `0`（比如余额为零），你写 `if result:` 会把它当成「没有结果」。需要区分「没有」和「是零」时，写 `if result is not None:`。
 
 **异常。** Python 用异常处理错误，没有 Go 那种多返回值的 err。`try / except 具体异常类型 as e`，尽量捕获具体类型，不要一个光秃秃的 `except:` 把所有错误都吞掉，那样调试时你会完全不知道发生了什么。Agent 里有一个特殊情况：工具执行出错时，通常不让程序崩溃，而是把错误信息转成字符串交给模型，让它自己决定换个参数重试。Day 12 会专门讲。
