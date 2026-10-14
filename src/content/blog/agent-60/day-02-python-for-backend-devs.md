@@ -414,21 +414,29 @@ schema_prompt(TicketInfo(category=...))   # 错：这是实例
 
 为什么要传类：`model_json_schema()` 读的是类上定义的字段、类型和 description，这时候还没有任何数据，谈不上实例。TS 里接近 `typeof TicketInfo` 或 `new (...args: any) => BaseModel`。Day 6 的 `extract(client, TicketInfo, ...)` 也是传类进去，函数内部拿它生成 schema、校验模型输出，最后返回一个实例。
 
-**泛型（TypeVar）。** 想让函数「传进什么类、就返回什么类的实例」时用。Day 6 的 `extract()` 就是这样：
+**泛型。** 想让函数「传进什么类、就返回什么类的实例」时用。Day 6 的 `extract()` 就是这样：
 
 ```python
-from typing import TypeVar
 from pydantic import BaseModel
 
-T = TypeVar("T", bound=BaseModel)      # TS: <T extends BaseModel>
-
-def extract(model: type[T], text: str) -> T:   # type[T] 是「类本身」，T 是「它的实例」
+def extract[T: BaseModel](model: type[T], text: str) -> T:   # TS: function extract<T extends BaseModel>(...)
     return model.model_validate_json(text)
 
 info = extract(TicketInfo, raw)        # 编辑器知道 info 是 TicketInfo，能补全字段
 ```
 
-`bound=BaseModel` 就是 TS 的 `extends`，限定 T 必须是某个 pydantic 模型。返回类型如果只写 `-> BaseModel`，编辑器就不知道 `info` 有哪些字段了。Python 3.12 起也可以写成和 TS 更像的 `def extract[T: BaseModel](model: type[T], text: str) -> T:`，效果一样；不过库和框架的代码里大多还是 `TypeVar` 老写法，两种都要认识。
+函数名后面的 `[T: BaseModel]` 就是 TS 的 `<T extends BaseModel>`，限定 T 必须是某个 pydantic 模型；`type[T]` 是「类本身」，`-> T` 是「它的实例」。返回类型如果只写 `-> BaseModel`，编辑器就不知道 `info` 有哪些字段了。
+
+这是 Python 3.12 的新写法，课程项目要求 ≥3.12，统一用它。读库和框架源码时会经常看到老写法，意思完全一样：
+
+```python
+from typing import TypeVar
+
+T = TypeVar("T", bound=BaseModel)      # 先单独定义 T，bound 就是 extends
+def extract(model: type[T], text: str) -> T: ...
+```
+
+在 3.12 项目里写老写法，Ruff 会给黄色警告 `UP047 Generic function should use type parameters`，意思就是「建议换成新写法」，不影响运行。
 
 ## 密钥：.env + python-dotenv
 

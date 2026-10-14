@@ -194,14 +194,13 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ValidationError
 
 from common.llm import ChatResult
 
 log = logging.getLogger(__name__)
-T = TypeVar("T", bound=BaseModel)
 
 
 class ChatClient(Protocol):
@@ -222,7 +221,7 @@ def schema_prompt(model: type[BaseModel]) -> str:
     )
 
 
-def extract(
+def extract[T: BaseModel](
     client: ChatClient,
     model: type[T],
     instructions: str,
