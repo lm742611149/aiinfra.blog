@@ -68,7 +68,9 @@ W1 你已经会和模型「聊天」了:拼 messages、发请求、拿回一段�
 
 ```python
 # agent-60-lab/w2/tools_def.py
-WEATHER_TOOL = {
+from openai.types.chat import ChatCompletionToolParam
+
+WEATHER_TOOL: ChatCompletionToolParam = {
     "type": "function",
     "function": {
         "name": "get_weather",
@@ -92,6 +94,8 @@ WEATHER_TOOL = {
 }
 ```
 
+第一行的类型标注 `ChatCompletionToolParam` 是 OpenAI SDK 给工具定义提供的类型,标上以后字段名拼错(比如 `paramters`)编辑器会直接画红线;不标的话,把这个字典传给 SDK 时类型检查会报「类型对不上」。
+
 如果你没写过 JSON Schema,别慌,Agent 工程里用到的子集非常小。`type: object` 表示参数是一个对象;`properties` 列出每个字段;每个字段有自己的 `type`(string、number、integer、boolean、array、object)和 `description`;`enum` 把取值限定在几个固定值里;`required` 说明哪些字段必须给。这五六个关键字够你用到毕业项目。
 
 这里有一件事值得多停一下:**description 是写给模型看的**,不是写给同事看的注释。模型决定要不要调用这个工具、参数怎么填,依据几乎全来自这里。「查询天气」和「查询某个城市当前的天气。用户问到天气、气温、要不要带伞时使用」,后一种写法会让模型在用户说「明天出门要带伞吗」的时候也想到它。Day 11 会专门花一整天讲工具描述怎么写,今天先记住这一条。
@@ -101,6 +105,7 @@ WEATHER_TOOL = {
 ```python
 # agent-60-lab/w2/schema_from_pydantic.py
 from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -163,7 +168,7 @@ if __name__ == "__main__":
     print(get_weather("北京"))
 ```
 
-先单独跑一下 `uv run python weather.py`,确认这个函数自己没问题。这是个好习惯:工具本身先用普通单元测试的方式跑通,再交给模型。不然出了错,你分不清是模型参数填错了还是工具本身就坏了。
+先在仓库根目录单独跑一下 `uv run python -m w2.weather`,确认这个函数自己没问题。这是个好习惯:工具本身先用普通单元测试的方式跑通,再交给模型。不然出了错,你分不清是模型参数填错了还是工具本身就坏了。
 
 然后是今天的主角,一次完整往返:
 
@@ -171,16 +176,21 @@ if __name__ == "__main__":
 # agent-60-lab/w2/day08_roundtrip.py
 import json
 import os
+from typing import Any
 
+from dotenv import load_dotenv
 from openai import OpenAI
 
-from tools_def import WEATHER_TOOL
-from weather import get_weather
+from w2.tools_def import WEATHER_TOOL
+from w2.weather import get_weather
 
+load_dotenv()
 client = OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"])
 MODEL = os.environ["LLM_MODEL"]
 
-messages = [
+# SDK 给每种消息都定义了严格的类型,手拼的字典(尤其带 reasoning_content 这种扩展字段)对不上,
+# 这里直接放宽成 Any;Day 3 的 LLMClient 内部也是用 dict[str, Any] 绕过去的
+messages: list[Any] = [
     {"role": "system", "content": "你是一个简洁的中文助手。需要实时信息时使用工具,不要编造。"},
     {"role": "user", "content": "北京现在多少度?出门要穿外套吗?"},
 ]
@@ -202,6 +212,8 @@ if msg.tool_calls:
 
     # 2. 逐个执行,每个结果一条 tool 消息,用 tool_call_id 对上号
     for tc in msg.tool_calls:
+        if tc.type != "function":  # 还有一种 custom 工具,我们没定义,跳过;这一行也让编辑器知道下面 tc.function 一定存在
+            continue
         args = json.loads(tc.function.arguments)
         result = get_weather(**args) if tc.function.name == "get_weather" else {"error": "未知工具"}
         messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result, ensure_ascii=False)})
@@ -211,15 +223,13 @@ if msg.tool_calls:
     print("最终回答:", final.choices[0].message.content)
 ```
 
-环境变量照 Day 3 的设置。以 DeepSeek 为例(2026 年 10 月查到的[官方定价页](https://api-docs.deepseek.com/quick_start/pricing)写的模型名是 `deepseek-flash`,以你注册时看到的为准):
+环境变量用 Day 3 建好的 `.env`(`load_dotenv()` 会读进来),不用再 `export`。在仓库根目录运行:
 
 ```bash
-export LLM_BASE_URL=https://api.deepseek.com
-export LLM_API_KEY=sk-...
-export LLM_MODEL=deepseek-flash
-uv add openai httpx pydantic
-uv run python day08_roundtrip.py
+uv run python -m w2.day08_roundtrip
 ```
+
+和 W1 一样用 `-m` 从根目录跑,`from w2.weather import ...` 才找得到。注意这个脚本没用 `LLMClient`,所以 `.env` 里的 `LLM_EXTRA_BODY`(关思考)不会生效,DeepSeek 会开着思考模式跑,正好对应下面「思考模式的一个坑」。
 
 第一次请求打印出来大致长这样(id 每次不同):
 
@@ -279,11 +289,12 @@ tool_calls: [ChatCompletionMessageToolCall(id='call_0_8f2c...', function=Functio
 用户问「北京和上海哪个更热?」,模型需要两份天气。聪明的模型会在一次响应里给出两个 tool_calls,而不是查完北京再发一轮请求查上海。这就是并行工具调用(parallel tool calls)。
 
 ```python
-# agent-60-lab/w2/day08_parallel.py(只展示和 roundtrip 不同的部分)
+# agent-60-lab/w2/day08_parallel.py(只展示和 roundtrip 不同的部分,运行:uv run python -m w2.day08_parallel)
 messages[-1] = {"role": "user", "content": "北京和上海现在哪个更热?"}
 resp = client.chat.completions.create(model=MODEL, messages=messages, tools=[WEATHER_TOOL])
 for tc in resp.choices[0].message.tool_calls or []:
-    print(tc.id, tc.function.name, tc.function.arguments)
+    if tc.type == "function":
+        print(tc.id, tc.function.name, tc.function.arguments)
 # 输出大致长这样(两个调用,id 不同):
 # call_0_a1... get_weather {"city": "北京"}
 # call_1_b2... get_weather {"city": "上海"}
@@ -319,7 +330,7 @@ import os
 
 import anthropic
 
-from weather import get_weather
+from w2.weather import get_weather
 
 client = anthropic.Anthropic()  # 读 ANTHROPIC_API_KEY
 MODEL = os.environ["ANTHROPIC_MODEL"]  # 用控制台里当前可用的 Claude 模型名
@@ -346,6 +357,8 @@ if resp.stop_reason == "tool_use":
     final = client.messages.create(model=MODEL, max_tokens=1024, tools=tools, messages=messages)
     print(final.content[0].text)
 ```
+
+这段**看懂对照表就行,不要求跑**:要跑得有 Claude 的 API key,还要 `uv add anthropic`,并在 `.env` 里加 `ANTHROPIC_API_KEY` 和 `ANTHROPIC_MODEL`。没有 key 的话编辑器会在 `import anthropic` 下画红线,不用管。
 
 我个人觉得 Anthropic 的设计在两处更顺手:`input` 直接是对象,少一次解析;工具结果被看作「用户那边返回的信息」,放在 user 消息里,语义上也说得通。OpenAI 的单独 tool 角色则在日志里更好认。两种都要会,真到项目里通常用一层自己的适配代码把差异抹平,Day 27 讲框架时你会看到各家 SDK 都在做这件事。
 
