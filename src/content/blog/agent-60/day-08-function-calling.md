@@ -122,6 +122,16 @@ print(schema)
 #  'required': ['city'], 'title': 'GetWeatherArgs', 'type': 'object'}
 ```
 
+直接 `print` 字典会挤成一长行,很难看。想在控制台里看成缩进好的 JSON,把最后的 `print(schema)` 换成:
+
+```python
+import json  # 放到文件开头
+
+print(json.dumps(schema, ensure_ascii=False, indent=2))
+```
+
+`indent=2` 负责换行和缩进,`ensure_ascii=False` 让中文原样显示,不变成 `\uXXXX`。效果和 TS 里的 `JSON.stringify(obj, null, 2)` 一样。后面打印 messages、工具结果都可以这么写。
+
 pydantic 生成的 schema 多了 `title` 之类的字段,模型不在乎,大多数厂商也能接受。好处是同一个类以后还能拿来校验模型给的参数,Day 6 学的校验加重试可以直接复用。明天手写 Agent 循环时,我们会再进一步,直接从函数的类型标注生成 schema。
 
 ## 第一次跑通:让模型查天气
