@@ -619,6 +619,58 @@ if __name__ == "__main__":
     print(calculate("__import__('os').system('ls')"))
 ```
 
+### calc.py 逐段读懂
+
+这个文件看着绕,其实只做一件事:**不执行字符串,而是先把算式拆成一棵树,自己一个节点一个节点地算**。用 TS 的话说,就是不用 `eval()`,自己写一个只认加减乘除的小解释器。
+
+**第一步,`ast.parse` 把字符串变成树。** `ast` 是 Python 自带的模块,全称 abstract syntax tree(抽象语法树),Python 自己执行代码前也是先把代码解析成这棵树。它只解析、不执行,所以对恶意字符串是安全的。可以在终端里看一眼:
+
+```python
+import ast
+print(ast.dump(ast.parse("(22.4 * 9 / 5) + 32", mode="eval").body, indent=2))
+```
+
+输出是:
+
+```text
+BinOp(
+  left=BinOp(
+    left=BinOp(
+      left=Constant(value=22.4),
+      op=Mult(),
+      right=Constant(value=9)),
+    op=Div(),
+    right=Constant(value=5)),
+  op=Add(),
+  right=Constant(value=32))
+```
+
+`BinOp` 是二元运算(左边、运算符、右边),`Constant` 是数字。`mode="eval"` 表示「这是一个表达式」,不是一段多行程序;`.body` 取出表达式本身。前端同学可以类比 Babel、ESLint 用的 AST,是同一个东西。
+
+**第二步,`OPS` 是一张查找表。**
+
+```python
+OPS = {ast.Add: op.add, ast.Sub: op.sub, ...}
+```
+
+键是 AST 里的运算符类型,值是 `operator` 模块里对应的函数:`op.add(2, 3)` 就是 `2 + 3`,`op.truediv` 是除法,`op.pow` 是乘方,`op.neg` 是取负号。相当于 TS 里 `const OPS = new Map([[Add, (a, b) => a + b], ...])`。这张表就是**白名单**,不在表里的运算一律不认。
+
+**第三步,`ev` 递归地算。** 它定义在 `calculate` 里面(函数里套函数,和 JS 一样合法),对每个节点判断是三种情况中的哪一种:
+
+| 判断 | 意思 | 怎么算 |
+| --- | --- | --- |
+| `isinstance(node, ast.Constant) and isinstance(node.value, (int, float))` | 是个数字 | 直接返回这个数。`isinstance` 约等于 TS 的 `instanceof`,第二个参数传元组表示「是其中任一种」 |
+| `isinstance(node, ast.BinOp) and type(node.op) in OPS` | 二元运算,且运算符在白名单里 | 先递归算左右两边,再用表里的函数算:`OPS[type(node.op)](ev(node.left), ev(node.right))` |
+| `isinstance(node, ast.UnaryOp) and type(node.op) in OPS` | 一元运算,比如 `-5` | 递归算操作数,再取负 |
+
+三种都不是,就 `raise ValueError(...)`。`__import__('os').system('ls')` 解析出来是 `Call`(函数调用)节点,不在这三种里,于是直接报「不支持的表达式成分」,根本走不到执行那一步。这就是它比 `eval` 安全的原因:**默认拒绝,只放行白名单**。
+
+`OPS[type(node.op)](...)` 这一行可以拆开读:`type(node.op)` 拿到运算符的类型(比如 `ast.Mult`),`OPS[...]` 查表拿到函数(`op.mul`),最后的 `(...)` 调用这个函数。`ast.dump(node)[:40]` 是把出问题的节点转成字符串、只取前 40 个字符放进报错,免得报错太长。
+
+**第四步,`try` 把结果和错误都包成字典。** 成功返回 `{"expression": ..., "result": ...}`,失败返回 `{"error": ...}`。工具函数不抛异常而是返回错误信息,模型看到 error 会自己换个写法再调一次,这是工具设计的惯例,Day 12 会专门讲。
+
+**最后,`if __name__ == "__main__":`。** 直接运行这个文件时(`python -m w2.calc`),`__name__` 等于 `"__main__"`,下面两行测试会执行;被别的文件 `import` 时不会执行。相当于 Node 里的 `if (require.main === module)`。
+
 `except` 那一行只接住四类「表达式算不了」的错误:`SyntaxError`(写的不是合法算式,比如 `1 +`)、`ValueError`(上面 `ev` 自己抛的「不支持的成分」)、`ArithmeticError`(除以零、结果太大溢出都算这一类)、`RecursionError`(括号嵌套几千层)。一开始我写的是 `except Exception`,Zed 里的 Ruff 会在 `Exception` 下画黄线提示 `BLE001 Do not catch blind exception`,意思是别一把接住所有异常:那样连你代码里的笔误(比如把变量名拼错引起的 `NameError`)也会被包装成「无法计算」交给模型,bug 就被藏起来了。只接预期内的错误,意外的错误照常报出来,这是写工具函数的好习惯。
 
 先单独跑 `uv run python -m w2.calc`,确认第二行恶意输入返回的是 error。然后把两个工具一起交给模型:
