@@ -584,6 +584,8 @@ except BadRequestError as e:
 报错原文: ... An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message) ...
 ```
 
+脚本开头那个 `if len(calls) < 2: raise SystemExit(...)` 是个前置检查。这个练习要「两个调用只回一个」,可模型偶尔会只给一个调用(比如只查了北京),那就没东西可漏,后面的实验没意义。`raise SystemExit("...")` 的效果是打印这句话然后结束程序,不像普通异常那样打一大段 traceback,相当于 Node 里的 `console.error(msg); process.exit(1)`。碰到这种情况重跑一次,或者问三个城市,让模型更可能一次给出多个调用。
+
 报错原文直接告诉你违反的是哪条规则:带 `tool_calls` 的 assistant 消息后面,每个 `tool_call_id` 都得有一条 tool 消息回应。`BadRequestError` 是 openai SDK 对 400 的封装,以后写循环时要专门 catch 它。
 
 **练习 3:第二个工具。** 加一个 `calculate(expression: str)` 工具,用下面这个安全的实现(只允许数字和四则运算,绝不用 `eval`):
