@@ -5,6 +5,7 @@ import Loader from './Loader.astro';
 const path = Astro.url.pathname;
 const isCourse = path === '/course' || path.startsWith('/course/') || path.startsWith('/blog/agent-60/');
 const isWriting = !isCourse && (path === '/blog' || path.startsWith('/blog/'));
+const isProjects = path === '/projects' || path.startsWith('/projects/');
 const isAbout = path === '/about' || path === '/about/';
 ---
 
@@ -24,6 +25,7 @@ const isAbout = path === '/about' || path === '/about/';
 
 		<nav aria-label="主导航">
 			<a href="/course" class:list={[{ active: isCourse }]}>课程</a>
+			<a href="/projects" class:list={[{ active: isProjects }]}>实战项目</a>
 			<a href="/blog" class:list={[{ active: isWriting }]}>全部文章</a>
 			<a href="/about" class:list={[{ active: isAbout }]}>关于</a>
 			<a class="start" href="/blog/agent-60/day-00-overview/">开始学习</a>
@@ -148,6 +150,13 @@ const isAbout = path === '/about' || path === '/about/';
 		}
 
 		nav a.start {
+			display: none;
+		}
+	}
+
+	/* Four nav links plus the wordmark don't fit a 375px phone; keep the glyph only. */
+	@media (max-width: 430px) {
+		.name {
 			display: none;
 		}
 	}

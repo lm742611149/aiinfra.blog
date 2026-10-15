@@ -22,4 +22,28 @@ const blog = defineCollection({
 	}),
 });
 
-export const collections = { blog };
+// Portfolio projects: standalone briefs, listed at /projects, kept out of the day-by-day course.
+const projects = defineCollection({
+	loader: glob({ base: './src/content/projects', pattern: '*.md' }),
+	schema: z.object({
+		title: z.string(),
+		name: z.string(),
+		tagline: z.string(),
+		summary: z.string(),
+		order: z.number().int().positive(),
+		difficulty: z.number().int().min(1).max(5),
+		level: z.enum(['中高级', '资深', '资深+']),
+		duration: z.string(),
+		cost: z.string(),
+		gpu: z.boolean().default(false),
+		targets: z.array(z.string()),
+		stack: z.array(z.string()),
+		recognition: z.string(),
+		depends: z.array(z.string()).default([]),
+		status: z.enum(['spec', 'tutorial']).default('spec'),
+		// First lesson of the day-by-day tutorial, when one exists.
+		tutorial: z.string().optional(),
+	}),
+});
+
+export const collections = { blog, projects };

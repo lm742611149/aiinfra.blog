@@ -1,0 +1,487 @@
+---
+import { getCollection } from 'astro:content';
+import BaseHead from '../../components/BaseHead.astro';
+import Footer from '../../components/Footer.astro';
+import Header from '../../components/Header.astro';
+import { SITE_TITLE } from '../../consts';
+import { breadcrumbSchema } from '../../lib/seo';
+
+const projects = (await getCollection('projects')).sort((a, b) => a.data.order - b.data.order);
+const nameOf = new Map(projects.map((p) => [p.id, p.data.name]));
+const noGpu = projects.filter((p) => !p.data.gpu).length;
+
+const title = '实战项目';
+const description =
+	'学完进阶篇以后可以做的资深级 Agent 项目:调试器、计费调查 Agent、浏览器 Agent、代码 Agent、提示注入防火墙、公开基准、持久化运行时、自我改进、长期记忆、强化学习训练。每个都有架构、分阶段计划、验收指标和面试讲法。';
+const schema = [
+	{
+		'@type': 'CollectionPage',
+		'@id': new URL('/projects/#list', Astro.site).toString(),
+		name: title,
+		url: new URL('/projects/', Astro.site).toString(),
+		description,
+		inLanguage: 'zh-CN',
+		isPartOf: { '@id': new URL('/#website', Astro.site).toString() },
+		mainEntity: {
+			'@type': 'ItemList',
+			numberOfItems: projects.length,
+			itemListElement: projects.map((p, i) => ({
+				'@type': 'ListItem',
+				position: i + 1,
+				name: p.data.title,
+				url: new URL(`/projects/${p.id}/`, Astro.site).toString(),
+			})),
+		},
+	},
+	breadcrumbSchema(Astro.site, [
+		{ name: SITE_TITLE, path: '/' },
+		{ name: title, path: '/projects/' },
+	]),
+];
+
+const ROUTES = [
+	{ name: '投 Agent 平台岗', ids: ['agent-loupe', 'anchor', 'bastion'] },
+	{ name: '投海外 FDE', ids: ['billsleuth', 'steward', 'billbench'] },
+	{ name: '冲研究型 / 前沿团队', ids: ['bastion', 'billbench', 'ledgergym'] },
+];
+---
+
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<BaseHead title={`${title} — ${SITE_TITLE}`} description={description} lang="zh" schema={schema} />
+	</head>
+	<body>
+		<Header />
+		<main>
+			<section class="stage">
+				<div class="shell stage-inner">
+					<h1>实战项目</h1>
+					<p class="lede">
+						课程教你会做,这些项目用来证明你做过。每个都按资深岗的标准设计:有真实难点,有能公开的数字,最好还有外部认可,比如技术报告、公开榜单或者上游合并的 PR。{projects.length} 个项目里 {noGpu} 个不需要 GPU,一台旧笔记本加每月几十美元的 API 费就能做。
+					</p>
+					<p class="lede soft">不用全做。挑两三个对准你要投的岗位,做深做完,比十个半成品有用得多。</p>
+				</div>
+			</section>
+
+			<div class="shell body">
+				<section class="routes" aria-label="按目标挑项目">
+					<h2>按目标挑</h2>
+					<div class="route-grid">
+						{
+							ROUTES.map((r) => (
+								<div class="route">
+									<p class="route-name">{r.name}</p>
+									<ol>
+										{r.ids
+											.filter((id) => nameOf.has(id))
+											.map((id) => (
+												<li>
+													<a href={`/projects/${id}/`}>{nameOf.get(id)}</a>
+												</li>
+											))}
+									</ol>
+								</div>
+							))
+						}
+					</div>
+				</section>
+
+				<ol class="cards">
+					{
+						projects.map((p) => (
+							<li class="card">
+								<a class="card-link" href={`/projects/${p.id}/`}>
+									<p class="card-top">
+										<span class="num">{String(p.data.order).padStart(2, '0')}</span>
+										<span class="chips">
+											<span class="chip">{p.data.level}</span>
+											{p.data.status === 'tutorial' && <span class="chip chip-go">有逐日教程</span>}
+											{p.data.gpu && <span class="chip chip-warn">要租 GPU</span>}
+										</span>
+									</p>
+									<h2 class="card-title">
+										<span class="card-name">{p.data.name}</span>
+										<span class="card-sub">{p.data.title.split(' · ').slice(1).join(' · ')}</span>
+									</h2>
+									<p class="card-summary">{p.data.summary}</p>
+									<dl class="facts">
+										<div>
+											<dt>难度</dt>
+											<dd>
+												<span class="meter" aria-label={`难度 ${p.data.difficulty} / 5`}>
+													{[1, 2, 3, 4, 5].map((i) => (
+														<i class:list={{ on: i <= p.data.difficulty }} />
+													))}
+												</span>
+											</dd>
+										</div>
+										<div>
+											<dt>时长</dt>
+											<dd>{p.data.duration}</dd>
+										</div>
+										<div>
+											<dt>花费</dt>
+											<dd>{p.data.cost}</dd>
+										</div>
+										<div class="wide">
+											<dt>外部认可</dt>
+											<dd>{p.data.recognition}</dd>
+										</div>
+									</dl>
+									<p class="targets">{p.data.targets.join(' · ')}</p>
+								</a>
+							</li>
+						))
+					}
+				</ol>
+
+				<section class="compare">
+					<h2>一张表对比</h2>
+					<div class="table-wrap">
+						<table>
+							<thead>
+								<tr>
+									<th>项目</th>
+									<th>难度</th>
+									<th>级别</th>
+									<th>时长</th>
+									<th>GPU</th>
+									<th>依赖</th>
+								</tr>
+							</thead>
+							<tbody>
+								{
+									projects.map((p) => (
+										<tr>
+											<td>
+												<a href={`/projects/${p.id}/`}>{p.data.name}</a>
+											</td>
+											<td>{p.data.difficulty} / 5</td>
+											<td>{p.data.level}</td>
+											<td>{p.data.duration}</td>
+											<td>{p.data.gpu ? '要' : '不要'}</td>
+											<td>{p.data.depends.map((d) => nameOf.get(d) ?? d).join('、') || '无'}</td>
+										</tr>
+									))
+								}
+							</tbody>
+						</table>
+					</div>
+					<p class="note">课程里还有两个跟着做的项目:基础篇毕业项目 SupportPilot(Day 43–54)和进阶篇毕业项目 AgentOps(Day 96–105),在<a href="/course">课程目录</a>里。</p>
+				</section>
+			</div>
+		</main>
+		<Footer />
+	</body>
+</html>
+
+<style>
+	.stage {
+		--s-bg: #0b0e11;
+		--s-rule: #2b3139;
+		--s-ink: #eaecef;
+		--s-soft: #b7bdc6;
+		background:
+			radial-gradient(circle at 1px 1px, var(--s-rule) 1px, transparent 0) 0 0 / 22px 22px,
+			var(--s-bg);
+		color: var(--s-ink);
+		border-bottom: 1px solid var(--s-rule);
+	}
+
+	.stage-inner {
+		padding-block: clamp(2.6rem, 6vw, 4.2rem);
+	}
+
+	h1 {
+		color: var(--s-ink);
+		font-size: clamp(2.4rem, 5.4vw, 3.8rem);
+		margin: 0 0 1rem;
+		letter-spacing: 0;
+	}
+
+	.lede {
+		color: var(--s-soft);
+		font-size: 1.08rem;
+		line-height: 1.85;
+		max-width: 46rem;
+		margin: 0 0 0.6rem;
+	}
+
+	.lede.soft {
+		color: #848e9c;
+		font-size: 0.98rem;
+	}
+
+	.body {
+		padding-block: 2.6rem 4rem;
+	}
+
+	.routes h2,
+	.compare h2 {
+		font-size: 1.25rem;
+		margin: 0 0 1rem;
+	}
+
+	.route-grid {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 1rem;
+	}
+
+	.route {
+		border: 1px solid var(--rule);
+		border-radius: 8px;
+		padding: 1rem 1.2rem;
+		background: var(--paper-raised);
+	}
+
+	.route-name {
+		margin: 0 0 0.5rem;
+		font-family: var(--font-display);
+		font-weight: 600;
+		color: var(--mem);
+	}
+
+	.route ol {
+		margin: 0;
+		padding-left: 1.2rem;
+		display: grid;
+		gap: 0.2rem;
+	}
+
+	.route a {
+		color: var(--ink);
+		text-decoration: none;
+	}
+
+	.route a:hover {
+		color: var(--mem);
+	}
+
+	.cards {
+		list-style: none;
+		padding: 0;
+		margin: 2.6rem 0 3rem;
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 1.2rem;
+	}
+
+	.card-link {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		box-sizing: border-box;
+		padding: 1.3rem 1.4rem 1.2rem;
+		border: 1px solid var(--rule);
+		border-radius: 10px;
+		background: var(--paper-raised);
+		color: var(--ink);
+		text-decoration: none;
+		transition: border-color 0.15s ease;
+	}
+
+	.card-link:hover {
+		border-color: var(--mem);
+	}
+
+	.card-link:focus-visible {
+		outline: 2px solid var(--mem);
+		outline-offset: 2px;
+	}
+
+	.card-top {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.6rem;
+		margin: 0 0 0.6rem;
+	}
+
+	.num {
+		font-family: var(--font-display);
+		font-weight: 800;
+		font-size: 2rem;
+		line-height: 1;
+		color: transparent;
+		-webkit-text-stroke: 1.2px var(--mem);
+	}
+
+	.chips {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 0.35rem;
+	}
+
+	.chip {
+		font-size: 0.74rem;
+		padding: 0.12rem 0.5rem;
+		border-radius: 999px;
+		border: 1px solid var(--rule);
+		color: var(--ink-soft);
+		white-space: nowrap;
+	}
+
+	.chip-go {
+		color: var(--compute);
+		border-color: var(--compute);
+		background: var(--compute-wash);
+	}
+
+	.chip-warn {
+		color: var(--mem);
+		border-color: var(--mem);
+		background: var(--mem-wash);
+	}
+
+	.card-title {
+		margin: 0 0 0.6rem;
+		font-size: 1.2rem;
+		line-height: 1.4;
+		display: grid;
+		gap: 0.1rem;
+	}
+
+	.card-name {
+		font-size: 1.35rem;
+	}
+
+	.card-sub {
+		font-size: 1rem;
+		font-weight: 500;
+		color: var(--ink-soft);
+	}
+
+	.card-link:hover .card-name {
+		color: var(--mem);
+	}
+
+	.card-summary {
+		margin: 0 0 1rem;
+		font-size: 0.95rem;
+		line-height: 1.75;
+		color: var(--ink-soft);
+	}
+
+	.facts {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		gap: 0.7rem 1.2rem;
+		margin: auto 0 0.9rem;
+		padding-top: 0.9rem;
+		border-top: 1px solid var(--rule-soft);
+		font-size: 0.85rem;
+	}
+
+	.facts div {
+		min-width: 0;
+	}
+
+	.facts .wide {
+		grid-column: 1 / -1;
+	}
+
+	.facts dt {
+		font-size: 0.74rem;
+		color: var(--ink-faint);
+		margin-bottom: 0.15rem;
+	}
+
+	.facts dd {
+		margin: 0;
+		color: var(--ink);
+		line-height: 1.55;
+	}
+
+	.meter {
+		display: inline-flex;
+		gap: 3px;
+		vertical-align: middle;
+	}
+
+	.meter i {
+		width: 12px;
+		height: 8px;
+		border-radius: 2px;
+		background: var(--rule);
+	}
+
+	.meter i.on {
+		background: var(--mem);
+	}
+
+	.targets {
+		margin: 0;
+		font-size: 0.8rem;
+		color: var(--ink-faint);
+	}
+
+	.table-wrap {
+		overflow-x: auto;
+		border: 1px solid var(--rule);
+		border-radius: 8px;
+	}
+
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.9rem;
+	}
+
+	th,
+	td {
+		text-align: left;
+		padding: 0.6rem 0.9rem;
+		border-bottom: 1px solid var(--rule-soft);
+		white-space: nowrap;
+	}
+
+	th {
+		font-weight: 600;
+		color: var(--ink-faint);
+		font-size: 0.8rem;
+		background: var(--paper-raised);
+	}
+
+	tbody tr:last-child td {
+		border-bottom: 0;
+	}
+
+	td a {
+		color: var(--ink);
+		font-weight: 600;
+	}
+
+	td a:hover {
+		color: var(--mem);
+	}
+
+	.note {
+		margin-top: 1.2rem;
+		font-size: 0.9rem;
+		color: var(--ink-soft);
+	}
+
+	.note a {
+		color: var(--mem);
+	}
+
+	@media (max-width: 860px) {
+		.route-grid,
+		.cards {
+			grid-template-columns: minmax(0, 1fr);
+		}
+	}
+
+	@media (max-width: 480px) {
+		.facts {
+			grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+		}
+
+		.card-link {
+			padding: 1.1rem 1.1rem 1rem;
+		}
+	}
+</style>
