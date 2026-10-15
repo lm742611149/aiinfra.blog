@@ -754,6 +754,21 @@ else:
 
 这里比往返脚本多了两样东西。一是 `REGISTRY` 字典,按工具名找函数,代替 `if name == ...` 一路写下去,明天 Day 9 的工具注册表就是它的升级版。二是外面套了一个最多 5 轮的 `for` 循环:模型很可能先查天气,看到 11.9 度之后才知道要算什么,第二轮再调计算器,只发一次请求是接不住的。`for ... else` 的 `else` 只在循环没被 `break` 打断时执行,也就是 5 轮都没拿到最终回答。
 
+`REGISTRY` 那一行拆开读:
+
+```python
+REGISTRY: dict[str, Callable[..., dict]] = {"get_weather": get_weather, "calculate": calculate}
+```
+
+| 片段 | 意思 | TS 类比 |
+| --- | --- | --- |
+| `REGISTRY` | 变量名,全大写表示「当常量用,别改它」 | `const REGISTRY` |
+| `dict[str, ...]` | 字典,键是字符串(工具名) | `Record<string, ...>` |
+| `Callable[..., dict]` | 值是「可以调用的东西」,参数随意(`...`),返回 dict | `(...args: any[]) => object` |
+| `{"get_weather": get_weather, ...}` | 键是字符串,值是**函数本身**,注意后面没有括号,不是调用结果 | `{ get_weather: getWeather, ... }` |
+
+所以 `REGISTRY["calculate"]` 拿到的就是 `calculate` 这个函数,`REGISTRY["calculate"](expression="1+1")` 才是真的调用。`run_tool` 里的 `func(**json.loads(raw_args))` 就是这么用的:`json.loads` 得到 `{"expression": "1+1"}`,`**` 把字典展开成关键字参数,等于 `calculate(expression="1+1")`,相当于 JS 里把对象当参数传进去再解构。Python 和 JS 一样,函数是普通的值,能放进字典、当参数传。
+
 然后问模型「北京现在的气温换算成华氏度是多少?」。观察它是直接让天气工具返回华氏度,还是先查摄氏度再调计算器。两种都算对,但你会开始体会到工具设计对模型行为的影响。我跑的这次是后一种:
 
 ```text
