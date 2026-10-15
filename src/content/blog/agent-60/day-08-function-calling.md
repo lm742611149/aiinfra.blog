@@ -412,7 +412,26 @@ if __name__ == "__main__":
 
 如果报 `httpx.ConnectTimeout`,是到 Open-Meteo 的网络抖了一下,不是代码问题,重跑一次就行。
 
-处理方式和单个调用一样:assistant 消息原样放回,每个调用一条 tool 消息。区别在于两个调用之间没有依赖,可以并发执行,省一半等待时间。上面用的就是 Day 2 学的 `asyncio.gather`;`get_weather` 是同步函数,所以先用 `asyncio.to_thread` 包一层放进线程,不然 gather 也只能一个一个跑。Day 13 讲并行模式时还会再用。要注意的是「模型给了多个调用」不等于「它们一定没有依赖」,比如模型同时请求「创建订单」和「查询订单」,并发执行就可能查不到。对有副作用的工具,保守的做法是按顺序执行。OpenAI 提供了 `parallel_tool_calls=False` 参数可以关掉这个行为,其他厂商支持情况不一,用之前查一下。
+处理方式和单个调用一样:assistant 消息原样放回,每个调用一条 tool 消息。区别在于两个调用之间没有依赖,可以并发执行,省一半等待时间。上面用的就是 Day 2 学的 `asyncio.gather`;`get_weather` 是同步函数,所以先用 `asyncio.to_thread` 包一层放进线程,不然 gather 也只能一个一个跑。Day 13 讲并行模式时还会再用。
+
+`main()` 里最关键的是这三行,逐个拆开:
+
+```python
+tool_msgs = await asyncio.gather(*(run_one(tc) for tc in calls))
+print(f"并发执行 {len(calls)} 个工具用时 {time.perf_counter() - t0:.2f}s")
+messages.extend(tool_msgs)
+```
+
+| 片段 | 意思 | TS 类比 |
+| --- | --- | --- |
+| `run_one(tc) for tc in calls` | 生成器表达式:对每个调用生成一个 `run_one(tc)`。`run_one` 是 `async def`,调用它只是拿到一个还没开始跑的协程,不会立刻执行 | `calls.map(tc => runOne(tc))`,区别是 JS 的 Promise 一创建就开始跑 |
+| `*(...)` | 把这一串拆开,当成多个参数传进去,等于 `gather(a, b, c)` | 展开运算符 `...` |
+| `await asyncio.gather(...)` | 让这些协程同时跑,全部完成后返回结果列表,顺序和传入顺序一致,和谁先跑完无关 | `await Promise.all([...])` |
+| `time.perf_counter() - t0` | 现在的时间减去开始前记下的 `t0`,单位秒 | `performance.now() - t0`,不过那个是毫秒 |
+| `:.2f` | f-string 格式说明:保留两位小数 | `.toFixed(2)` |
+| `messages.extend(tool_msgs)` | 把列表里每个元素逐个追加进 `messages`。用 `append` 的话会把整个列表当成一个元素塞进去,变成嵌套列表,API 会报错 | `messages.push(...toolMsgs)` |
+
+要注意的是「模型给了多个调用」不等于「它们一定没有依赖」,比如模型同时请求「创建订单」和「查询订单」,并发执行就可能查不到。对有副作用的工具,保守的做法是按顺序执行。OpenAI 提供了 `parallel_tool_calls=False` 参数可以关掉这个行为,其他厂商支持情况不一,用之前查一下。
 
 `tool_choice` 控制模型「要不要用工具」。先别和前面的 `tool_calls` 搞混:**`tool_choice` 是你发给模型的请求参数,`tool_calls` 是模型回给你的响应字段**,方向正好相反。前者规定这一轮能不能、必须不必须用工具,后者是模型实际要调的工具和参数。用 TS 类比,`tool_choice` 像传进函数的 `options.mode`,`tool_calls` 是函数的返回值。
 
