@@ -2,6 +2,7 @@
 title: 'Day 64 · 记忆系统:短期、长期、情景、语义,怎么写、怎么忘'
 description: '昨天管的是一次任务里的上下文,今天管跨会话的记忆。先用 CoALA 的分类把「记忆」拆开,再看 mem0、Letta、Zep、LangGraph store 各自怎么解决写入、检索、冲突和遗忘,最后给 SupportPilot 写一个带来源优先级、有效期和删除权的客户记忆,并讲清楚哪些东西绝对不能记。'
 pubDate: 2026-10-12
+updatedDate: 2026-10-15
 regime: none
 tags: ['memory', 'mem0', 'letta', 'zep', 'agent-60']
 series: 'agent-60'
@@ -82,7 +83,7 @@ lang: 'zh'
 
 **Agent 自己写**:Letta(原 MemGPT)的思路。Agent 的上下文里有几块「核心记忆」,它可以通过工具自己编辑,像操作系统管理内存一样决定什么放在上下文、什么换出到外部存储。灵活,但记忆质量取决于模型每一次的判断。
 
-**抽取流程写**:mem0 的思路。一个专门的流程从对话里抽取候选事实,再和已有记忆比对,决定是新增(ADD)、更新(UPDATE)、删除(DELETE)还是不变(NOOP)。可控,容易评测。
+**抽取流程写**:mem0 的思路。一个专门的流程从对话里抽取候选事实,再和已有记忆比对,决定是新增(ADD)、更新(UPDATE)、删除(DELETE)还是不变(NOOP)。可控,容易评测。这是 mem0 论文和早期版本的做法;2026 年 4 月起,mem0 PyPI 页面描述的新算法改成了只追加(ADD-only):一次抽取只新增,不再改写或删除旧记忆,冲突交给检索阶段去挑。两种做法的取舍下面「冲突了听谁的」会讲。
 
 **业务系统写**:最可靠,但只覆盖结构化数据。
 
@@ -104,12 +105,12 @@ SupportPilot 三种都有:业务系统写入的事实优先级最高,客服人�
 
 | 方案 | 核心思路 | 谁来写 | 冲突处理 | 适合 |
 | --- | --- | --- | --- | --- |
-| mem0 | 抽取事实,和已有记忆比对后增删改 | 抽取流程 | ADD / UPDATE / DELETE / NOOP | 用户画像、偏好类记忆,接入快 |
-| Letta(MemGPT) | 上下文分层,Agent 用工具自己管理核心记忆 | Agent 自己 | 由 Agent 判断 | 长期陪伴型、需要自主管理记忆的 Agent |
+| mem0 | 抽取事实写入记忆层 | 抽取流程 | 早期:ADD / UPDATE / DELETE / NOOP;2026-04 起只追加,靠检索挑 | 用户画像、偏好类记忆,接入快 |
+| Letta(MemGPT) | 上下文分层,Agent 用工具自己管理核心记忆;主仓库已迁到 letta-code | Agent 自己 | 由 Agent 判断 | 长期陪伴型、需要自主管理记忆的 Agent |
 | Zep / Graphiti | 带时间的知识图谱,融合对话和业务数据 | 抽取流程 | 新事实让旧事实失效,保留时间线 | 实体关系复杂、需要时间推理的企业场景 |
 | LangGraph store | 按命名空间存 JSON 文档,可语义检索 | 你自己决定 | 你自己写 | 已经用 LangGraph、想完全自己控制 |
 
-我查到的版本(2026 年 10 月):mem0 的 Python 包 `mem0ai` 2.2.1,Letta 的客户端 `letta-client` 1.12.1。几家都发过论文或技术报告,而且都说自己在某个基准上赢了别人。mem0 的论文报告在 LOCOMO 基准上,LLM 评审分数比 OpenAI 的记忆功能相对高 26%;Zep 的论文报告在 MemGPT 团队提出的 DMR 基准上 94.8% 对 93.4%,在 LongMemEval 上准确率最多提升 18.5%。这些都是厂商自己测的,基准也不完全相同,看它们的方法设计比看数字更有用。
+我查到的版本(2026 年 10 月):mem0 的 Python 包 `mem0ai` 2.2.1,Letta 的客户端 `letta-client` 1.12.1。注意两处变化:mem0 新算法是只追加,托管平台公布的分数含开源 SDK 里没有的专有优化;Letta 的主仓库已从 `letta-ai/letta` 迁到 `letta-ai/letta-code`(npm 安装的终端工具和 App Server),旧的 V1 API 服务留在 archive 分支,网上按旧仓库写的教程可能跑不通。几家都发过论文或技术报告,而且都说自己在某个基准上赢了别人。mem0 的论文报告在 LOCOMO 基准上,LLM 评审分数比 OpenAI 的记忆功能相对高 26%;Zep 的论文报告在 MemGPT 团队提出的 DMR 基准上 94.8% 对 93.4%,在 LongMemEval 上准确率最多提升 18.5%。这些都是厂商自己测的,基准也不完全相同,看它们的方法设计比看数字更有用。
 
 怎么选?我的建议是:**记忆逻辑和你的业务规则绑得越紧,越应该自己写**。客服场景的来源优先级、有效期、删除权,都是业务规则,用通用框架反而要绕。像个人助理那种「记住用户的一切偏好」的场景,mem0 这类开箱即用的方案更省事。
 
@@ -322,7 +323,7 @@ plan 的变化: [('年付专业版', 'system'), ('月付基础版', 'system')]
 
 - [CoALA 论文《Cognitive Architectures for Language Agents》](https://arxiv.org/abs/2309.02427):读第 4 节记忆部分和图 1,今天的分类都来自这里。40 分钟。
 - [LangGraph 记忆文档](https://docs.langchain.com/oss/python/langgraph/memory):热路径和后台写入、语义情景程序三类记忆在 LangGraph 里怎么实现,写得很清楚。30 分钟。
-- [mem0 论文](https://arxiv.org/abs/2504.19413):重点看抽取和更新两个阶段的设计,ADD/UPDATE/DELETE/NOOP 那张流程图。
+- [mem0 论文](https://arxiv.org/abs/2504.19413):重点看抽取和更新两个阶段的设计,ADD/UPDATE/DELETE/NOOP 那张流程图(这是论文版本,新版已改为只追加)。
 - [MemGPT 论文](https://arxiv.org/abs/2310.08560):把上下文类比成操作系统内存分层,这个类比本身值得记住。
 - [Zep 论文](https://arxiv.org/abs/2501.13956):看 Graphiti 怎么给事实加时间维度。
 - [Generative Agents 论文](https://arxiv.org/abs/2304.03442):第 4 节记忆检索的三项打分(新近度、重要性、相关性)。
@@ -354,8 +355,8 @@ plan 的变化: [('年付专业版', 'system'), ('月付基础版', 'system')]
 
 ### 开源项目与代码
 
-- [mem0ai/mem0](https://github.com/mem0ai/mem0):看 README 里的架构图和更新逻辑。
-- [letta-ai/letta](https://github.com/letta-ai/letta):看核心记忆块和记忆编辑工具的定义。
+- [mem0ai/mem0](https://github.com/mem0ai/mem0) 和 [PyPI 页面](https://pypi.org/project/mem0ai/):看 README 里的架构图,以及 2026 年 4 月新算法改成只追加的说明。
+- [letta-ai/letta-code](https://github.com/letta-ai/letta-code):Letta 当前的主仓库。核心记忆块和记忆编辑工具的旧实现在 [letta-ai/letta](https://github.com/letta-ai/letta) 的 archive 分支,想看 MemGPT 原始设计去那里。
 - [getzep/graphiti](https://github.com/getzep/graphiti):带时间的知识图谱实现。
 
 ## 自测

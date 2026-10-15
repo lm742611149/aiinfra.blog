@@ -2,6 +2,7 @@
 title: 'Day 20 · 上下文工程与记忆:窗口预算、压缩、长期记忆、Agentic RAG'
 description: '把视角从 RAG 拉到整个 Agent:上下文窗口里该放什么、放多少;清理工具结果、裁剪、摘要压缩三档手段;子 Agent 隔离上下文;长期记忆;Agentic RAG;最后讲清楚 JD 里高频出现的 Agent Harness 到底是什么。'
 pubDate: 2026-10-12
+updatedDate: 2026-10-15
 regime: none
 tags: ['context-engineering', 'memory', 'compaction', 'agentic-rag', 'agent-60']
 series: 'agent-60'
@@ -421,7 +422,7 @@ if __name__ == "__main__":
 
 跑一下 `uv run python w3/memory_store.py`,你大致会看到抽出来三四条记忆:年付专业版、使用招商银行、E1043 导入问题已解决、偏好邮件联系。再跑一次,应该大部分是「更新」而不是「新增」,这就是去重在起作用。如果你发现同一件事被存了两条,说明 0.9 的阈值对你的 embedding 模型偏高,这正好是一个校准的机会。
 
-市面上有专门做 Agent 记忆的开源项目:[mem0](https://github.com/mem0ai/mem0) 主打即插即用的记忆层;[Letta](https://github.com/letta-ai/letta)(前身是论文 [MemGPT](https://arxiv.org/abs/2310.08560))的思路是让 Agent 像操作系统管理内存一样,自己决定把什么换进换出上下文。我的建议是先像今天这样手写一遍,搞清楚写入、去重、召回、删除四个环节,再去评估这些库,你会知道它们帮你省掉了什么、又藏起了什么。
+市面上有专门做 Agent 记忆的开源项目:[mem0](https://github.com/mem0ai/mem0) 主打即插即用的记忆层;[Letta](https://github.com/letta-ai/letta-code)(前身是论文 [MemGPT](https://arxiv.org/abs/2310.08560))的思路是让 Agent 像操作系统管理内存一样,自己决定把什么换进换出上下文。我的建议是先像今天这样手写一遍,搞清楚写入、去重、召回、删除四个环节,再去评估这些库,你会知道它们帮你省掉了什么、又藏起了什么。
 
 ## Agentic RAG:让 Agent 自己决定查不查
 
@@ -733,7 +734,7 @@ Harness 原意是马具、挽具:把马的力气接到车上的那套东西。�
 ### 开源项目与代码
 
 - [mem0ai/mem0](https://github.com/mem0ai/mem0):即插即用的 Agent 记忆层,看它的 README 里记忆的增删改流程,和今天的手写版本对比。
-- [letta-ai/letta](https://github.com/letta-ai/letta):MemGPT 的工程化版本,有状态 Agent 平台。
+- [letta-ai/letta-code](https://github.com/letta-ai/letta-code):MemGPT 的工程化版本,Letta 当前的主仓库;旧的 `letta-ai/letta` 服务端已归档到 archive 分支。
 - [microsoft/ai-agents-for-beginners](https://github.com/microsoft/ai-agents-for-beginners):其中 Agentic RAG 和 Agent memory 两课有中文翻译和示例代码。
 - [datawhalechina/hello-agents](https://github.com/datawhalechina/hello-agents):中文 Agent 教程,有记忆与上下文相关章节。
 
