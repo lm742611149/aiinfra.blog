@@ -69,14 +69,17 @@ Thorsten Ball 写过一篇很有名的文章[《How to Build an Agent》](https:
 # agent-60-lab/w2/minimal_loop.py
 import json
 import os
+from typing import Any
 
+from dotenv import load_dotenv
 from openai import OpenAI
 
-from tools_def import WEATHER_TOOL
-from weather import get_weather
+from w2.tools_def import WEATHER_TOOL
+from w2.weather import get_weather
 
+load_dotenv()
 client = OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"])
-messages = [{"role": "user", "content": "北京、上海、广州现在哪里最热?"}]
+messages: list[Any] = [{"role": "user", "content": "北京、上海、广州现在哪里最热?"}]
 
 for _ in range(10):  # 最多转 10 圈
     msg = client.chat.completions.create(
@@ -87,9 +90,15 @@ for _ in range(10):  # 最多转 10 圈
         print(msg.content)
         break
     for tc in msg.tool_calls:
+        if tc.type != "function":  # 和 Day 8 一样:先排除 custom 工具,编辑器才知道有 .function
+            continue
         result = get_weather(**json.loads(tc.function.arguments))
         messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result, ensure_ascii=False)})
 ```
+
+在仓库根目录用 `uv run python -m w2.minimal_loop` 运行。
+
+如果你照着更早的写法写成 `messages = [{"role": "user", ...}]`、循环里直接用 `tc.function`,编辑器会在这两处画红线,但程序照样能跑。原因和 Day 8 一样:第一处,编辑器把 `messages` 推断成「字符串到字符串的字典列表」,和 SDK 要求的消息类型对不上,所以标成 `list[Any]` 放宽;第二处,`tool_calls` 里的元素可能是 function 工具也可能是 custom 工具,只有前者有 `.function`,先用 `if tc.type != "function": continue` 排除掉,编辑器就知道下面一定是 function 了。
 
 和昨天比,只是把「第一次请求、执行、第二次请求」折成了一个 `for` 循环。退出条件写在循环体里:模型这一轮没有 tool_calls,就打印回答并 break。`range(10)` 是最大步数,防止模型一直调工具停不下来。
 
@@ -128,7 +137,8 @@ import inspect
 import json
 import os
 import time
-from typing import Annotated, Any, Callable, Literal, get_args, get_origin, get_type_hints
+from collections.abc import Callable
+from typing import Annotated, Any, Literal, get_args, get_origin, get_type_hints
 
 from openai import OpenAI
 
@@ -151,7 +161,7 @@ def _param_schema(tp: Any) -> dict:
 class ToolRegistry:
     def __init__(self):
         self.funcs: dict[str, Callable] = {}
-        self.schemas: list[dict] = []
+        self.schemas: list[Any] = []  # 和 Day 8 一样放宽成 Any,否则传给 SDK 的 tools= 会画红线
 
     def tool(self, fn: Callable) -> Callable:
         """装饰器:把一个普通函数注册成工具,schema 从类型标注和 docstring 生成。"""
@@ -179,7 +189,7 @@ class ToolRegistry:
         try:
             args = json.loads(arguments or "{}")
             result = self.funcs[name](**args)
-        except Exception as e:  # 错误不抛出,交给模型自己纠正
+        except Exception as e:  # noqa: BLE001 —— 这里就是要接住一切,错误不抛出,交给模型自己纠正
             result = {"error": f"{type(e).__name__}: {e}"}
         return json.dumps(result, ensure_ascii=False, default=str)
 
@@ -190,7 +200,7 @@ class Agent:
         self.model = os.environ["LLM_MODEL"]
         self.registry = registry
         self.max_steps = max_steps
-        self.messages: list[dict] = [{"role": "system", "content": system}]
+        self.messages: list[Any] = [{"role": "system", "content": system}]
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
 
     def run(self, user_input: str) -> str:
@@ -211,6 +221,8 @@ class Agent:
                 return msg.content or ""
 
             for tc in msg.tool_calls:
+                if tc.type != "function":  # 排除 custom 工具,同 Day 8
+                    continue
                 print(f"[step {step}] 调用 {tc.function.name}({tc.function.arguments})")
                 out = self.registry.call(tc.function.name, tc.function.arguments)
                 print(f"           结果 {out[:120]}")
@@ -242,13 +254,16 @@ class Agent:
 
 ```python
 # agent-60-lab/w2/day09_demo.py
-import json
 from pathlib import Path
 from typing import Annotated, Literal
 
-from agent_loop import Agent, ToolRegistry
-from calc import calculate as _calculate
-from weather import get_weather as _get_weather
+from dotenv import load_dotenv
+
+from w2.agent_loop import Agent, ToolRegistry
+from w2.calc import calculate as _calculate
+from w2.weather import get_weather as _get_weather
+
+load_dotenv()
 
 WORKSPACE = Path("workspace").resolve()
 reg = ToolRegistry()
@@ -306,10 +321,11 @@ if __name__ == "__main__":
 ## 跑起来看看它在想什么
 
 ```bash
-cd agent-60-lab/w2
-uv add openai httpx
-uv run python day09_demo.py
+# 在仓库根目录(agent-60-lab/)运行,和 Day 8 一样用 -m
+uv run python -m w2.day09_demo
 ```
+
+`workspace/` 目录会建在你运行命令的地方,也就是仓库根目录。
 
 日志大致长这样(具体步数和顺序每次可能不同,这正是 Agent 的特点):
 
