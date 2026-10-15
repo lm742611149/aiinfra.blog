@@ -6,7 +6,9 @@ export const weekOf = (day: number) => {
 	if (day <= 60) return 9;
 	if (day <= 95) return 10 + Math.floor((day - 61) / 7);
 	if (day <= 105) return 15;
-	return 17;
+	if (day <= 110) return 17;
+	if (day <= 120) return 18;
+	return 20;
 };
 
 /** Day 61 onward is the senior track. */
@@ -29,4 +31,6 @@ export const WEEK_TITLES: Record<number, string> = {
 	14: 'W14 前沿形态',
 	15: 'W15–W16 进阶毕业项目 AgentOps',
 	17: 'W17 资深求职与影响力',
+	18: '作品一 Agent Loupe 调试器',
+	20: '作品二 BillSleuth 计费争议调查',
 };

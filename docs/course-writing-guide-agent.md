@@ -358,9 +358,76 @@ curl -s "https://www.youtube.com/results?search_query=..." | grep -o '"videoId":
 - 需要 GPU 的实验(微调、自部署、RL)给 Colab 免费方案和云 GPU 方案两条路,价格查证;不能编造训练结果,结果表留空。
 - Day 60 的「明天预告」改为预告 Day 61 进阶篇。
 
+## 5C. 作品篇:两个能放进作品集的复杂项目(Day 111–130)
+
+**定位**:学完进阶篇以后,做两个「只有你做得出来、招聘方能在线点开试用」的作品,挂在网站上当作品集。读者水平同进阶篇,骨架同第 2 节(8 节、学习资料五组、自测含「资深面试题」)。每篇以**写代码**为主,代码要完整可跑,篇幅可以比进阶篇长;**不编造运行结果、性能数字和评测分数**,需要实测的写成「输出大致长这样」或留空表让读者回填。pubDate 统一 `2026-10-15`。
+
+**两个作品各自独立成仓库**,但作品二的 trace 可以导入作品一查看(第 129 天打通)。
+
+### 作品一:Agent Loupe · Agent 运行记录调试器(Day 111–120)
+
+一句话:一个网页工具,导入 Agent 的运行记录(trace),按时间轴回放每一步,两次运行逐步对比,从任意一步改参数重跑,把失败步骤一键存成评测用例。对标/参照:Langfuse、LangSmith、Arize Phoenix、OpenAI Traces 面板(写之前查证当前功能,只写查到的)。卖点是**前端工程能力 + 对 Agent 内部的理解**,适合有前端背景的读者。
+
+**统一技术规格(所有写手必须遵守,保证 10 天代码能拼起来)**:
+- 仓库 `agent-loupe/`,monorepo:`server/`(Python 3.12 + uv + FastAPI + SQLite,单文件库 `loupe.db`)、`web/`(React 18 + TypeScript + Vite,包管理 pnpm;状态用 Zustand;虚拟列表用 `@tanstack/react-virtual`;图表手写 SVG 或 `d3-scale`,不用重型图表库)、`samples/`(样例 trace JSON)、`docs/`。
+- **内部统一数据模型**(Day 112 定义,后面不许改名):`Run { id, name, started_at, ended_at, status: 'ok'|'error', model, total_input_tokens, total_output_tokens, total_cost_usd, tags: string[], parent_run_id?: string /* 重跑时指向原 run */, forked_from_step?: number }`;`Step { run_id, idx, parent_idx?: number, kind: 'llm'|'tool'|'agent'|'retrieval'|'other', name, started_at, ended_at, input: json, output: json, error?: string, input_tokens?, output_tokens?, cost_usd?, model? }`。LLM 步的 `input` 存完整 messages + tools,`output` 存 assistant message(含 tool_calls、reasoning_content)。
+- 导入器(Day 112):① OTLP JSON(OpenTelemetry GenAI 语义约定 `gen_ai.*` 属性,查证当前约定版本)② Langfuse 导出 JSON ③ 自带的轻量 SDK `loupe_sdk.py`(装饰器 `@trace_step` + `with loupe.run():`,写本地 JSONL)。样例数据用 Day 9 的 agent_loop / SupportPilot 跑出来。
+- 后端 API(Day 113):`POST /api/import`、`GET /api/runs?tag=&status=&q=&cursor=`、`GET /api/runs/{id}`、`GET /api/runs/{id}/steps?from=&limit=`、`GET /api/diff?a=&b=`、`POST /api/runs/{id}/replay`、`POST /api/eval-cases`。分页用游标。
+- 前端页面:运行列表 → 运行详情(左:步骤树/瀑布时间轴;右:步骤详情面板;上:token/成本/上下文占用条)→ 对比页 → 评测用例页。
+- 重跑(Day 117):录制-回放(cassette)机制:原 run 的工具结果按 `(tool_name, canonical_args_hash)` 存档,重跑时工具默认走回放,可勾选「真实执行」;LLM 调用走 `LLM_BASE_URL` 等环境变量(全课统一);新 run 的 `parent_run_id`/`forked_from_step` 记来源。
+- 对比算法(Day 116):步骤签名 = `kind + name + 规范化参数摘要`,用 LCS/编辑距离对齐两条序列,标出 same/changed/added/removed;文本用 `diff-match-patch` 或 `jsdiff` 做逐词 diff。
+- 公开演示(Day 119):只读演示模式(预置脱敏样例)、重跑接口加限流 + 每日花费上限(环境变量 `DAILY_BUDGET_USD`)、前端部署 Cloudflare Pages、后端部署一台小云服务器或 Fly.io/Render(给两种);性能指标(1 万步 trace 的首屏时间、滚动帧率)写测量方法,数字留空回填。
+
+| Day | slug | 标题 | 内容要点 |
+| --- | --- | --- | --- |
+| 111 | day-111-loupe-kickoff | Day 111 · 作品一开题:Agent Loupe,一个给 Agent 用的调试器 | 为什么做调试器(调 Agent 最痛的是看不清每一步);竞品调研(查证 Langfuse/LangSmith/Phoenix/OpenAI Traces 现有功能,找它们没做好的点:逐步对比、从中间重跑、上下文占用可视化);PRD(用户故事、功能清单、非目标);架构图;仓库结构;10 天里程碑;验收指标;招聘方会怎么看这个项目。 |
+| 112 | day-112-loupe-trace-model | Day 112 · Agent Loupe(一):trace 数据模型与三种导入器 | OTel GenAI 语义约定(查证);统一 Run/Step 模型;OTLP JSON、Langfuse 导出、自研轻量 SDK 三个导入器;用 Day 9 agent_loop 产生样例 trace;导入器的单元测试。 |
+| 113 | day-113-loupe-server | Day 113 · Agent Loupe(二):FastAPI 存储与查询接口 | SQLite 表设计与索引;导入接口;列表筛选与游标分页;大 trace 的分段加载;成本计算(价格表配置);pytest 覆盖。 |
+| 114 | day-114-loupe-timeline | Day 114 · Agent Loupe(三):React 时间轴与一万步的渲染性能 | Vite+React+TS 起项目;运行列表页;步骤树 + 瀑布时间轴(SVG,时间比例尺);虚拟滚动;一万步样例的性能测量方法(Performance 面板、长任务、帧率),数字留空回填;键盘导航。 |
+| 115 | day-115-loupe-step-inspector | Day 115 · Agent Loupe(四):步骤详情、token 成本与上下文占用 | messages/tool_calls/reasoning 的渲染(长文本折叠、JSON 树);每步上下文构成堆叠条(system/历史/工具结果/本轮各占多少 token,怎么估算);成本火焰图;找出「哪一步把上下文撑爆了」。 |
+| 116 | day-116-loupe-diff | Day 116 · Agent Loupe(五):两次运行逐步对比 | 为什么要对比(改了提示词以后从哪一步开始不一样);步骤签名与规范化;LCS 对齐实现与测试;并排视图与逐词 diff;指标对比(步数、token、成本、耗时、成败)。 |
+| 117 | day-117-loupe-replay | Day 117 · Agent Loupe(六):从任意一步改参数重跑 | 录制-回放(cassette)机制;重建第 N 步的 messages;改系统提示词/模型/temperature 后 fork;工具真实执行 vs 回放的取舍与安全;非确定性(同样输入不同输出)怎么在界面上讲清楚;重跑结果自动进入对比页。 |
+| 118 | day-118-loupe-eval-bridge | Day 118 · Agent Loupe(七):把失败步骤变成评测用例 | 一键存为评测用例(输入快照 + 期望/断言);用例导出成 Day 35 的评测集格式;批量重跑用例并看通过率;回归对比看板。 |
+| 119 | day-119-loupe-deploy | Day 119 · Agent Loupe(八):公开演示、脱敏、限流与部署 | 只读演示模式;样例脱敏;重跑限流与每日花费上限;CORS 与鉴权;Cloudflare Pages + 后端部署(两种方案);上线检查清单;性能测量回填表。 |
+| 120 | day-120-loupe-showcase | Day 120 · Agent Loupe(九):开源发布与作品包装 | README(动图、快速开始、架构)、ADR 两三篇、性能与可用性数据、2 分钟演示视频脚本、网站案例页模板;开源发布(License、贡献指南、npm/PyPI 可选);面试里怎么讲这个项目(问题→设计取舍→数据)。 |
+
+### 作品二:BillSleuth · 计费争议调查 Agent(Day 121–130)
+
+一句话:客户问「为什么这个月多扣了钱」,Agent 自己查订阅、发票、付款和税,复算金额,找出原因(按天折算错、重复扣款、税码过期、优惠券叠加错、升降级时间错、跨时区月末……),给出带证据的解释,需要冲正时起草贷记单并走人工审批。卖点是 **FDE 式的业务落地能力 + 多步推理的可靠性 + 严格评测**。**全部数据虚构**(虚构公司沿用「云簿 CloudLedger」),不引用任何真实公司代码或客户数据。
+
+**统一技术规格**:
+- 仓库 `billsleuth/`:Python 3.12 + uv;金额一律 `decimal.Decimal`,两位小数 `ROUND_HALF_UP`,禁止 float;数据库 SQLite(`billing.db`)。
+- 计费领域模型(Day 122 定义,后面不许改名):`customers(id, name, country, currency, tax_region)`、`plans(id, name, interval: month|year, unit_price)`、`subscriptions(id, customer_id, plan_id, quantity, status, start_date, current_period_start, current_period_end, billing_anchor_day)`、`subscription_events(id, subscription_id, type: create|upgrade|downgrade|quantity_change|cancel|pause|resume, effective_at, payload_json)`、`coupons(id, kind: percent|amount, value, duration_months)`、`invoices(id, customer_id, subscription_id, period_start, period_end, issued_at, status, subtotal, discount, tax, total, currency)`、`invoice_lines(id, invoice_id, kind: recurring|proration|discount|tax|adjustment, description, quantity, unit_amount, amount, period_start, period_end, tax_code)`、`payments(id, invoice_id, amount, status, attempted_at, gateway_ref)`、`credit_notes(id, invoice_id, amount, reason, status: draft|approved|issued)`、`tax_rates(code, region, rate, valid_from, valid_to)`。
+- **参考计费引擎** `engine.py`(Day 122):给定订阅和事件,按「按天折算、计费锚点日、优惠券、税率生效区间」算出**应收**发票;造数脚本先用引擎生成正确数据,再按 12 类故障模式注入错误,每个场景存 ground truth(`scenarios/*.json`:客户问题原文、根因类别、涉及发票、正确差额、期望动作)。
+- 工具层(Day 123):MCP server(FastMCP),只读工具 `get_customer`、`list_invoices`、`get_invoice`(含行项目)、`list_payments`、`get_subscription_timeline`、`get_tax_rate`;计算工具 `recompute_invoice(invoice_id)` 调参考引擎返回逐行对比;写工具只有 `draft_credit_note`(只生成草稿)。每次工具调用写审计日志。
+- Agent(Day 124):LangGraph 状态机:理解问题 → 定位相关发票 → 取证 → 复算 → 提出假设并验证 → 结论;状态里维护「证据链」`Evidence { claim, source_tool, source_ref, value }`,结论里的每个数字必须能追溯到某条证据(Day 125 做校验器:正则抽出回答中的金额,逐个在证据里找,找不到就打回重写)。
+- 审批(Day 126):贷记单草稿 → 人工审批(CLI 和 Web 两种)→ 签发;幂等键;拒绝后的补偿。
+- 评测(Day 127):100 个场景(12 类根因 + 20% 无错误的「客户误解」场景,Agent 应该解释清楚而不是乱冲正);用模拟用户(τ-bench 风格,LLM 扮演客户、会追问);指标 = 根因准确率、差额精确匹配率、数字幻觉率、误冲正率、pass^k、单场景成本与耗时;结果表留空回填。
+- 演示(Day 129):Web 界面(复用作品一的前端风格,FastAPI + SSE 实时展示调查步骤和证据链);trace 导出成作品一能导入的格式;限流与花费上限;部署同作品一。
+
+| Day | slug | 标题 | 内容要点 |
+| --- | --- | --- | --- |
+| 121 | day-121-billsleuth-kickoff | Day 121 · 作品二开题:BillSleuth,一个会查账的 Agent | 为什么选计费争议(FDE 日常、出错代价高、可严格评测);订阅计费入门(计费周期、锚点日、按天折算、升降级、优惠券、税、贷记单、催缴);常见争议类型;PRD 与非目标(不碰真实支付);架构图;10 天里程碑;验收指标。 |
+| 122 | day-122-billsleuth-engine-data | Day 122 · BillSleuth(一):计费参考引擎与 12 类故障造数 | 领域模型与建表;Decimal 规则;参考引擎实现(按天折算、锚点、优惠券、税率区间)与单元测试;12 类故障模式的注入函数;场景 ground truth 格式;造 100 个场景的脚本。 |
+| 123 | day-123-billsleuth-tools | Day 123 · BillSleuth(二):MCP 工具层、复算工具与审计日志 | 工具设计(粒度、返回结构、分页、错误信息写给模型看);只读与写工具分离;`recompute_invoice` 逐行对比;审计日志;MCP Inspector 调试;工具单元测试。 |
+| 124 | day-124-billsleuth-investigator | Day 124 · BillSleuth(三):LangGraph 调查流程与证据链 | 状态机设计;每个节点的提示词与工具集;假设-验证循环;证据链数据结构;步数和成本上限;跑通 5 个场景。 |
+| 125 | day-125-billsleuth-grounded-answer | Day 125 · BillSleuth(四):有据可查的解释,不许编数字 | 客户版与内部版两种解释;数字溯源校验器(抽金额→在证据里找→打回);引用格式;语气与合规(不承诺退款);数字幻觉的测试用例。 |
+| 126 | day-126-billsleuth-approval | Day 126 · BillSleuth(五):贷记单草稿、人工审批与幂等 | 什么时候该冲正、冲多少;草稿生成;审批流(CLI + Web);幂等键与重复提交;拒绝后的处理;权限边界测试。 |
+| 127 | day-127-billsleuth-eval | Day 127 · BillSleuth(六):100 个场景的评测与模拟客户 | 评测集结构;模拟客户(会追问、会给错信息);六个指标的计算;pass^k;统计置信区间(用 Day 69 的方法);结果表留空回填;怎么读错例。 |
+| 128 | day-128-billsleuth-iterate | Day 128 · BillSleuth(七):错误分析与迭代 | 错例分桶;针对性改进(工具返回结构、提示词、加专用工具如 `explain_proration`);模型对比(两三个模型的准确率/成本,留空回填);每次改动跑回归、只认统计显著的提升。 |
+| 129 | day-129-billsleuth-demo | Day 129 · BillSleuth(八):在线演示、实时调查面板与部署 | FastAPI + SSE;前端调查面板(步骤、证据链、复算对比表);导出 trace 到 Agent Loupe;限流与花费上限;部署。 |
+| 130 | day-130-portfolio-graduation | Day 130 · 作品篇结业:案例页、FDE 面试故事和投递 | BillSleuth 案例页与演示视频脚本;FDE 面试怎么讲(客户场景→方案→指标→取舍);两个作品在简历和网站上的摆法;用 docs/jd-research 的 FDE/外企数据说明投哪些岗位;作品篇自检清单。 |
+
+**作品篇写作要求补充**:
+- 前一天的代码后一天直接用,文件路径、函数名、表名、接口路径严格按上面的规格;需要新增的东西在当天说明「新增」。
+- 每篇「动手练习」给出当天的完整代码(可以分文件给),以及能跑的验证命令(`uv run pytest`、`pnpm dev` 等)。
+- 前端代码给完整组件,不要只给片段;TS 类型写全。
+- 资料优先一手:OTel 规范、Langfuse/Phoenix 文档、React/Vite 文档、Stripe 计费文档(按天折算、发票、贷记单的概念,查证链接)、τ-bench 论文。
+- Day 120 的「明天预告」预告 Day 121;Day 130 的「明天预告」写作品篇之后的安排(没有 Day 131,写「下一步」即可,但要包含 `Day 131` 字样以免校验报错可写「没有 Day 131 了」)。
+
 ## 6. 完成后自检(每篇)
 
-- [ ] frontmatter 齐全,`day`、`title` 与规划表一致,`pubDate: 2026-10-12`,tags 最后一个 `agent-60`。
+- [ ] frontmatter 齐全,`day`、`title` 与规划表一致,`pubDate: 2026-10-12`(作品篇 2026-10-15),tags 最后一个 `agent-60`。
 - [ ] 8 个骨架章节齐全、顺序对;「学习资料」五个三级标题齐全;明天预告提到下一天。
 - [ ] 1–3 张 SVG;2–4 个视频嵌入且 B 站至少 1 个,全部 API 验证过,figcaption 写验证到的标题。
 - [ ] 所有 URL curl 通过;书籍查证过;模型名/价格写了查证日期。

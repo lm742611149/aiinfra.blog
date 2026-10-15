@@ -33,6 +33,8 @@ const WEEKS = [
 	{ w: 14, tag: 'W14', name: '进阶 · 第十四周', title: '前沿形态', out: '一份技术选型报告', range: 'Day 89–95', adv: true },
 	{ w: 15, tag: 'W15', name: '进阶 · 第十五、十六周', title: '进阶毕业项目 AgentOps', out: '资深级作品:多租户 Agent 平台', range: 'Day 96–105', adv: true, capstone: true },
 	{ w: 17, tag: 'W17', name: '进阶 · 第十七周', title: '资深求职与影响力', out: '设计文档、Staff 面试准备', range: 'Day 106–110', adv: true },
+	{ w: 18, tag: 'P1', name: '作品篇 · 作品一', title: 'Agent Loupe:Agent 运行记录调试器', out: '能在线试用的开源调试器', range: 'Day 111–120', adv: true, capstone: true },
+	{ w: 20, tag: 'P2', name: '作品篇 · 作品二', title: 'BillSleuth:计费争议调查 Agent', out: '带严格评测的 FDE 式作品', range: 'Day 121–130', adv: true, capstone: true },
 ].filter((w) => byWeekHas(w.w));
 const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 const total = days.length;
