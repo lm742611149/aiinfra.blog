@@ -610,7 +610,7 @@ def calculate(expression: str) -> dict:
         raise ValueError(f"不支持的表达式成分: {ast.dump(node)[:40]}")
     try:
         return {"expression": expression, "result": ev(ast.parse(expression, mode="eval").body)}
-    except Exception as e:  # 把错误交给模型,让它换个写法
+    except (SyntaxError, ValueError, ArithmeticError, RecursionError) as e:  # 把错误交给模型,让它换个写法
         return {"error": f"无法计算 '{expression}': {e}。只支持数字和 + - * / ** %"}
 
 
@@ -618,6 +618,8 @@ if __name__ == "__main__":
     print(calculate("(22.4 * 9 / 5) + 32"))
     print(calculate("__import__('os').system('ls')"))
 ```
+
+`except` 那一行只接住四类「表达式算不了」的错误:`SyntaxError`(写的不是合法算式,比如 `1 +`)、`ValueError`(上面 `ev` 自己抛的「不支持的成分」)、`ArithmeticError`(除以零、结果太大溢出都算这一类)、`RecursionError`(括号嵌套几千层)。一开始我写的是 `except Exception`,Zed 里的 Ruff 会在 `Exception` 下画黄线提示 `BLE001 Do not catch blind exception`,意思是别一把接住所有异常:那样连你代码里的笔误(比如把变量名拼错引起的 `NameError`)也会被包装成「无法计算」交给模型,bug 就被藏起来了。只接预期内的错误,意外的错误照常报出来,这是写工具函数的好习惯。
 
 先单独跑 `uv run python -m w2.calc`,确认第二行恶意输入返回的是 error。然后把两个工具一起交给模型:
 
