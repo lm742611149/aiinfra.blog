@@ -29,3 +29,7 @@ export const OG_LOCALE: Record<'en' | 'zh', string> = { en: 'en_US', zh: 'zh_CN'
 // Widget "aiinfra.blog" (Managed mode); hostnames aiinfra.blog + aiinfra-blog.pages.dev.
 export const COMMENTS_ENABLED = true;
 export const TURNSTILE_SITEKEY = '0x4AAAAAAEoU-mHlKW6s1ixj';
+
+// The AI Infra track: the original 365-day study log, restored under /infra.
+export const INFRA_SERIES = 'aiinfra-365';
+export const INFRA_TITLE = '365 天 AI Infra 自学课';

@@ -5,7 +5,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CollectionEntry } from 'astro:content';
-import { AUTHOR, COURSE_SERIES, COURSE_TITLE, DEFAULT_OG_IMAGE, SITE_DESCRIPTION, SITE_TITLE, SOCIALS } from '../consts';
+import { AUTHOR, COURSE_SERIES, COURSE_TITLE, DEFAULT_OG_IMAGE, INFRA_SERIES, INFRA_TITLE, SITE_DESCRIPTION, SITE_TITLE, SOCIALS } from '../consts';
 
 type Post = CollectionEntry<'blog'>;
 
@@ -58,6 +58,7 @@ export function blogPostingSchema(site: URL | undefined, post: Post, opts: { ima
 	const { title, description, pubDate, updatedDate, tags, lang, series, day } = post.data;
 	const url = abs(site, `/blog/${post.id}/`);
 	const inCourse = series === COURSE_SERIES;
+	const inInfra = series === INFRA_SERIES;
 	return {
 		'@type': 'BlogPosting',
 		'@id': `${url}#article`,
@@ -74,8 +75,10 @@ export function blogPostingSchema(site: URL | undefined, post: Post, opts: { ima
 		publisher: { '@id': abs(site, '/about/#person') },
 		isPartOf: inCourse
 			? { '@type': 'Blog', '@id': abs(site, '/course/#series'), name: COURSE_TITLE, url: abs(site, '/course/') }
-			: { '@type': 'Blog', '@id': abs(site, '/blog/#blog'), name: `${SITE_TITLE} — 全部文章`, url: abs(site, '/blog/') },
-		...(inCourse && day !== undefined ? { position: day } : {}),
+			: inInfra
+				? { '@type': 'Blog', '@id': abs(site, '/infra/#series'), name: INFRA_TITLE, url: abs(site, '/infra/') }
+				: { '@type': 'Blog', '@id': abs(site, '/blog/#blog'), name: `${SITE_TITLE} — 全部文章`, url: abs(site, '/blog/') },
+		...((inCourse || inInfra) && day !== undefined ? { position: day } : {}),
 		...(opts.wordCount ? { wordCount: opts.wordCount } : {}),
 	};
 }

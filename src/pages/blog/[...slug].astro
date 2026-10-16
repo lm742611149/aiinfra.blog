@@ -1,14 +1,18 @@
 ---
 import { getCollection, render } from 'astro:content';
 import BlogPost from '../../layouts/BlogPost.astro';
-import { COURSE_SERIES } from '../../consts';
+import { COURSE_SERIES, INFRA_SERIES } from '../../consts';
 
 export async function getStaticPaths() {
 	const posts = await getCollection('blog', ({ data }) => !data.draft);
-	const course = posts
-		.filter((p) => p.data.series === COURSE_SERIES && p.data.day !== undefined)
-		.sort((a, b) => a.data.day! - b.data.day!);
+	// Each day-by-day track gets its own strip and prev/next: agent-60 and aiinfra-365.
+	const trackOf = (series?: string) =>
+		posts
+			.filter((p) => p.data.series === series && p.data.day !== undefined)
+			.sort((a, b) => a.data.day! - b.data.day!);
+	const tracks = new Map([COURSE_SERIES, INFRA_SERIES].map((s) => [s, trackOf(s)]));
 	return posts.map((post) => {
+		const course = tracks.get(post.data.series ?? '') ?? tracks.get(COURSE_SERIES)!;
 		const i = course.findIndex((p) => p.id === post.id);
 		return {
 			params: { slug: post.id },

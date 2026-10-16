@@ -1,2102 +1,804 @@
 ---
-import { getCollection } from 'astro:content';
 import BaseHead from '../components/BaseHead.astro';
 import Footer from '../components/Footer.astro';
-import Header from '../components/Header.astro';
-import { COURSE_SERIES, COURSE_TITLE, SITE_DESCRIPTION, SITE_TITLE } from '../consts';
+import Loader from '../components/Loader.astro';
+import { SITE_TITLE } from '../consts';
 import { personSchema, websiteSchema } from '../lib/seo';
 
-const days = (
-	await getCollection('blog', ({ data }) => !data.draft && data.series === COURSE_SERIES && data.day !== undefined)
-).sort((a, b) => a.data.day! - b.data.day!);
-const href = (day: number) => {
-	const d = days.find((x) => x.data.day === day);
-	return d ? `/blog/${d.id}/` : '/course';
-};
-
-const ADV = [
-	{ tag: 'W10', title: 'Agent 架构深水区', body: 'Harness 设计、长任务上下文、记忆系统、持久化执行、编排取舍', start: 61 },
-	{ tag: 'W11', title: '评测科学', body: '样本量与显著性、大规模 LLM 评审、线上 A/B、自动化红队', start: 68 },
-	{ tag: 'W12', title: '模型层', body: '选型、vLLM 自部署、LoRA 微调、DPO、蒸馏路由、RL 入门', start: 75 },
-	{ tag: 'W13', title: '平台化与规模', body: '多租户平台、模型网关、MCP 鉴权、可观测、合规、事故复盘', start: 82 },
-	{ tag: 'W14', title: '前沿形态', body: 'Coding Agent 内部、Computer Use、语音、Deep Research、A2A', start: 89 },
-	{ tag: 'W15–16', title: '进阶毕业项目 AgentOps', body: '把 SupportPilot 升级成多租户 Agent 平台', start: 96 },
-	{ tag: 'W17', title: '资深求职', body: '设计文档、Staff 系统设计面试、带人、开源影响力', start: 106 },
+// One request, end to end, told for someone who has never seen the inside of an AI system.
+// `term` is the engineer's name for the step; `stat` is the number that makes it real; `ms` drives the HUD clock.
+const STEPS = [
+	{ key: 'PROMPT', layer: 'YOU', ms: 0, title: 'You ask a question', body: 'You type one sentence and press Enter. To you it is a message. To the machine it is the start of a relay race through thousands of kilometres of cable and billions of calculations.', term: 'HTTPS request', stat: '≈ 60 bytes of text' },
+	{ key: 'EDGE', layer: 'INFRA', ms: 40, title: 'It crosses the world in a blink', body: 'Your message flies to a data centre, often on another continent. A gatekeeper checks who you are, makes sure nobody is flooding the line, and sends you to a free machine.', term: 'API gateway · TLS · rate limiting', stat: '≈ 40 ms across the ocean' },
+	{ key: 'AGENT', layer: 'AGENT', ms: 55, title: 'An assistant picks up the job', body: 'Before any thinking happens, a program wrapped around the AI reads your request, recalls what you said earlier, and checks which tools it is allowed to use. This program is the agent.', term: 'Agent runtime', stat: '3 tools on hand' },
+	{ key: 'RETRIEVE', layer: 'AGENT', ms: 90, title: 'It looks things up first', body: 'The AI never memorised this company\'s refund policy. So the agent turns your question into a point in a "map of meaning" and fetches the documents sitting closest to it.', term: 'Retrieval-augmented generation (RAG)', stat: 'top 5 of 1.2 million passages' },
+	{ key: 'TOKENIZE', layer: 'MODEL', ms: 110, title: 'Words become numbers', body: 'Computers cannot read. Every word is chopped into small pieces called tokens, and each piece is swapped for a number. From here on, the AI only ever sees numbers.', term: 'Tokenizer', stat: '"refund" → 21639' },
+	{ key: 'SCHEDULE', layer: 'INFRA', ms: 125, title: 'It joins a very fast queue', body: 'Thousands of people are asking at the same moment. A scheduler packs everyone\'s requests together, like a bus that never leaves half empty, so the expensive chips are never idle.', term: 'Continuous batching · KV cache', stat: '256 conversations per batch' },
+	{ key: 'GPU', layer: 'INFRA', ms: 140, title: 'The heavy lifting begins', body: 'Eight chips, each costing about as much as a car, hold the AI\'s brain between them. To write a single word, the whole brain has to stream through their memory once.', term: 'GPU cluster · tensor parallelism', stat: '≈ 3 TB per second, per chip' },
+	{ key: 'FORWARD', layer: 'MODEL', ms: 300, title: 'Billions of dials turn at once', body: 'Your numbers rise through 80 layers. In each one, every word asks "which other words matter to me?" and updates itself. The dials were set months earlier by reading trillions of words.', term: 'Transformer · self-attention', stat: '70 billion parameters' },
+	{ key: 'SAMPLE', layer: 'MODEL', ms: 320, title: 'It guesses the next word', body: 'Out comes a list of odds for every possible next word. It picks one, adds it to the sentence, and runs the whole brain again for the next. That is the secret: extraordinarily good autocomplete.', term: 'Next-token prediction · sampling', stat: '1 word every ≈ 25 ms' },
+	{ key: 'TOOL', layer: 'AGENT', ms: 900, title: 'It can act, not just talk', body: 'Instead of a word, the AI can ask for a tool. The agent runs it, here by looking up your invoices, and hands back the result, so the answer is built on facts rather than guesses.', term: 'Tool calling', stat: '1 live database query' },
+	{ key: 'STREAM', layer: 'INFRA', ms: 1250, title: 'The answer arrives word by word', body: 'Each new word is turned back into text and sent to your screen the moment it exists. That is why AI answers seem to type themselves.', term: 'Streaming · server-sent events', stat: 'first word in ≈ 0.3 s' },
+	{ key: 'RECAP', layer: 'ALL', ms: 1800, title: 'So what is AI, really?', body: 'A model that learned language by predicting the next word. An agent that gives it memory and hands. An infrastructure that makes it fast enough to feel like magic. Three layers, one answer, under two seconds.', term: 'Model · Agent · Infra', stat: '≈ 1.8 s end to end' },
+	{ key: 'CHOOSE', layer: 'YOU', ms: 1800, title: 'Pick a layer to go deeper', body: 'AI Infra is the factory: chips, memory and serving. AI Agent is the hands: tools, retrieval and real products. Both start here.', term: '', stat: '' },
 ];
 
-const projectCount = (await getCollection('projects')).length;
-
-const WEEKS = [
-	{ tag: 'W1', layer: 'LLM 调用层', range: 'Day 1–7', start: 1, title: '大模型与 API', body: 'token 和上下文窗口、Python 速成、调通 DeepSeek / 通义 / Claude、提示词、结构化输出。', out: '命令行聊天机器人' },
-	{ tag: 'W2', layer: '工具循环', range: 'Day 8–14', start: 8, title: '工具调用与 Agent 循环', body: 'function calling、不用框架手写 Agent 循环、ReAct、工具设计、失败处理、五种 workflow 模式。', out: '会查天气、读文件、搜网页的 Agent' },
-	{ tag: 'W3', layer: '检索与记忆', range: 'Day 15–21', start: 15, title: '上下文工程与 RAG', body: 'embedding、切块、pgvector、混合检索与 rerank、RAG 评估、记忆和上下文压缩。', out: '带引用出处的文档问答' },
-	{ tag: 'W4', layer: 'MCP + 编排', range: 'Day 22–28', start: 22, title: 'MCP、框架与多 Agent', body: '自己写 MCP server、LangGraph、人工审批、多 Agent、Skills、框架横评。', out: '工单分流 Agent' },
-	{ tag: 'W5', layer: '评测与追踪', range: 'Day 29–35', start: 29, title: '评测与可观测', body: '错误分析、测试集、LLM-as-judge、轨迹评测、Langfuse 和 OpenTelemetry。', out: '评测集和 CI 回归门禁' },
-	{ tag: 'W6', layer: '服务与部署', range: 'Day 36–42', start: 36, title: '生产化', body: 'FastAPI 流式服务、长任务、成本与 ROI、prompt injection、沙箱、Docker 部署。', out: '公网能访问的 Agent 服务' },
-	{ tag: 'W7–8', layer: 'SupportPilot', range: 'Day 43–54', start: 43, title: '毕业项目 SupportPilot', body: '从零做一个智能客服工单 Agent:知识库、业务工具、审批、评测、成本、上线、包装。', out: '能放进简历的完整项目' },
-	{ tag: 'W9', layer: '作品集 + 简历', range: 'Day 55–60', start: 55, title: '第二个作品和求职', body: '一天做出代码审查 Agent,改简历,练面试题和系统设计,看渠道、谈薪资。', out: '简历和两个作品' },
-];
-
-// From docs/jd-research/summary.md (880 postings, 2026-10). Share of postings mentioning each skill.
-const JD = [
-	{ skill: '评测 / eval', cn: 48, os: 62, day: 29 },
-	{ skill: '工具调用', cn: 55, os: 39, day: 8 },
-	{ skill: '上下文工程', cn: 52, os: 25, day: 20 },
-	{ skill: '多 Agent', cn: 37, os: 22, day: 26 },
-	{ skill: 'MCP', cn: 17, os: 16, day: 22 },
-];
+const description =
+	'What actually happens in the two seconds after you ask an AI a question, explained in plain words: the agent, the lookup, words turned into numbers, the GPUs, the 70-billion-parameter model guessing the next word, tool calls and streaming. Then pick a track: AI Infra or AI Agent.';
 ---
 
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 	<head>
-		<BaseHead
-			title={`${COURSE_TITLE} — ${SITE_TITLE}`}
-			description={SITE_DESCRIPTION}
-			schema={[websiteSchema(Astro.site), personSchema(Astro.site)]}
-		/>
+		<BaseHead title={`The anatomy of an answer — ${SITE_TITLE}`} description={description} schema={[websiteSchema(Astro.site), personSchema(Astro.site)]} />
 	</head>
-	<body>
-		<Header />
+	<body class="home3d">
+		<Loader />
 		<main>
-			<section class="stage">
-				<div class="glow glow-a" aria-hidden="true"></div>
-				<div class="glow glow-b" aria-hidden="true"></div>
-				<div class="scan" aria-hidden="true"></div>
-				<div class="shell stage-grid">
-					<div class="pitch">
-						<h1 class="hero-title"><span style="--k:0">60 天,</span><span style="--k:1">学会造一个</span><span style="--k:2">能干活的 <em class="shine">Agent</em></span></h1>
-						<p class="lede">
-							演示里这个客服 Agent 是这门课的毕业项目。它会读工单、查账单、翻帮助中心,该找人审批的时候停下来等人。
-							60 天后,这套东西你能从零写出来,也能在面试里讲清楚每一步为什么这么做。
-						</p>
-						<div class="actions">
-							<a class="btn btn-primary" href={href(0)}>从 Day 0 开始学</a>
-							<a class="btn btn-ghost" href="/course">看 {days.length} 篇目录</a>
+			<section class="journey" data-journey style={`--steps:${STEPS.length}`} aria-label="From prompt to answer, step by step">
+				<div class="viewport">
+					<canvas class="gl" data-gl aria-hidden="true"></canvas>
+					<div class="vignette" aria-hidden="true"></div>
+
+					<div class="hud" data-hud aria-live="polite">
+						<p class="hud-kicker"><span class="hud-num" data-hud-num>01</span><span class="hud-sep">/</span><span>{String(STEPS.length).padStart(2, '0')}</span><span class="hud-clock" data-hud-clock>T+ 0.000 s</span><span class="hud-layer" data-hud-layer>{STEPS[0].layer}</span></p>
+						<h2 class="hud-title" data-hud-title>{STEPS[0].title}</h2>
+						<p class="hud-body" data-hud-body>{STEPS[0].body}</p>
+						<div class="hud-foot" data-hud-foot>
+							<p class="hud-stat" data-hud-stat>{STEPS[0].stat}</p>
+							<p class="hud-term">In tech terms: <span data-hud-term>{STEPS[0].term}</span></p>
 						</div>
-						<p class="fine">写给有编程经验的人。代码统一用 Python,国内直连 DeepSeek 就能跑,整门课 API 费用一两百块。</p>
-						<dl class="stats">
-							<div><dt>篇课程</dt><dd data-count={days.length}>{days.length}</dd></div>
-							<div><dt>个实战项目</dt><dd data-count={projectCount}>{projectCount}</dd></div>
-							<div><dt>个毕业项目</dt><dd data-count="2">2</dd></div>
-						</dl>
 					</div>
 
-					<div class="console" aria-label="SupportPilot 处理一张退款工单的回放">
-						<div class="console-bar">
-							<span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
-							<span class="console-title">supportpilot 回放:工单 T-1042</span>
-							<span class="meter" aria-hidden="true">
-								<span><b data-meter="steps">0</b> 步</span>
-								<span><b data-meter="cost">¥0.000</b></span>
-							</span>
-						</div>
-						<ol class="trace" data-trace>
-							<li class="ln ln-user" data-step="0" data-cost="0">
-								<span class="who">客户</span>
-								<span class="msg">上个月年付被扣了两次 468 块,能退一笔吗?</span>
-							</li>
-							<li class="ln ln-think" data-step="1" data-cost="0.002">
-								<span class="who">LLM</span>
-								<span class="msg">分类 = 退款。先确认是不是重复扣款,再查退款政策。</span>
-							</li>
-							<li class="ln ln-call" data-step="2" data-cost="0.004">
-								<span class="who">tool</span>
-								<span class="msg"><em>list_invoices</em>(customer_id="C007", months=2)</span>
-							</li>
-							<li class="ln ln-obs" data-step="2" data-cost="0.004">
-								<span class="who"></span>
-								<span class="msg">INV-2290 ¥468 已付 09-03 · INV-2291 ¥468 已付 09-03</span>
-							</li>
-							<li class="ln ln-call" data-step="3" data-cost="0.007">
-								<span class="who">tool</span>
-								<span class="msg"><em>search_kb</em>(query="重复扣款 退款")</span>
-							</li>
-							<li class="ln ln-obs" data-step="3" data-cost="0.007">
-								<span class="who"></span>
-								<span class="msg">kb-002#3 重复扣款全额退回,3 个工作日到账</span>
-							</li>
-							<li class="ln ln-call" data-step="4" data-cost="0.010">
-								<span class="who">tool</span>
-								<span class="msg"><em>create_refund</em>(invoice="INV-2291", amount=468)</span>
-							</li>
-							<li class="ln ln-wait" data-step="4" data-cost="0.010" data-hold="1600">
-								<span class="who">暂停</span>
-								<span class="msg">写操作,等主管审批……</span>
-							</li>
-							<li class="ln ln-human" data-step="5" data-cost="0.010">
-								<span class="who">主管</span>
-								<span class="msg">批准</span>
-							</li>
-							<li class="ln ln-answer" data-step="6" data-cost="0.016">
-								<span class="who">回复</span>
-								<span class="msg">查到 9 月 3 日同一笔年费扣了两次,多扣的 468 元已提交退款,3 个工作日内原路退回。<cite>依据:帮助中心《退款政策》第 3 节</cite></span>
-							</li>
-						</ol>
-						<p class="console-foot">示例回放。Day 9 写出这个循环的骨架,Day 25 加上审批暂停,Day 46 接上真实的业务工具。</p>
+					<div class="intro" data-intro>
+						<p class="intro-eyebrow">aiinfra.blog <span class="sep">/</span> The anatomy of an answer</p>
+						<h1 class="intro-title">Every answer <br />begins with <span class="key">Enter</span></h1>
+						<p class="intro-sub">Behind one keystroke, an agent plans, a GPU cluster wakes up and billions of parameters fire in sequence. Follow a single prompt through the entire stack, from the first token to the last.</p>
+						<p class="intro-hint"><span class="mouse" aria-hidden="true"><i></i></span>Scroll to send it</p>
 					</div>
-				</div>
-			</section>
 
-			<section class="line" data-line>
-				<div class="shell">
-					<div class="sec-head" data-reveal>
-						<p class="eyebrow">基础篇 · Day 1–60</p>
-						<h2>九周,一条线走下来</h2>
-						<p>第一周写出的命令行聊天机器人不会被扔掉。它每周长出一层新能力,第七周拼成毕业项目。往下滚,看它一层一层长出来。</p>
+					<div class="choose" id="choose" data-choose>
+						<a class="door door-infra" href="/infra">
+							<span class="door-tag">Track 01</span>
+							<span class="door-name">AI Infra</span>
+							<span class="door-body">Serving, GPUs, KV cache, batching, kernels. The machinery under the model.</span>
+							<span class="door-go">Enter AI Infra <b aria-hidden="true">→</b></span>
+						</a>
+						<a class="door door-agent" href="/agent">
+							<span class="door-tag">Track 02</span>
+							<span class="door-name">AI Agent</span>
+							<span class="door-body">Tool calling, RAG, MCP, evals, production. Building systems that do real work.</span>
+							<span class="door-go">Enter AI Agent <b aria-hidden="true">→</b></span>
+						</a>
 					</div>
-					<div class="line-grid">
-						<aside class="stack-wrap" aria-hidden="true">
-							<div class="stack">
-								<div class="stack-bar">
-									<span class="lights"><i></i><i></i><i></i></span>
-									<span>your-agent/</span>
-									<span class="stack-week" data-stack-week>W0</span>
-								</div>
-								<ol class="layers">
-									{
-										WEEKS.map((w, i) => (
-											<li class="layer" data-layer={i} style={`--i:${i}`}>
-												<span class="layer-tag">{w.tag}</span>
-												<span class="layer-name">{w.layer}</span>
-											</li>
-										))
-									}
-								</ol>
-								<div class="stack-foot">
-									<span>已就位 <b data-stack-count>0</b> / {WEEKS.length} 层</span>
-									<span class="stack-gauge"><span data-stack-gauge></span></span>
-								</div>
-							</div>
-						</aside>
-						<ol class="stations" data-stations>
-							<li class="spine" aria-hidden="true"><span data-spine></span></li>
+
+					<nav class="rail" data-rail aria-label="Jump to a step">
+						<span class="rail-line" aria-hidden="true"><span class="rail-fill" data-rail-fill></span></span>
+						<ol>
 							{
-								WEEKS.map((w, i) => (
-									<li class:list={['station', { capstone: w.tag === 'W7–8' }]} data-station={i}>
-										<span class="node" aria-hidden="true"><span>{i + 1}</span></span>
-										<a class="st-card" href={href(w.start)}>
-											<span class="st-meta">
-												<span class="st-tag">{w.tag}</span>
-												<span class="st-range">{w.range}</span>
-											</span>
-											<span class="st-title">{w.title}</span>
-											<span class="st-body">{w.body}</span>
-											<span class="st-out"><i>+</i>{w.out}</span>
-										</a>
+								STEPS.map((s, i) => (
+									<li>
+										<button type="button" data-rail-step={i} class:list={[`l-${s.layer.toLowerCase()}`]}>
+											<span class="dot" aria-hidden="true" />
+											<span class="lbl">{s.key}</span>
+										</button>
 									</li>
 								))
 							}
 						</ol>
-					</div>
+					</nav>
+					<a class="skip" href="#choose" data-skip>Skip <span aria-hidden="true">→</span></a>
+					<p class="fineprint">Illustrative numbers. The flow is real.</p>
 				</div>
 			</section>
 
-			<section class="adv">
-				<div class="shell adv-inner">
-					<div class="adv-head" data-reveal>
-						<p class="adv-tag">进阶篇 · Day 61–110</p>
-						<h2>60 天之后,往资深走</h2>
-						<p>
-							基础篇让你拿到入场券。进阶篇对准国内 JD 里标题带「资深、专家、架构师」的那一档,挂牌年包中位 66 万。
-							讲的是判断力和规模:为什么这样设计,十倍流量下还成不成立,怎么用数据说服别人。
-						</p>
-						<a class="btn btn-primary" href={href(61)}>看进阶篇第一课</a>
-					</div>
-					<ol class="adv-list" data-reveal data-stagger>
-						{ADV.map((a) => (
-							<li>
-								<a href={href(a.start)}>
-									<span class="adv-w">{a.tag}</span>
-									<span class="adv-t">{a.title}</span>
-									<span class="adv-b">{a.body}</span>
-								</a>
-							</li>
-						))}
+			<!-- Readable version of the same walk-through: shown without WebGL or with reduced motion. -->
+			<section class="static-walk" data-static>
+				<div class="shell">
+					<h1 class="sw-title">Every answer begins with Enter</h1>
+					<ol class="sw-list">
+						{
+							STEPS.slice(0, -1).map((s, i) => (
+								<li>
+									<span class="sw-num">{String(i + 1).padStart(2, '0')}</span>
+									<span class={`sw-layer l-${s.layer.toLowerCase()}`}>{s.layer}</span>
+									<h2>{s.title}</h2>
+									<p>{s.body}</p>
+									{s.term && <p class="sw-term">{s.stat} · {s.term}</p>}
+								</li>
+							))
+						}
 					</ol>
-				</div>
-			</section>
-
-			<section class="shell build">
-				<div class="build-copy" data-reveal>
-					<p class="eyebrow">第 60 天</p>
-					<h2>毕业时,你的 GitHub 上会有这些</h2>
-					<p>
-						SupportPilot 是给虚构 SaaS 公司「云簿」做的客服工单 Agent。它不是 demo:有 100 条测试集和评测报告,有成本账本,有注入测试,
-						部署在公网上,README 里有架构图和演示视频。招聘方点开仓库想看的,基本都在里面。
-					</p>
-					<ul class="deliver">
-						<li><b>能跑的仓库</b>LangGraph 编排,pgvector 知识库,MCP 业务工具</li>
-						<li><b>评测报告</b>规则断言、LLM 评分、轨迹检查,每次改动有分数对比</li>
-						<li><b>成本和延迟数据</b>单张工单花多少钱,和人工比划不划算</li>
-						<li><b>第二个作品</b>代码审查 Agent,一天做出来</li>
-					</ul>
-					<a class="btn btn-ghost-ink" href={href(43)}>看毕业项目怎么开题</a>
-				</div>
-
-				<div class="repo" data-repo aria-label="毕业时 SupportPilot 仓库的示意">
-					<div class="repo-top">
-						<svg class="repo-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.71 1.71.75.75 0 1 1-1.06 1.06A2.5 2.5 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.71A2.5 2.5 0 0 1 4.5 9h8Z"></path></svg>
-						<span class="repo-path"><span>you</span> / <b>supportpilot</b></span>
-						<span class="pill">Public</span>
-						<span class="repo-star">★ Star</span>
-					</div>
-					<div class="repo-tabs">
-						<span class="on">Code</span>
-						<span>Actions <i class="dot-ok" data-ci-dot></i></span>
-						<span>Releases <em>v1.0</em></span>
-					</div>
-					<div class="repo-commit">
-						<span class="avatar" aria-hidden="true"></span>
-						<span class="cm-msg"><span data-typed>Day 54: README、架构图、演示视频</span><span class="caret" aria-hidden="true"></span></span>
-						<span class="cm-count">60 commits</span>
-					</div>
-					<ul class="files">
-						<li data-row><span class="f-ico dir"></span><span class="f-name">agent/</span><span class="f-msg">LangGraph:分类 检索 执行 自检</span><span class="f-day">Day 47</span></li>
-						<li data-row><span class="f-ico dir"></span><span class="f-name">knowledge/</span><span class="f-msg">切块、混合检索、引用出处</span><span class="f-day">Day 45</span></li>
-						<li data-row><span class="f-ico dir"></span><span class="f-name">mcp_tools/</span><span class="f-msg">订单、账单 MCP server,退款审批</span><span class="f-day">Day 46</span></li>
-						<li data-row><span class="f-ico dir"></span><span class="f-name">web/</span><span class="f-msg">Next.js 工作台,流式展示工具调用</span><span class="f-day">Day 49</span></li>
-						<li data-row><span class="f-ico dir"></span><span class="f-name">evals/</span><span class="f-msg">100 条测试集、LLM-judge、轨迹评测</span><span class="f-day">Day 50</span></li>
-						<li data-row><span class="f-ico dir"></span><span class="f-name">deploy/</span><span class="f-msg">注入测试、权限、Docker 部署</span><span class="f-day">Day 53</span></li>
-						<li data-row><span class="f-ico file"></span><span class="f-name">README.md</span><span class="f-msg">架构图、演示视频、评测报告</span><span class="f-day">Day 54</span></li>
-					</ul>
-					<div class="checks">
-						<p class="checks-title">CI · 每次 push 都跑</p>
-						<p class="check" data-check-row><span class="ci-state"></span>evals / 100 条回归测试</p>
-						<p class="check" data-check-row><span class="ci-state"></span>security / prompt injection 用例</p>
-						<p class="check" data-check-row><span class="ci-state"></span>deploy / docker build + 冒烟测试</p>
+					<div class="sw-doors">
+						<a class="door door-infra" href="/infra"><span class="door-name">AI Infra</span><span class="door-body">Serving, GPUs, KV cache, batching, kernels.</span></a>
+						<a class="door door-agent" href="/agent"><span class="door-name">AI Agent</span><span class="door-body">Tool calling, RAG, MCP, evals, production.</span></a>
 					</div>
 				</div>
-			</section>
-
-			<section class="shell pinned" data-reveal>
-				<div class="contrib">
-					<div class="contrib-head">
-						<p class="contrib-title">Day 0 → Day 60,每天至少一次提交</p>
-						<p class="contrib-legend">少<i class="lv1"></i><i class="lv2"></i><i class="lv3"></i><i class="lv4"></i>多</p>
-					</div>
-					<div class="cells" data-cells aria-hidden="true">
-						{Array.from({ length: 63 }, (_, i) => <i class={`lv${i > 60 ? 0 : ((i * 7 + (i % 5) * 3) % 4) + 1}`} style={`--d:${i}`} />)}
-					</div>
-				</div>
-				<div class="pins">
-					<p class="pins-title">之后还会多出这些</p>
-					<ol>
-						<li><a href={href(55)}><b>code-review-agent</b><span>Day 55 · 一天做出的第二作品</span><i class="lang py">Python</i></a></li>
-						<li><a href={href(96)}><b>agentops</b><span>Day 96–105 · 多租户 Agent 平台</span><i class="lang py">Python</i></a></li>
-						<li><a href="/projects/agent-loupe/"><b>agent-loupe</b><span>实战项目 · Agent 调试器</span><i class="lang ts">TypeScript</i></a></li>
-						<li><a href="/projects/"><b>还有 {projectCount - 1} 个实战项目</b><span>浏览器 Agent、代码 Agent、防火墙、RL……</span><i class="lang more">挑两三个</i></a></li>
-					</ol>
-				</div>
-			</section>
-
-			<section class="shell market">
-				<div class="sec-head" data-reveal>
-					<h2>招聘方到底要什么</h2>
-					<p>
-						2026 年 10 月抓了 880 条 AI Agent 工程师 JD,国内 695 条,海外 185 条。下面是几项技能在 JD 里出现的比例,每一项课程里都有对应的一天。
-						国内挂牌年包中位数 48 万,明确要硕士的约一成。
-					</p>
-				</div>
-				<div class="bars" data-reveal data-bars>
-					<p class="legend"><span class="key key-cn"></span>国内 <span class="key key-os"></span>海外</p>
-					{
-						JD.map((r) => (
-							<a class="bar-row" href={href(r.day)}>
-								<span class="bar-skill">{r.skill}</span>
-								<span class="bar-pair">
-									<span class="bar bar-cn" style={`--v:${r.cn}`}><span>{r.cn}%</span></span>
-									<span class="bar bar-os" style={`--v:${r.os}`}><span>{r.os}%</span></span>
-								</span>
-								<span class="bar-day">Day {r.day}</span>
-							</a>
-						))
-					}
-				</div>
-				<a class="btn btn-ghost-ink" href="/blog/agent-jd-report-2026-10/">读完整的 880 条 JD 拆解</a>
-			</section>
-
-			<section class="shell closing" data-reveal>
-				<p>今天就能开始。Day 0 讲清楚这个岗位做什么、要准备什么、两个月能做到哪一步。</p>
-				<a class="btn btn-primary" href={href(0)}>打开 Day 0</a>
 			</section>
 		</main>
 		<Footer />
 
+		<script type="application/json" id="journey-steps" set:html={JSON.stringify(STEPS)} />
 		<script>
-			const trace = document.querySelector<HTMLOListElement>('[data-trace]');
-			const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-			if (trace) {
-				const lines = [...trace.querySelectorAll<HTMLLIElement>('.ln')];
-				const steps = document.querySelector<HTMLElement>('[data-meter="steps"]');
-				const cost = document.querySelector<HTMLElement>('[data-meter="cost"]');
-				const show = (li: HTMLLIElement) => {
-					li.classList.add('on');
-					if (steps) steps.textContent = li.dataset.step ?? '0';
-					if (cost) cost.textContent = `¥${Number(li.dataset.cost ?? 0).toFixed(3)}`;
-				};
-				if (reduce) {
-					lines.forEach(show);
-				} else {
-					trace.classList.add('animated');
-					const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-					const run = async () => {
-						for (;;) {
-							lines.forEach((l) => l.classList.remove('on'));
-							await sleep(700);
-							for (const li of lines) {
-								show(li);
-								await sleep(Number(li.dataset.hold ?? 0) + (li.classList.contains('ln-obs') ? 650 : 1050));
-							}
-							await sleep(5200);
-						}
-					};
-					run();
-				}
-			}
-		</script>
-		<script>
-			const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-			document.documentElement.classList.add('js-motion');
-
-			// Fade-up on first sight. Without IntersectionObserver or with reduced motion, everything just shows.
-			const revealEls = [...document.querySelectorAll<HTMLElement>('[data-reveal]')];
-			const onSeen = (el: Element, cb: () => void, margin = '0px 0px -12% 0px') => {
-				if (reduceMotion || !('IntersectionObserver' in window)) return cb();
-				const io = new IntersectionObserver(
-					(entries) => {
-						if (entries.some((e) => e.isIntersecting)) {
-							io.disconnect();
-							cb();
-						}
-					},
-					{ rootMargin: margin },
-				);
-				io.observe(el);
-			};
-			revealEls.forEach((el) => onSeen(el, () => el.classList.add('in')));
-
-			// Hero counters.
-			document.querySelectorAll<HTMLElement>('[data-count]').forEach((el) => {
-				const to = Number(el.dataset.count);
-				if (reduceMotion || !to) return;
-				const t0 = performance.now();
-				const tick = (t: number) => {
-					const k = Math.min(1, (t - t0) / 1400);
-					el.textContent = String(Math.round(to * (1 - Math.pow(1 - k, 3))));
-					if (k < 1) requestAnimationFrame(tick);
-				};
-				el.textContent = '0';
-				setTimeout(() => requestAnimationFrame(tick), 500);
-			});
-
-			// The build line: the spine fills with scroll, and each week drops one layer onto the stack.
-			const line = document.querySelector<HTMLElement>('[data-line]');
-			if (line) {
-				const list = line.querySelector<HTMLElement>('[data-stations]')!;
-				const spine = line.querySelector<HTMLElement>('[data-spine]')!;
-				const stations = [...line.querySelectorAll<HTMLElement>('[data-station]')];
-				const layers = [...line.querySelectorAll<HTMLElement>('[data-layer]')];
-				const week = line.querySelector<HTMLElement>('[data-stack-week]');
-				const count = line.querySelector<HTMLElement>('[data-stack-count]');
-				const gauge = line.querySelector<HTMLElement>('[data-stack-gauge]');
-				let shown = -2;
-				const setActive = (n: number) => {
-					if (n === shown) return;
-					shown = n;
-					stations.forEach((st, i) => st.classList.toggle('lit', i <= n));
-					layers.forEach((l, i) => l.classList.toggle('on', i <= n));
-					layers.forEach((l, i) => l.classList.toggle('top', i === n));
-					if (week) week.textContent = n >= 0 ? stations[n].querySelector('.st-tag')!.textContent! : 'W0';
-					if (count) count.textContent = String(n + 1);
-					if (gauge) gauge.style.transform = `scaleX(${(n + 1) / layers.length})`;
-				};
-				if (reduceMotion) {
-					spine.style.transform = 'scaleY(1)';
-					setActive(stations.length - 1);
-				} else {
-					line.classList.add('animated');
-					let ticking = false;
-					const update = () => {
-						ticking = false;
-						const mid = window.innerHeight * 0.55;
-						const r = list.getBoundingClientRect();
-						const p = Math.min(1, Math.max(0, (mid - r.top) / r.height));
-						spine.style.transform = `scaleY(${p})`;
-						let n = -1;
-						stations.forEach((st, i) => {
-							if (st.getBoundingClientRect().top < mid) n = i;
-						});
-						setActive(n);
-					};
-					addEventListener('scroll', () => {
-						if (!ticking) {
-							ticking = true;
-							requestAnimationFrame(update);
-						}
-					}, { passive: true });
-					addEventListener('resize', update);
-					update();
-				}
-			}
-
-			// The repo window: typed commit, files appear, CI checks go from running to passed. Loops while visible.
-			const repo = document.querySelector<HTMLElement>('[data-repo]');
-			if (repo) {
-				const rows = [...repo.querySelectorAll<HTMLElement>('[data-row]')];
-				const checks = [...repo.querySelectorAll<HTMLElement>('[data-check-row]')];
-				const typed = repo.querySelector<HTMLElement>('[data-typed]');
-				const dot = repo.querySelector<HTMLElement>('[data-ci-dot]');
-				const full = typed?.textContent ?? '';
-				const finish = () => {
-					rows.forEach((r) => r.classList.add('on'));
-					checks.forEach((c) => c.classList.add('pass'));
-					dot?.classList.add('pass');
-				};
-				if (reduceMotion) {
-					finish();
-				} else {
-					repo.classList.add('animated');
-					const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-					const play = async () => {
-						for (;;) {
-							rows.forEach((r) => r.classList.remove('on'));
-							checks.forEach((c) => c.classList.remove('run', 'pass'));
-							dot?.classList.remove('pass');
-							if (typed) typed.textContent = '';
-							await sleep(400);
-							for (let i = 1; i <= full.length; i++) {
-								if (typed) typed.textContent = full.slice(0, i);
-								await sleep(45);
-							}
-							for (const r of rows) {
-								r.classList.add('on');
-								await sleep(170);
-							}
-							for (const c of checks) {
-								c.classList.add('run');
-								await sleep(900);
-								c.classList.remove('run');
-								c.classList.add('pass');
-							}
-							dot?.classList.add('pass');
-							await sleep(6000);
-						}
-					};
-					onSeen(repo, play, '0px 0px -20% 0px');
-				}
-			}
-
-			const cells = document.querySelector<HTMLElement>('[data-cells]');
-			if (cells) onSeen(cells, () => cells.classList.add('in'));
+			import { startJourney } from '../scripts/journey';
+			startJourney();
 		</script>
 	</body>
 </html>
 
 <style>
-	/* ---------- Stage: the one loud element. Always dark, in both themes. ---------- */
-	.stage {
-		--s-bg: #0b0e11;
-		--s-raised: #181a20;
-		--s-rule: #2b3139;
-		--s-ink: #eaecef;
-		--s-soft: #b7bdc6;
-		--s-faint: #848e9c;
-		--s-blue: #f0b90b;
-		--s-amber: #0ecb81;
-		--s-green: #0ecb81;
+	:global(body.home3d) {
+		background: #04060a;
+	}
+
+	.journey {
 		position: relative;
-		background:
-			radial-gradient(circle at 1px 1px, var(--s-rule) 1px, transparent 0) 0 0 / 22px 22px,
-			var(--s-bg);
-		color: var(--s-ink);
-		border-bottom: 1px solid var(--s-rule);
+		height: calc(var(--steps) * 115vh);
+		background: #04060a;
+		color: #eaecef;
+	}
+
+	.viewport {
+		position: sticky;
+		top: 0;
+		height: 100vh;
+		height: 100svh;
 		overflow: hidden;
 	}
 
-	.stage::after {
-		content: '';
+	.gl {
 		position: absolute;
-		inset: auto 0 0 0;
-		height: 120px;
-		background: linear-gradient(to bottom, transparent, var(--s-bg));
-		pointer-events: none;
-	}
-
-	.stage-grid {
-		position: relative;
-		z-index: 1;
-		display: grid;
-		grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-		gap: clamp(2rem, 5vw, 4rem);
-		align-items: center;
-		padding-block: clamp(3rem, 7vw, 5.5rem);
-	}
-
-	.pitch h1 {
-		color: var(--s-ink);
-		font-size: clamp(2.4rem, 5.4vw, 3.9rem);
-		line-height: 1.08;
-		letter-spacing: -0.01em;
-		margin: 0 0 1.4rem;
-	}
-
-	.lede {
-		color: var(--s-soft);
-		font-size: 1.06rem;
-		line-height: 1.9;
-		margin: 0 0 1.8rem;
-		max-width: 30rem;
-	}
-
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.75rem;
-	}
-
-	.btn {
-		display: inline-block;
-		padding: 0.7rem 1.25rem;
-		border-radius: 6px;
-		font-family: var(--font-display);
-		font-size: 0.98rem;
-		font-weight: 600;
-		text-decoration: none;
-		border: 1px solid transparent;
-	}
-
-	.btn:focus-visible {
-		outline: 2px solid var(--s-blue, var(--mem));
-		outline-offset: 3px;
-	}
-
-	.stage .btn-primary {
-		background: var(--s-blue);
-		color: #0b0e11;
-	}
-
-	.stage .btn-primary:hover {
-		background: #fcd535;
-	}
-
-	.btn-ghost {
-		color: var(--s-ink);
-		border-color: var(--s-rule);
-	}
-
-	.btn-ghost:hover {
-		border-color: var(--s-soft);
-	}
-
-	.fine {
-		color: var(--s-faint);
-		font-size: 0.86rem;
-		line-height: 1.7;
-		margin: 1.4rem 0 0;
-		max-width: 28rem;
-	}
-
-	/* ---------- The trace console ---------- */
-	.console {
-		background: var(--s-raised);
-		border: 1px solid var(--s-rule);
-		border-radius: 10px;
-		box-shadow:
-			0 0 0 1px rgba(240, 185, 11, 0.06),
-			0 30px 80px -20px rgba(0, 0, 0, 0.6);
-		font-family: var(--font-mono);
-		min-width: 0;
-	}
-
-	.console-bar {
-		display: flex;
-		align-items: center;
-		gap: 0.8rem;
-		padding: 0.7rem 1rem;
-		border-bottom: 1px solid var(--s-rule);
-		font-size: 0.74rem;
-		color: var(--s-faint);
-	}
-
-	.lights {
-		display: inline-flex;
-		gap: 6px;
-	}
-
-	.lights i {
-		width: 9px;
-		height: 9px;
-		border-radius: 50%;
-		background: var(--s-rule);
-	}
-
-	.console-title {
-		flex: 1;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.meter {
-		display: inline-flex;
-		gap: 0.9rem;
-		color: var(--s-soft);
-	}
-
-	.meter b {
-		color: var(--s-amber);
-		font-weight: 500;
-	}
-
-	.trace {
-		list-style: none;
-		margin: 0;
-		padding: 1rem 1rem 0.6rem;
-		min-height: 27rem;
-	}
-
-	.ln {
-		display: grid;
-		grid-template-columns: 3.4rem 1fr;
-		gap: 0.6rem;
-		padding: 0.32rem 0;
-		font-size: 0.8rem;
-		line-height: 1.65;
-	}
-
-	.trace.animated .ln {
-		opacity: 0;
-		transform: translateY(4px);
-		transition:
-			opacity 0.35s ease,
-			transform 0.35s ease;
-	}
-
-	.trace.animated .ln.on {
-		opacity: 1;
-		transform: none;
-	}
-
-	.who {
-		color: var(--s-faint);
-		text-align: right;
-	}
-
-	.msg {
-		color: var(--s-soft);
-		min-width: 0;
-		overflow-wrap: anywhere;
-	}
-
-	.ln-user .msg {
-		color: var(--s-ink);
-	}
-
-	.ln-think .who,
-	.ln-think .msg {
-		color: var(--s-blue);
-	}
-
-	.ln-call .who {
-		color: var(--s-amber);
-	}
-
-	.ln-call em {
-		font-style: normal;
-		color: var(--s-amber);
-	}
-
-	.ln-obs .msg {
-		color: var(--s-faint);
-		border-left: 2px solid var(--s-rule);
-		padding-left: 0.6rem;
-	}
-
-	.ln-wait .who,
-	.ln-wait .msg {
-		color: var(--s-amber);
-	}
-
-	.trace.animated .ln-wait.on .msg {
-		animation: blink 1s steps(2, start) 2;
-	}
-
-	.ln-human .who,
-	.ln-human .msg {
-		color: var(--s-green);
-	}
-
-	.ln-answer {
-		margin-top: 0.5rem;
-	}
-
-	.ln-answer .who {
-		color: var(--s-ink);
-	}
-
-	.ln-answer .msg {
-		color: var(--s-ink);
-		background: rgba(240, 185, 11, 0.08);
-		border: 1px solid rgba(240, 185, 11, 0.25);
-		border-radius: 6px;
-		padding: 0.6rem 0.75rem;
-	}
-
-	.ln-answer cite {
+		inset: 0;
+		width: 100%;
+		height: 100%;
 		display: block;
-		margin-top: 0.35rem;
-		font-style: normal;
-		color: var(--s-blue);
-		font-size: 0.74rem;
 	}
 
-	.console-foot {
-		margin: 0;
-		padding: 0.7rem 1rem 0.85rem;
-		border-top: 1px solid var(--s-rule);
-		color: var(--s-faint);
-		font-size: 0.72rem;
-		line-height: 1.6;
-	}
-
-	@keyframes blink {
-		to {
-			visibility: hidden;
-		}
-	}
-
-	/* ---------- Quiet sections below ---------- */
-	.sec-head {
-		max-width: 40rem;
-		margin-bottom: 2rem;
-	}
-
-	.sec-head h2,
-	.build-copy h2 {
-		font-size: clamp(1.5rem, 3vw, 2rem);
-		letter-spacing: 0;
-		margin: 0 0 0.6rem;
-	}
-
-	.sec-head p,
-	.build-copy p {
-		color: var(--ink-soft);
-		line-height: 1.85;
-		margin: 0;
-	}
-
-	.build,
-	.market {
-		padding-block: clamp(3rem, 7vw, 5rem) 0;
-	}
-
-	/* Senior track band */
-	.adv {
-		margin-top: clamp(3rem, 7vw, 5rem);
+	.vignette {
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
 		background:
-			radial-gradient(circle at 1px 1px, #2b3139 1px, transparent 0) 0 0 / 22px 22px,
-			#0b0e11;
-		color: #eaecef;
+			radial-gradient(120% 90% at 50% 45%, transparent 55%, rgba(2, 3, 6, 0.85) 100%),
+			linear-gradient(180deg, rgba(4, 6, 10, 0.55) 0%, transparent 18%, transparent 78%, rgba(4, 6, 10, 0.75) 100%);
 	}
 
-	.adv-inner {
-		display: grid;
-		grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
-		gap: clamp(2rem, 5vw, 4rem);
-		padding-block: clamp(3rem, 7vw, 4.5rem);
-		align-items: start;
+	/* ---------- Intro title (fades as the request leaves) ---------- */
+	.intro {
+		position: absolute;
+		left: var(--gutter);
+		right: var(--gutter);
+		top: 50%;
+		transform: translateY(-50%);
+		max-width: 80rem;
+		margin-inline: auto;
+		pointer-events: none;
+		transition: opacity 0.4s linear;
 	}
 
-	.adv-tag {
-		display: inline-block;
+	.intro > * {
+		max-width: 34rem;
+	}
+
+	.intro-eyebrow .sep {
+		margin: 0 0.5em;
+		color: #5e6673;
+	}
+
+	.intro-eyebrow {
 		margin: 0 0 1rem;
-		padding: 0.2rem 0.75rem;
-		border-radius: 999px;
-		background: #f0b90b;
-		color: #0b0e11;
-		font-family: var(--font-display);
-		font-weight: 700;
-		font-size: 0.85rem;
-	}
-
-	.adv-head h2 {
-		color: #eaecef;
-		font-size: clamp(1.8rem, 3.6vw, 2.5rem);
-		letter-spacing: 0;
-		margin: 0 0 0.9rem;
-	}
-
-	.adv-head p:not(.adv-tag) {
-		color: #b7bdc6;
-		line-height: 1.85;
-		margin: 0 0 1.6rem;
-	}
-
-	.adv .btn-primary {
-		background: #f0b90b;
-		color: #0b0e11;
-	}
-
-	.adv-list {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		display: grid;
-		gap: 0.5rem;
-	}
-
-	.adv-list a {
-		display: grid;
-		grid-template-columns: 4.6rem minmax(0, 1fr);
-		gap: 0.15rem 1rem;
-		padding: 0.85rem 1.1rem;
-		border: 1px solid #2b3139;
-		border-radius: 10px;
-		background: #181a20;
-		text-decoration: none;
-		color: #eaecef;
-	}
-
-	.adv-list a:hover {
-		border-color: #f0b90b;
-	}
-
-	.adv-list a:focus-visible {
-		outline: 2px solid #f0b90b;
-		outline-offset: 2px;
-	}
-
-	.adv-w {
-		grid-row: span 2;
-		font-family: var(--font-display);
-		font-weight: 800;
-		font-size: 1.05rem;
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		letter-spacing: 0.24em;
+		text-transform: uppercase;
 		color: #f0b90b;
 	}
 
-	.adv-t {
+	.intro-title {
+		margin: 0;
 		font-family: var(--font-display);
-		font-weight: 600;
-	}
-
-	.adv-b {
-		font-size: 0.88rem;
-		color: #848e9c;
-		line-height: 1.65;
-	}
-
-	@media (max-width: 960px) {
-		.adv-inner {
-			grid-template-columns: 1fr;
-		}
-	}
-
-	/* Build section */
-	.build {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
-		gap: clamp(2rem, 5vw, 4rem);
-		align-items: center;
-	}
-
-	.deliver {
-		list-style: none;
-		margin: 1.4rem 0 1.6rem;
-		padding: 0;
-		display: grid;
-		gap: 0.8rem;
-	}
-
-	.deliver li {
-		padding-left: 1rem;
-		border-left: 2px solid var(--compute);
-		color: var(--ink-soft);
-		line-height: 1.7;
-		font-size: 0.95rem;
-	}
-
-	.deliver b {
-		display: block;
-		color: var(--ink);
-		font-family: var(--font-display);
-		font-weight: 600;
-	}
-
-	.btn-ghost-ink {
-		color: var(--mem);
-		border-color: var(--mem);
-	}
-
-	.btn-ghost-ink:hover {
-		background: var(--mem-wash);
-	}
-
-	.btn-ghost-ink:focus-visible {
-		outline: 2px solid var(--mem);
-	}
-
-	/* Market bars */
-	.bars {
-		display: grid;
-		gap: 0.2rem;
-		max-width: 48rem;
-		margin-bottom: 1.8rem;
-	}
-
-	.legend {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.85rem;
-		color: var(--ink-faint);
-		margin: 0 0 0.6rem;
+		font-weight: 700;
+		font-size: clamp(2.4rem, 5.6vw, 4.6rem);
+		line-height: 1.02;
+		letter-spacing: -0.035em;
+		color: #f5f6f7;
 	}
 
 	.key {
 		display: inline-block;
-		width: 12px;
-		height: 12px;
-		border-radius: 2px;
-		margin-left: 0.6rem;
+		padding: 0.02em 0.28em 0.06em;
+		border: 1px solid rgba(240, 185, 11, 0.6);
+		border-bottom-width: 4px;
+		border-radius: 0.18em;
+		color: #f0b90b;
+		background: rgba(240, 185, 11, 0.07);
+		box-shadow: 0 0 40px -6px rgba(240, 185, 11, 0.55);
+		animation: keypress 2.8s ease-in-out infinite;
 	}
 
-	.key:first-child {
-		margin-left: 0;
+	@keyframes keypress {
+		0%, 70%, 100% { transform: translateY(0); border-bottom-width: 4px; }
+		76% { transform: translateY(3px); border-bottom-width: 1px; }
 	}
 
-	.key-cn {
-		background: #f0b90b;
+	.intro > .intro-sub {
+		max-width: 29rem;
 	}
 
-	.key-os {
-		background: var(--compute);
-	}
-
-	.bar-row {
-		display: grid;
-		grid-template-columns: 7.5rem 1fr 4rem;
-		gap: 1rem;
-		align-items: center;
-		padding: 0.55rem 0;
-		border-bottom: 1px solid var(--rule-soft);
-		text-decoration: none;
-		color: var(--ink);
-	}
-
-	.bar-row:hover .bar-skill {
-		color: var(--mem);
-	}
-
-	.bar-skill {
+	.intro-sub {
+		margin: 1.4rem 0 0;
 		font-family: var(--font-display);
-		font-weight: 600;
-		font-size: 0.95rem;
+		font-size: clamp(1rem, 1.4vw, 1.2rem);
+		line-height: 1.55;
+		color: #b7bdc6;
 	}
 
-	.bar-pair {
-		display: grid;
-		gap: 4px;
+	.intro-hint {
+		display: flex;
+		align-items: center;
+		gap: 0.7rem;
+		margin: 2.6rem 0 0;
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+		color: #848e9c;
 	}
 
-	.bar {
-		display: block;
-		height: 14px;
-		width: calc(var(--v) * 1%);
-		border-radius: 0 3px 3px 0;
+	.mouse {
 		position: relative;
+		width: 20px;
+		height: 30px;
+		border: 1.5px solid #848e9c;
+		border-radius: 10px;
 	}
 
-	.bar span {
+	.mouse i {
 		position: absolute;
-		left: calc(100% + 6px);
-		top: 50%;
-		transform: translateY(-50%);
-		font-family: var(--font-mono);
-		font-size: 0.72rem;
-		color: var(--ink-soft);
-	}
-
-	.bar-cn {
+		left: 50%;
+		top: 6px;
+		width: 3px;
+		height: 6px;
+		margin-left: -1.5px;
+		border-radius: 2px;
 		background: #f0b90b;
+		animation: wheel 1.6s ease-in-out infinite;
 	}
 
-	.bar-os {
-		background: var(--compute);
+	@keyframes wheel {
+		0% { transform: translateY(0); opacity: 1; }
+		80% { transform: translateY(10px); opacity: 0; }
+		100% { transform: translateY(0); opacity: 0; }
 	}
 
-	.bar-day {
+	/* ---------- HUD: the current step ---------- */
+	.hud {
+		position: absolute;
+		left: max(var(--gutter), calc((100vw - 80rem) / 2 + var(--gutter)));
+		bottom: 8.5rem;
+		width: min(29rem, calc(100vw - 2 * var(--gutter)));
+		padding: 1.3rem 1.4rem 1.4rem;
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		border-radius: 14px;
+		background: linear-gradient(160deg, rgba(20, 24, 31, 0.72), rgba(8, 10, 14, 0.6));
+		-webkit-backdrop-filter: blur(14px) saturate(140%);
+		backdrop-filter: blur(14px) saturate(140%);
+		box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+		opacity: 0;
+		transform: translateY(14px);
+		transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+		pointer-events: none;
+	}
+
+	.hud.on {
+		opacity: 1;
+		transform: none;
+	}
+
+	.hud.swap .hud-title,
+	.hud.swap .hud-body {
+		opacity: 0;
+		transform: translateY(6px);
+		filter: blur(4px);
+	}
+
+	.hud-kicker {
+		display: flex;
+		align-items: baseline;
+		gap: 0.35rem;
+		margin: 0 0 0.55rem;
 		font-family: var(--font-mono);
-		font-size: 0.74rem;
-		color: var(--ink-faint);
-		text-align: right;
+		font-size: 0.78rem;
+		color: #707a8a;
 	}
 
-	/* Closing */
-	.closing {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1.2rem;
-		margin-block: clamp(3rem, 7vw, 5rem);
-		padding-block: 1.8rem;
-		border-top: 1px solid var(--rule);
-		border-bottom: 1px solid var(--rule);
+	.hud-num {
+		font-size: 1.05rem;
+		font-weight: 600;
+		color: #eaecef;
 	}
 
-	.closing p {
-		margin: 0;
-		font-size: 1.08rem;
-		max-width: 36rem;
-		line-height: 1.8;
+	.hud-layer {
+		margin-left: auto;
+		padding: 0.12rem 0.55rem;
+		border-radius: 999px;
+		font-size: 0.68rem;
+		letter-spacing: 0.16em;
+		border: 1px solid currentColor;
+		color: var(--layer, #848e9c);
 	}
 
-	.closing .btn-primary {
-		background: #f0b90b;
-		color: #0b0e11;
-	}
-
-	.closing .btn-primary:hover {
-		opacity: 0.9;
-	}
-
-	@media (max-width: 960px) {
-		.stage-grid,
-		.build {
-			grid-template-columns: 1fr;
-		}
-
-	}
-
-	@media (max-width: 560px) {
-		.trace {
-			min-height: 0;
-		}
-
-		.ln {
-			grid-template-columns: 2.6rem 1fr;
-			font-size: 0.76rem;
-		}
-
-		.meter span:first-child {
-			display: none;
-		}
-
-		.bar-row {
-			grid-template-columns: 5.5rem 1fr;
-		}
-
-		.bar-day {
-			display: none;
-		}
-	}
-
-	/* ---------- Hero motion ---------- */
-	.glow {
-		position: absolute;
-		width: 46rem;
-		height: 46rem;
-		border-radius: 50%;
-		filter: blur(90px);
-		opacity: 0.22;
-		pointer-events: none;
-		z-index: 0;
-	}
-
-	.glow-a {
-		background: radial-gradient(circle, #f0b90b, transparent 65%);
-		top: -18rem;
-		left: -12rem;
-		animation: drift-a 18s ease-in-out infinite alternate;
-	}
-
-	.glow-b {
-		background: radial-gradient(circle, #0ecb81, transparent 65%);
-		bottom: -24rem;
-		right: -10rem;
-		opacity: 0.16;
-		animation: drift-b 22s ease-in-out infinite alternate;
-	}
-
-	@keyframes drift-a {
-		to {
-			transform: translate(14rem, 8rem) scale(1.15);
-		}
-	}
-
-	@keyframes drift-b {
-		to {
-			transform: translate(-16rem, -6rem) scale(0.9);
-		}
-	}
-
-	/* A thin light band that sweeps down the dot grid. */
-	.scan {
-		position: absolute;
-		inset: 0;
-		background: linear-gradient(to bottom, transparent 0, rgba(240, 185, 11, 0.07) 50%, transparent 100%) 0 -30% / 100% 30% no-repeat;
-		animation: scan 7s linear infinite;
-		pointer-events: none;
-		z-index: 0;
-	}
-
-	@keyframes scan {
-		to {
-			background-position: 0 130%;
-		}
-	}
-
-	.hero-title span {
-		display: block;
-		animation: rise 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) both;
-		animation-delay: calc(var(--k) * 0.12s + 0.1s);
-	}
-
-	@keyframes rise {
-		from {
-			opacity: 0;
-			transform: translateY(18px);
-			filter: blur(6px);
-		}
-	}
-
-	.shine {
-		font-style: normal;
-		background: linear-gradient(100deg, #f0b90b 0%, #fcd535 30%, #ffffff 45%, #fcd535 60%, #0ecb81 100%) 0 0 / 250% 100%;
-		-webkit-background-clip: text;
-		background-clip: text;
-		color: transparent;
-		animation: shine 6s ease-in-out infinite;
-	}
-
-	@keyframes shine {
-		0%,
-		100% {
-			background-position: 100% 0;
-		}
-		50% {
-			background-position: 0 0;
-		}
-	}
-
-	.pitch .lede,
-	.pitch .actions,
-	.pitch .fine,
-	.stats {
-		animation: rise 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) 0.5s both;
-	}
-
-	.console {
-		animation: float-in 1s cubic-bezier(0.2, 0.7, 0.2, 1) 0.3s both;
-	}
-
-	@keyframes float-in {
-		from {
-			opacity: 0;
-			transform: perspective(1200px) rotateY(-10deg) translateX(30px);
-		}
-	}
-
-	.stats {
-		display: flex;
-		gap: 2rem;
-		margin: 1.8rem 0 0;
-	}
-
-	.stats div {
-		display: flex;
-		flex-direction: column-reverse;
-	}
-
-	.stats dd {
-		margin: 0;
-		font-family: var(--font-display);
-		font-weight: 800;
-		font-size: 2rem;
-		line-height: 1.1;
-		color: var(--s-ink);
+	.hud-clock {
+		margin-left: 0.9rem;
+		color: #f0b90b;
 		font-variant-numeric: tabular-nums;
 	}
 
-	.stats dt {
-		font-size: 0.8rem;
-		color: var(--s-faint);
-	}
-
-	.eyebrow {
-		margin: 0 0 0.6rem;
-		font-family: var(--font-mono);
-		font-size: 0.78rem;
-		letter-spacing: 0.06em;
-		color: var(--mem);
-	}
-
-	/* ---------- Reveal on scroll ---------- */
-	:global(.js-motion) [data-reveal]:not(.in) {
-		opacity: 0;
-		transform: translateY(28px);
-	}
-
-	[data-reveal] {
-		transition:
-			opacity 0.8s cubic-bezier(0.2, 0.7, 0.2, 1),
-			transform 0.8s cubic-bezier(0.2, 0.7, 0.2, 1);
-	}
-
-	:global(.js-motion) [data-stagger]:not(.in) > li {
-		opacity: 0;
-		transform: translateX(24px);
-	}
-
-	[data-stagger] > li {
-		transition:
-			opacity 0.6s ease,
-			transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
-	}
-
-	[data-stagger] > li:nth-child(2) { transition-delay: 0.07s; }
-	[data-stagger] > li:nth-child(3) { transition-delay: 0.14s; }
-	[data-stagger] > li:nth-child(4) { transition-delay: 0.21s; }
-	[data-stagger] > li:nth-child(5) { transition-delay: 0.28s; }
-	[data-stagger] > li:nth-child(6) { transition-delay: 0.35s; }
-	[data-stagger] > li:nth-child(7) { transition-delay: 0.42s; }
-
-	:global(.js-motion) [data-bars]:not(.in) .bar {
-		transform: scaleX(0);
-	}
-
-	.bar {
-		transform-origin: 0 50%;
-		transition: transform 1.1s cubic-bezier(0.2, 0.7, 0.2, 1);
-	}
-
-	.bar-os {
-		transition-delay: 0.15s;
-	}
-
-	/* ---------- The build line ---------- */
-	.line {
-		padding-block: clamp(3rem, 7vw, 5rem);
-	}
-
-	.line-grid {
-		display: grid;
-		grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
-		gap: clamp(2rem, 5vw, 4.5rem);
-		align-items: start;
-	}
-
-	.stack-wrap {
-		position: sticky;
-		top: 6rem;
-	}
-
-	.stack {
-		background: #0b0e11;
-		border: 1px solid #2b3139;
-		border-radius: 12px;
-		color: #eaecef;
-		font-family: var(--font-mono);
-		box-shadow: 0 30px 70px -30px rgba(0, 0, 0, 0.55);
-		overflow: hidden;
-	}
-
-	.stack-bar {
+	.hud-foot {
 		display: flex;
-		align-items: center;
-		gap: 0.8rem;
-		padding: 0.7rem 1rem;
-		border-bottom: 1px solid #2b3139;
-		font-size: 0.76rem;
-		color: #848e9c;
-	}
-
-	.stack-bar .lights i {
-		background: #2b3139;
-	}
-
-	.stack-week {
-		margin-left: auto;
-		color: #f0b90b;
-		font-weight: 600;
-	}
-
-	.layers {
-		list-style: none;
-		margin: 0;
-		padding: 1.1rem 1.1rem 0.6rem;
-		display: flex;
-		flex-direction: column-reverse;
-		gap: 0.45rem;
-		background:
-			radial-gradient(circle at 1px 1px, #1e2329 1px, transparent 0) 0 0 / 16px 16px;
-	}
-
-	.layer {
-		display: flex;
-		align-items: center;
-		gap: 0.8rem;
-		padding: 0.62rem 0.85rem;
-		border: 1px dashed #2b3139;
-		border-radius: 7px;
-		font-size: 0.8rem;
-		color: #474d57;
-		transition:
-			background 0.45s ease,
-			border-color 0.45s ease,
-			color 0.45s ease,
-			box-shadow 0.45s ease,
-			transform 0.45s cubic-bezier(0.3, 1.4, 0.5, 1);
-	}
-
-	.layer-tag {
-		width: 2.6rem;
-		flex: none;
-		font-weight: 700;
-	}
-
-	.layer.on {
-		border-style: solid;
-		border-color: color-mix(in srgb, #f0b90b 45%, #2b3139);
-		background: linear-gradient(90deg, rgba(240, 185, 11, 0.14), rgba(240, 185, 11, 0.03));
-		color: #eaecef;
-	}
-
-	.layer.on .layer-tag {
-		color: #f0b90b;
-	}
-
-	.layer[data-layer='6'].on {
-		border-color: #0ecb81;
-		background: linear-gradient(90deg, rgba(14, 203, 129, 0.2), rgba(14, 203, 129, 0.04));
-	}
-
-	.layer[data-layer='6'].on .layer-tag {
-		color: #0ecb81;
-	}
-
-	.layer.top {
-		box-shadow: 0 0 0 1px rgba(240, 185, 11, 0.35), 0 0 26px -4px rgba(240, 185, 11, 0.45);
-		animation: drop 0.55s cubic-bezier(0.3, 1.4, 0.5, 1);
-	}
-
-	@keyframes drop {
-		from {
-			transform: translateY(-22px);
-			opacity: 0.2;
-		}
-	}
-
-	.stack-foot {
-		display: flex;
-		align-items: center;
+		flex-wrap: wrap;
+		align-items: baseline;
 		justify-content: space-between;
-		gap: 1rem;
-		padding: 0.75rem 1rem 0.9rem;
-		font-size: 0.74rem;
-		color: #848e9c;
-	}
-
-	.stack-foot b {
-		color: #0ecb81;
-		font-weight: 600;
-	}
-
-	.stack-gauge {
-		flex: 1;
-		max-width: 10rem;
-		height: 4px;
-		border-radius: 2px;
-		background: #2b3139;
-		overflow: hidden;
-	}
-
-	.stack-gauge span {
-		display: block;
-		height: 100%;
-		background: linear-gradient(90deg, #f0b90b, #0ecb81);
-		transform: scaleX(0);
-		transform-origin: 0 50%;
-		transition: transform 0.5s ease;
-	}
-
-	.stations {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		position: relative;
-		display: grid;
-		gap: 1.1rem;
-	}
-
-	.spine {
-		position: absolute;
-		left: 17px;
-		top: 18px;
-		bottom: 18px;
-		width: 2px;
-		background: var(--rule);
-	}
-
-	.spine span {
-		display: block;
-		height: 100%;
-		background: linear-gradient(to bottom, #f0b90b, #0ecb81);
-		transform-origin: 50% 0;
-		transform: scaleY(0);
-		box-shadow: 0 0 12px rgba(240, 185, 11, 0.6);
-	}
-
-	.station {
-		position: relative;
-		display: grid;
-		grid-template-columns: 36px minmax(0, 1fr);
-		gap: 1.1rem;
-		align-items: start;
-	}
-
-	.node {
-		position: relative;
-		z-index: 1;
-		display: grid;
-		place-items: center;
-		width: 36px;
-		height: 36px;
+		gap: 0.3rem 1rem;
 		margin-top: 0.9rem;
-		border-radius: 50%;
-		background: var(--paper);
-		border: 2px solid var(--rule);
-		font-family: var(--font-mono);
-		font-size: 0.8rem;
-		font-weight: 700;
-		color: var(--ink-faint);
-		transition:
-			border-color 0.4s ease,
-			background 0.4s ease,
-			color 0.4s ease,
-			box-shadow 0.4s ease;
+		padding-top: 0.75rem;
+		border-top: 1px solid rgba(255, 255, 255, 0.08);
+		transition: opacity 0.35s ease 0.08s;
 	}
 
-	.station.lit .node {
-		border-color: #f0b90b;
-		background: #f0b90b;
-		color: #0b0e11;
-		box-shadow: 0 0 0 5px rgba(240, 185, 11, 0.18);
-	}
-
-	.station.capstone.lit .node {
-		border-color: #0ecb81;
-		background: #0ecb81;
-		box-shadow: 0 0 0 5px rgba(14, 203, 129, 0.2);
-	}
-
-	.st-card {
-		display: grid;
-		gap: 0.35rem;
-		padding: 1.05rem 1.25rem;
-		border: 1px solid var(--rule);
-		border-radius: 10px;
-		background: var(--paper-raised);
-		color: var(--ink);
-		text-decoration: none;
-		transition:
-			border-color 0.3s ease,
-			transform 0.3s ease,
-			box-shadow 0.3s ease,
-			opacity 0.5s ease;
-	}
-
-	.line.animated .station:not(.lit) .st-card {
-		opacity: 0.45;
-	}
-
-	.st-card:hover {
-		border-color: var(--mem);
-		transform: translateX(4px);
-		box-shadow: 0 12px 30px -18px rgba(0, 0, 0, 0.35);
-	}
-
-	.st-card:focus-visible {
-		outline: 2px solid var(--mem);
-		outline-offset: 3px;
-	}
-
-	.st-meta {
-		display: flex;
-		align-items: baseline;
-		gap: 0.7rem;
-	}
-
-	.st-tag {
-		font-family: var(--font-display);
-		font-weight: 800;
-		font-size: 1.15rem;
-		color: var(--mem);
-	}
-
-	.capstone .st-tag {
-		color: var(--compute);
-	}
-
-	.st-range {
-		font-family: var(--font-mono);
-		font-size: 0.74rem;
-		color: var(--ink-faint);
-	}
-
-	.st-title {
-		font-family: var(--font-display);
-		font-weight: 600;
-		font-size: 1.08rem;
-	}
-
-	.st-body {
-		font-size: 0.9rem;
-		line-height: 1.75;
-		color: var(--ink-soft);
-	}
-
-	.st-out {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		margin-top: 0.25rem;
-		font-size: 0.86rem;
-		color: var(--compute);
-	}
-
-	.st-out i {
-		display: grid;
-		place-items: center;
-		width: 18px;
-		height: 18px;
-		border-radius: 4px;
-		background: var(--compute-wash);
-		font-style: normal;
-		font-weight: 700;
-	}
-
-	/* ---------- The repo window ---------- */
-	.repo {
-		background: #0d1117;
-		border: 1px solid #30363d;
-		border-radius: 12px;
-		color: #e6edf3;
-		font-size: 0.85rem;
-		box-shadow:
-			0 0 0 1px rgba(14, 203, 129, 0.06),
-			0 40px 90px -35px rgba(0, 0, 0, 0.6);
-		overflow: hidden;
-		min-width: 0;
-	}
-
-	.repo-top {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-		padding: 0.9rem 1.1rem 0.6rem;
-	}
-
-	.repo-icon {
-		width: 16px;
-		height: 16px;
-		fill: #8b949e;
-		flex: none;
-	}
-
-	.repo-path {
-		font-size: 1rem;
-		color: #4493f8;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.repo-path b {
-		font-weight: 600;
-	}
-
-	.pill {
-		font-size: 0.7rem;
-		padding: 0.05rem 0.5rem;
-		border: 1px solid #30363d;
-		border-radius: 999px;
-		color: #8b949e;
-	}
-
-	.repo-star {
-		margin-left: auto;
-		font-size: 0.75rem;
-		padding: 0.2rem 0.6rem;
-		border: 1px solid #30363d;
-		border-radius: 6px;
-		background: #21262d;
-		color: #e6edf3;
-		white-space: nowrap;
-	}
-
-	.repo-tabs {
-		display: flex;
-		gap: 1.2rem;
-		padding: 0 1.1rem;
-		border-bottom: 1px solid #30363d;
-		font-size: 0.8rem;
-		color: #8b949e;
-	}
-
-	.repo-tabs span {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35rem;
-		padding: 0.55rem 0;
-		border-bottom: 2px solid transparent;
-	}
-
-	.repo-tabs .on {
-		color: #e6edf3;
-		border-bottom-color: #f78166;
-	}
-
-	.repo-tabs em {
-		font-style: normal;
-		font-size: 0.68rem;
-		padding: 0 0.4rem;
-		border-radius: 999px;
-		background: #30363d;
-		color: #e6edf3;
-	}
-
-	.dot-ok {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: #d29922;
-		transition: background 0.3s ease;
-	}
-
-	.dot-ok.pass {
-		background: #3fb950;
-	}
-
-	.repo-commit {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-		margin: 0.9rem 1.1rem 0;
-		padding: 0.6rem 0.8rem;
-		background: #161b22;
-		border: 1px solid #30363d;
-		border-radius: 8px 8px 0 0;
-		font-family: var(--font-mono);
-		font-size: 0.76rem;
-	}
-
-	.avatar {
-		width: 18px;
-		height: 18px;
-		flex: none;
-		border-radius: 50%;
-		background: conic-gradient(#f0b90b, #0ecb81, #4493f8, #f0b90b);
-	}
-
-	.cm-msg {
-		flex: 1;
-		min-width: 0;
-		white-space: nowrap;
-		overflow: hidden;
-	}
-
-	.caret {
-		display: inline-block;
-		width: 7px;
-		height: 1em;
-		margin-left: 2px;
-		vertical-align: -2px;
-		background: #e6edf3;
-		animation: blink 1s steps(2, start) infinite;
-	}
-
-	.cm-count {
-		color: #8b949e;
-		white-space: nowrap;
-	}
-
-	.files {
-		list-style: none;
-		margin: 0 1.1rem;
-		padding: 0;
-		border: 1px solid #30363d;
-		border-top: 0;
-		border-radius: 0 0 8px 8px;
-		overflow: hidden;
-	}
-
-	.files li {
-		display: grid;
-		grid-template-columns: 16px 7.5rem minmax(0, 1fr) auto;
-		gap: 0.7rem;
-		align-items: center;
-		padding: 0.5rem 0.8rem;
-		border-top: 1px solid #21262d;
-		font-size: 0.78rem;
-	}
-
-	.files li:first-child {
-		border-top: 0;
-	}
-
-	.repo.animated .files li {
+	.hud.swap .hud-foot {
 		opacity: 0;
-		transform: translateX(-10px);
-		transition:
-			opacity 0.35s ease,
-			transform 0.35s ease,
-			background 1.2s ease;
 	}
 
-	.repo.animated .files li.on {
-		opacity: 1;
-		transform: none;
-		animation: flash 1.2s ease;
+	.hud-foot:has(.hud-stat:empty) {
+		display: none;
 	}
 
-	@keyframes flash {
-		from {
-			background: rgba(240, 185, 11, 0.12);
-		}
+	.hud-stat {
+		margin: 0;
+		font-family: var(--font-display);
+		font-weight: 700;
+		font-size: 1.05rem;
+		color: var(--layer, #eaecef);
 	}
 
-	.f-ico {
-		width: 14px;
-		height: 12px;
-		border-radius: 2px;
-	}
-
-	.f-ico.dir {
-		background: #54aeff;
-		clip-path: polygon(0 0, 40% 0, 50% 18%, 100% 18%, 100% 100%, 0 100%);
-	}
-
-	.f-ico.file {
-		width: 11px;
-		height: 14px;
-		border: 1.5px solid #8b949e;
-		background: none;
-	}
-
-	.f-name {
-		font-family: var(--font-mono);
-		color: #e6edf3;
-		white-space: nowrap;
-	}
-
-	.f-msg {
-		color: #8b949e;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.f-day {
+	.hud-term {
+		margin: 0;
 		font-family: var(--font-mono);
 		font-size: 0.7rem;
-		color: #6e7681;
-		white-space: nowrap;
+		letter-spacing: 0.04em;
+		color: #707a8a;
 	}
 
-	.checks {
-		margin: 0.9rem 1.1rem 1.1rem;
-		padding: 0.7rem 0.9rem;
-		border: 1px solid #30363d;
-		border-radius: 8px;
-		background: #161b22;
+	.hud-term span {
+		color: #b7bdc6;
 	}
 
-	.checks-title {
-		margin: 0 0 0.4rem;
-		font-size: 0.72rem;
-		color: #8b949e;
-	}
-
-	.check {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
+	.hud-title {
 		margin: 0;
-		padding: 0.25rem 0;
-		font-family: var(--font-mono);
-		font-size: 0.76rem;
-		color: #8b949e;
+		font-family: var(--font-display);
+		font-size: clamp(1.4rem, 2.2vw, 1.85rem);
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		line-height: 1.15;
+		color: #f5f6f7;
+		transition: opacity 0.35s ease, transform 0.35s ease, filter 0.35s ease;
 	}
 
-	.ci-state {
-		position: relative;
-		width: 14px;
-		height: 14px;
-		flex: none;
-		border-radius: 50%;
-		border: 1.5px solid #30363d;
+	.hud-body {
+		margin: 0.6rem 0 0;
+		font-family: var(--font-display);
+		font-size: 0.98rem;
+		line-height: 1.55;
+		color: #b7bdc6;
+		transition: opacity 0.35s ease 0.05s, transform 0.35s ease 0.05s, filter 0.35s ease 0.05s;
 	}
 
-	.check.run .ci-state {
-		border-color: #d29922;
-		border-top-color: transparent;
-		animation: spin 0.8s linear infinite;
-	}
-
-	.check.run {
-		color: #e6edf3;
-	}
-
-	.check.pass {
-		color: #e6edf3;
-	}
-
-	.check.pass .ci-state {
-		border-color: #3fb950;
-		background: #3fb950;
-	}
-
-	.check.pass .ci-state::after {
-		content: '';
+	/* ---------- Final choice ---------- */
+	.choose {
 		position: absolute;
-		left: 4px;
-		top: 1.5px;
-		width: 3px;
-		height: 6px;
-		border: solid #0d1117;
-		border-width: 0 1.6px 1.6px 0;
-		transform: rotate(45deg);
-	}
-
-	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
-	}
-
-	/* ---------- Contribution grid + pinned repos ---------- */
-	.pinned {
+		inset: 0;
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
-		gap: clamp(2rem, 5vw, 4rem);
-		align-items: start;
-		padding-top: clamp(2.4rem, 5vw, 3.4rem);
+		grid-template-columns: repeat(2, minmax(0, 23rem));
+		justify-content: center;
+		align-content: center;
+		gap: clamp(1rem, 6vw, 7rem);
+		padding: 6rem var(--gutter) 9rem;
+		opacity: 0;
+		visibility: hidden;
+		transition: opacity 0.6s ease, visibility 0.6s;
 	}
 
-	.contrib-head {
+	.choose.on {
+		opacity: 1;
+		visibility: visible;
+	}
+
+	.door {
+		--c: #f0b90b;
+		position: relative;
 		display: flex;
-		justify-content: space-between;
-		align-items: baseline;
-		gap: 1rem;
-		margin-bottom: 0.8rem;
+		flex-direction: column;
+		gap: 0.7rem;
+		padding: 1.6rem 1.6rem 1.5rem;
+		border-radius: 18px;
+		border: 1px solid color-mix(in srgb, var(--c) 35%, transparent);
+		background: linear-gradient(165deg, color-mix(in srgb, var(--c) 14%, rgba(10, 12, 16, 0.75)), rgba(6, 8, 11, 0.7));
+		-webkit-backdrop-filter: blur(10px);
+		backdrop-filter: blur(10px);
+		color: #eaecef;
+		text-decoration: none;
+		box-shadow: 0 0 0 0 color-mix(in srgb, var(--c) 40%, transparent), 0 40px 90px -40px color-mix(in srgb, var(--c) 70%, transparent);
+		transform: translateY(24px) scale(0.97);
+		transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.35s ease, border-color 0.35s ease;
 	}
 
-	.contrib-title,
-	.pins-title {
-		margin: 0;
+	.choose.on .door {
+		transform: none;
+	}
+
+	.choose.on .door-agent {
+		transition-delay: 0.08s;
+	}
+
+	.door-agent {
+		--c: #0ecb81;
+	}
+
+	.door:hover,
+	.door:focus-visible {
+		border-color: var(--c);
+		box-shadow: 0 0 0 1px var(--c), 0 40px 120px -30px color-mix(in srgb, var(--c) 90%, transparent);
+		outline: none;
+	}
+
+	.door-tag {
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.2em;
+		text-transform: uppercase;
+		color: var(--c);
+	}
+
+	.door-name {
+		font-family: var(--font-display);
+		font-size: clamp(2rem, 3.6vw, 2.9rem);
+		font-weight: 700;
+		letter-spacing: -0.03em;
+		line-height: 1;
+	}
+
+	.door-body {
+		font-family: var(--font-display);
+		font-size: 0.98rem;
+		line-height: 1.5;
+		color: #b7bdc6;
+	}
+
+	.door-go {
+		margin-top: 0.6rem;
 		font-family: var(--font-display);
 		font-weight: 600;
 		font-size: 0.95rem;
+		color: var(--c);
 	}
 
-	.pins-title {
-		margin-bottom: 0.8rem;
+	.door-go b {
+		display: inline-block;
+		transition: transform 0.3s ease;
 	}
 
-	.contrib-legend {
-		display: flex;
-		align-items: center;
-		gap: 3px;
-		margin: 0;
-		font-size: 0.72rem;
-		color: var(--ink-faint);
+	.door:hover .door-go b {
+		transform: translateX(5px);
 	}
 
-	.contrib-legend i,
-	.cells i {
-		display: block;
-		border-radius: 3px;
-	}
-
-	.contrib-legend i {
-		width: 11px;
-		height: 11px;
-	}
-
-	.cells {
-		display: grid;
-		grid-template-columns: repeat(21, minmax(0, 1fr));
-		gap: 4px;
-	}
-
-	.cells i {
-		aspect-ratio: 1;
-		border-radius: 2px;
-		background: var(--rule-soft);
-	}
-
-	.lv1,
-	.cells i.lv1 { background: #9be9a8; }
-	.lv2,
-	.cells i.lv2 { background: #40c463; }
-	.lv3,
-	.cells i.lv3 { background: #30a14e; }
-	.lv4,
-	.cells i.lv4 { background: #216e39; }
-
-	.cells i[class^='lv']:not(.lv0) {
-		transition:
-			transform 0.4s cubic-bezier(0.3, 1.4, 0.5, 1),
-			opacity 0.4s ease;
-		transition-delay: calc(var(--d) * 22ms);
-	}
-
-	.cells i.lv0 {
-		background: var(--rule-soft);
-	}
-
-	:global(.js-motion) .cells:not(.in) i:not(.lv0) {
-		transform: scale(0.2);
+	/* ---------- Progress rail ---------- */
+	.rail {
+		position: absolute;
+		left: 50%;
+		bottom: 2.2rem;
+		width: min(64rem, calc(100vw - 2 * var(--gutter)));
+		transform: translateX(-50%);
 		opacity: 0;
+		transition: opacity 0.5s ease;
 	}
 
-	.pins ol {
-		list-style: none;
+	.rail.on {
+		opacity: 1;
+	}
+
+	.rail-line {
+		position: absolute;
+		left: calc(100% / (2 * var(--steps)));
+		right: calc(100% / (2 * var(--steps)));
+		top: 6px;
+		height: 1px;
+		background: rgba(255, 255, 255, 0.12);
+	}
+
+	.rail-fill {
+		display: block;
+		height: 100%;
+		width: 0;
+		background: linear-gradient(90deg, #0ecb81, #f0b90b);
+		box-shadow: 0 0 12px rgba(240, 185, 11, 0.7);
+	}
+
+	.rail ol {
+		position: relative;
+		display: grid;
+		grid-template-columns: repeat(var(--steps), 1fr);
 		margin: 0;
 		padding: 0;
-		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 0.7rem;
+		list-style: none;
 	}
 
-	.pins a {
-		display: grid;
-		gap: 0.3rem;
-		height: 100%;
-		box-sizing: border-box;
-		padding: 0.85rem 1rem;
-		border: 1px solid var(--rule);
-		border-radius: 8px;
-		background: var(--paper-raised);
-		color: var(--ink);
-		text-decoration: none;
-		transition:
-			border-color 0.25s ease,
-			transform 0.25s ease;
-	}
-
-	.pins a:hover {
-		border-color: var(--mem);
-		transform: translateY(-2px);
-	}
-
-	.pins b {
-		font-family: var(--font-mono);
-		font-size: 0.86rem;
-		color: var(--mem);
-	}
-
-	.pins span {
-		font-size: 0.8rem;
-		line-height: 1.55;
-		color: var(--ink-soft);
-	}
-
-	.lang {
-		display: inline-flex;
+	.rail button {
+		--layer: #848e9c;
+		display: flex;
+		flex-direction: column;
 		align-items: center;
-		gap: 0.4rem;
-		font-style: normal;
-		font-size: 0.74rem;
-		color: var(--ink-faint);
+		gap: 0.6rem;
+		width: 100%;
+		padding: 0;
+		border: 0;
+		background: none;
+		cursor: pointer;
+		color: #5e6673;
+		font-family: var(--font-mono);
+		font-size: 0.62rem;
+		letter-spacing: 0.12em;
 	}
 
-	.lang::before {
-		content: '';
-		width: 10px;
-		height: 10px;
+	.dot {
+		width: 13px;
+		height: 13px;
 		border-radius: 50%;
-		background: #3572a5;
+		border: 1px solid rgba(255, 255, 255, 0.22);
+		background: #04060a;
+		transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
 	}
 
-	.lang.ts::before {
-		background: #3178c6;
+	.rail button.past .dot {
+		background: var(--layer);
+		border-color: var(--layer);
 	}
 
-	.lang.more::before {
-		background: #f0b90b;
+	.rail button.now {
+		color: #eaecef;
 	}
 
-	@media (max-width: 960px) {
-		.line-grid,
-		.pinned {
-			grid-template-columns: 1fr;
+	.rail button.now .dot {
+		background: var(--layer);
+		border-color: #fff;
+		transform: scale(1.35);
+		box-shadow: 0 0 0 5px color-mix(in srgb, var(--layer) 25%, transparent), 0 0 18px var(--layer);
+	}
+
+	.rail button:hover {
+		color: #b7bdc6;
+	}
+
+	.rail button:focus-visible {
+		outline: 2px solid #f0b90b;
+		outline-offset: 4px;
+		border-radius: 4px;
+	}
+
+	.l-user { --layer: #eaecef; }
+	.l-infra { --layer: #f0b90b; }
+	.l-agent { --layer: #0ecb81; }
+	.l-model { --layer: #5ab8ff; }
+	.l-you { --layer: #eaecef; }
+	.l-all { --layer: #c9a7ff; }
+
+	.skip {
+		position: absolute;
+		right: var(--gutter);
+		top: 1.1rem;
+		z-index: 2;
+		padding: 0.3rem 0.7rem;
+		border: 1px solid rgba(255, 255, 255, 0.14);
+		border-radius: 999px;
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+		color: #848e9c;
+		text-decoration: none;
+		background: rgba(8, 10, 14, 0.5);
+		-webkit-backdrop-filter: blur(6px);
+		backdrop-filter: blur(6px);
+		transition: color 0.2s ease, border-color 0.2s ease, opacity 0.4s ease;
+	}
+
+	.skip:hover,
+	.skip:focus-visible {
+		color: #f0b90b;
+		border-color: rgba(240, 185, 11, 0.6);
+		outline: none;
+	}
+
+	.skip.gone {
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.fineprint {
+		position: absolute;
+		right: var(--gutter);
+		top: 3.4rem;
+		margin: 0;
+		font-family: var(--font-mono);
+		font-size: 0.66rem;
+		letter-spacing: 0.08em;
+		color: #4b525d;
+	}
+
+	/* ---------- Static walk-through ---------- */
+	.static-walk {
+		display: none;
+		padding: 4rem 0 5rem;
+		background: #0b0e11;
+		color: #eaecef;
+	}
+
+	:global(.journey-static) .journey {
+		display: none;
+	}
+
+	:global(.journey-static) .static-walk {
+		display: block;
+	}
+
+	.sw-title {
+		margin: 0 0 2.5rem;
+		font-family: var(--font-display);
+		font-size: clamp(2rem, 4.5vw, 3.2rem);
+		letter-spacing: -0.03em;
+		line-height: 1.05;
+	}
+
+	.sw-list {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+		gap: 1rem;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.sw-list li {
+		padding: 1.2rem 1.3rem;
+		border: 1px solid #2b3139;
+		border-radius: 12px;
+		background: #12161c;
+	}
+
+	.sw-num {
+		font-family: var(--font-mono);
+		color: #707a8a;
+		font-size: 0.8rem;
+	}
+
+	.sw-layer {
+		margin-left: 0.6rem;
+		font-family: var(--font-mono);
+		font-size: 0.68rem;
+		letter-spacing: 0.14em;
+		color: var(--layer);
+	}
+
+	.sw-list h2 {
+		margin: 0.5rem 0 0.35rem;
+		font-family: var(--font-display);
+		font-size: 1.15rem;
+	}
+
+	.sw-list .sw-term {
+		margin-top: 0.6rem;
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+		color: #707a8a;
+	}
+
+	.sw-list p {
+		margin: 0;
+		font-family: var(--font-display);
+		font-size: 0.92rem;
+		line-height: 1.55;
+		color: #b7bdc6;
+	}
+
+	.sw-doors {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+		gap: 1rem;
+		margin-top: 2.5rem;
+	}
+
+	.sw-doors .door {
+		transform: none;
+	}
+
+	/* ---------- Small screens ---------- */
+	@media (max-width: 760px) {
+		.intro {
+			top: 2.6rem;
+			transform: none;
 		}
 
-		.stack-wrap {
+		.intro-sub {
+			margin-top: 1rem;
+		}
+
+		.intro-hint {
+			margin-top: 1.4rem;
+		}
+
+		.hud {
+			bottom: 6.2rem;
+			padding: 1rem 1.1rem 1.1rem;
+		}
+
+		.hud-body {
+			font-size: 0.88rem;
+			line-height: 1.5;
+		}
+
+		.hud-title {
+			font-size: 1.3rem;
+		}
+
+		.hud-term {
+			display: none;
+		}
+
+		.hud-foot {
+			margin-top: 0.6rem;
+			padding-top: 0.5rem;
+		}
+
+		.rail {
+			bottom: 1.4rem;
+		}
+
+		.rail .lbl {
+			display: none;
+		}
+
+		.rail button.now .lbl {
+			display: block;
+			position: absolute;
+			top: 1.5rem;
+			white-space: nowrap;
+		}
+
+		.rail li {
 			position: relative;
-			top: 0;
-		}
-	}
-
-	@media (max-width: 960px) {
-		/* On narrow screens the stack sits above the stations; keep it compact. */
-		.layers {
-			flex-direction: row-reverse;
-			flex-wrap: wrap-reverse;
-			justify-content: flex-end;
+			display: flex;
+			justify-content: center;
 		}
 
-		.layer {
-			padding: 0.4rem 0.6rem;
+		.choose {
+			grid-template-columns: minmax(0, 1fr);
+			align-content: center;
+			gap: 1rem;
+			padding-top: 5rem;
+			padding-bottom: 6rem;
 		}
 
-		.layer-tag {
-			width: auto;
+		.door {
+			padding: 1.2rem 1.3rem;
+			gap: 0.45rem;
 		}
 
-		.layer-name {
+		.door-body {
+			font-size: 0.9rem;
+		}
+
+		.fineprint {
 			display: none;
-		}
-	}
-
-	@media (max-width: 560px) {
-		.files li {
-			grid-template-columns: 16px 6.4rem minmax(0, 1fr);
-		}
-
-		.f-day {
-			display: none;
-		}
-
-		.stats {
-			gap: 1.4rem;
-		}
-
-		.stats dd {
-			font-size: 1.6rem;
-		}
-
-		.pins ol {
-			grid-template-columns: 1fr;
-		}
-	}
-
-	@media (prefers-reduced-motion: reduce) {
-		.glow,
-		.scan,
-		.shine,
-		.caret,
-		.hero-title span,
-		.pitch .lede,
-		.pitch .actions,
-		.pitch .fine,
-		.stats,
-		.console {
-			animation: none;
 		}
 	}
 </style>

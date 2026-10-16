@@ -6,8 +6,8 @@ import Footer from '../components/Footer.astro';
 import FormattedDate from '../components/FormattedDate.astro';
 import Comments from '../components/Comments.astro';
 import Header from '../components/Header.astro';
-import { COMMENTS_ENABLED, COURSE_SERIES, COURSE_TITLE, LANG_TAG, SITE_TITLE } from '../consts';
-import { WEEK_TITLES, isAdvanced, weekOf } from '../lib/course';
+import { COMMENTS_ENABLED, COURSE_SERIES, COURSE_TITLE, INFRA_SERIES, INFRA_TITLE, LANG_TAG, SITE_TITLE } from '../consts';
+import { MONTH_TITLES, WEEK_TITLES, isAdvanced, monthOf, weekOf } from '../lib/course';
 import { blogPostingSchema, breadcrumbSchema, ogImageFor, tagSlug } from '../lib/seo';
 
 type Entry = CollectionEntry<'blog'>;
@@ -24,20 +24,24 @@ type Props = {
 const { post, readingTime, wordCount, prev, next, course: allCourse = [], headings = [] } = Astro.props;
 const { title, description, pubDate, updatedDate, tags, series, day, lang } = post.data;
 const inCourse = series === COURSE_SERIES && day !== undefined;
-const bareTitle = inCourse ? title.replace(/^Day \d+ · /, '') : title;
+// The AI Infra study log is a second day-by-day track: same Day badge, strip and prev/next, grouped by month.
+const inInfra = series === INFRA_SERIES && day !== undefined;
+const inSeries = inCourse || inInfra;
+const bareTitle = inSeries ? title.replace(/^Day \d+ · /, '') : title;
 const week = inCourse ? weekOf(day!) : undefined;
 const adv = inCourse && isAdvanced(day!);
 // The strip shows one track at a time: Day 0–60 for the base course, Day 61+ for the senior track.
-const course = allCourse.filter((c) => isAdvanced(c.day) === adv);
+const course = inInfra ? allCourse : allCourse.filter((c) => isAdvanced(c.day) === adv);
 const firstDay = course[0]?.day ?? 0;
 const lastDay = course.at(-1)?.day ?? 60;
+const groupOf = inInfra ? monthOf : weekOf;
 
 const image = ogImageFor(post.id);
 const schema = [
 	blogPostingSchema(Astro.site, post, { image, wordCount }),
 	breadcrumbSchema(Astro.site, [
 		{ name: SITE_TITLE, path: '/' },
-		inCourse ? { name: COURSE_TITLE, path: '/course/' } : { name: '全部文章', path: '/blog/' },
+		inCourse ? { name: COURSE_TITLE, path: '/course/' } : inInfra ? { name: INFRA_TITLE, path: '/infra/' } : { name: '全部文章', path: '/blog/' },
 		{ name: title, path: `/blog/${post.id}/` },
 	]),
 ];
@@ -74,6 +78,12 @@ const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 									<span>/</span>
 									<span>{WEEK_TITLES[week!]}</span>
 								</>
+							) : inInfra ? (
+								<>
+									<a href="/infra">AI Infra</a>
+									<span>/</span>
+									<span>{MONTH_TITLES[monthOf(day!)]}</span>
+								</>
 							) : (
 								<a href="/blog">全部文章</a>
 							)
@@ -81,20 +91,20 @@ const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 					</nav>
 
 					<div class="title-row">
-						{inCourse && (
+						{inSeries && (
 							<p class="day-big" aria-label={`第 ${day} 天`}>
 								<span class="day-word">Day</span>
 								<span class="day-num">{String(day).padStart(2, '0')}</span>
 							</p>
 						)}
 						<div class="title-block">
-							<h1>{bareTitle}</h1>
+							<h1 class:list={[{ 'wrap-long': inInfra }]}>{bareTitle}</h1>
 							<p class="description">{description}</p>
 							<p class="meta">
 								{readingTime && <span>{lang === 'zh' ? `读完约 ${readingTime} 分钟` : `${readingTime} min read`}</span>}
-								{!inCourse && <FormattedDate date={pubDate} />}
+								{!inSeries && <FormattedDate date={pubDate} />}
 								{tags
-									.filter((t) => t !== COURSE_SERIES)
+									.filter((t) => t !== COURSE_SERIES && t !== INFRA_SERIES)
 									.map((t) => (
 										<a class="tag" href={`/tags/${tagSlug(t)}/`} rel="tag">
 											{t}
@@ -105,14 +115,18 @@ const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 					</div>
 
 					{
-						inCourse && course.length > 0 && (
+						inSeries && course.length > 0 && (
 							<div class="course-strip">
 								<p class="strip-label">
-									{adv ? `进阶篇 · 第 ${day! - firstDay + 1} 天,共 ${lastDay - firstDay + 1} 天` : `基础篇 · 第 ${day} 天,共 ${lastDay} 天`}
+									{inInfra
+										? `AI Infra · 第 ${day} 天,已更新到 Day ${lastDay},全程 365 天`
+										: adv
+											? `进阶篇 · 第 ${day! - firstDay + 1} 天,共 ${lastDay - firstDay + 1} 天`
+											: `基础篇 · 第 ${day} 天,共 ${lastDay} 天`}
 								</p>
 								<ol class="ticks">
 									{course.map((c) => (
-										<li class:list={['tick', { done: c.day < day!, here: c.day === day, 'wk-start': c.day > firstDay && weekOf(c.day) !== weekOf(c.day - 1) }]}>
+										<li class:list={['tick', { done: c.day < day!, here: c.day === day, 'wk-start': c.day > firstDay && groupOf(c.day) !== groupOf(c.day - 1) }]}>
 											<a href={`/blog/${c.id}/`} title={`Day ${c.day} · ${strip(c.title)}`} aria-label={`Day ${c.day}`} aria-current={c.day === day ? 'page' : undefined} />
 										</li>
 									))}
@@ -125,10 +139,10 @@ const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 
 			<div class="shell post-grid">
 				<article class="post-body">
-					<div class="prose">
+					<div class:list={['prose', { 'prose-infra': inInfra }]}>
 						<slot />
 						{
-							updatedDate && !inCourse && (
+							updatedDate && !inSeries && (
 								<p class="updated">
 									更新于 <FormattedDate date={updatedDate} />
 								</p>
@@ -137,7 +151,7 @@ const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 					</div>
 
 					{
-						inCourse && (prev || next) && (
+						inSeries && (prev || next) && (
 							<nav class="series-nav" aria-label="上一天和下一天">
 								{prev ? (
 									<a class="series-link" href={`/blog/${prev.id}/`}>
@@ -176,8 +190,8 @@ const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 										</li>
 									))}
 								</ol>
-								<a class="toc-back" href={inCourse ? '/course' : '/blog'}>
-									{inCourse ? '回到课程目录' : '全部文章'}
+								<a class="toc-back" href={inCourse ? '/course' : inInfra ? '/infra' : '/blog'}>
+									{inCourse ? '回到课程目录' : inInfra ? '回到 AI Infra 目录' : '全部文章'}
 								</a>
 							</div>
 						</aside>
@@ -312,6 +326,11 @@ const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 		color: transparent;
 		-webkit-text-stroke: 1.5px var(--s-blue);
 		letter-spacing: -0.03em;
+	}
+
+	/* AI Infra titles carry slash-joined format lists (fp32/tf32/…) that would not wrap on a phone. */
+	h1.wrap-long {
+		overflow-wrap: break-word;
 	}
 
 	h1 {

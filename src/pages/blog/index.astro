@@ -5,7 +5,7 @@ import Footer from '../../components/Footer.astro';
 import Header from '../../components/Header.astro';
 import PostRow from '../../components/PostRow.astro';
 import { SITE_TITLE } from '../../consts';
-import { COURSE_SERIES } from '../../consts';
+import { COURSE_SERIES, INFRA_SERIES } from '../../consts';
 import { byNewest } from '../../lib/posts';
 import { breadcrumbSchema } from '../../lib/seo';
 
@@ -65,7 +65,7 @@ const years = [...byYear.keys()].sort((a, b) => b - a);
 								pubDate={post.data.pubDate}
 								regime={post.data.regime}
 								tags={post.data.tags}
-								day={post.data.series === COURSE_SERIES ? post.data.day : undefined}
+								day={post.data.series === COURSE_SERIES || post.data.series === INFRA_SERIES ? post.data.day : undefined}
 							/>
 						))}
 					</section>

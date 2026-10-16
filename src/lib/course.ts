@@ -34,3 +34,22 @@ export const WEEK_TITLES: Record<number, string> = {
 	18: '作品一 Agent Loupe 调试器',
 	20: '作品二 BillSleuth 计费争议调查',
 };
+
+// Month structure of the aiinfra-365 track: Day 0 is the prologue, then 30 days per month.
+export const monthOf = (day: number) => (day === 0 ? 0 : Math.ceil(day / 30));
+
+export const MONTH_TITLES: Record<number, string> = {
+	0: '序章 · 为什么走这条路',
+	1: 'M1 · 地基:算力和内存花在哪',
+	2: 'M2 · 推理机制:KV cache、batching、量化',
+	3: 'M3 · 推理深度:读 vLLM',
+	4: 'M4 · 产出物 01:推理优化报告',
+	5: 'M5 · GPU 编程:Triton 入门',
+	6: 'M6 · 产出物 02:自己的 kernel',
+	7: 'M7 · 最小推理引擎:设计与分配器',
+	8: 'M8 · 产出物 03:开源引擎',
+	9: 'M9 · 训练侧:DDP 与 FSDP',
+	10: 'M10 · 产出物 04:故障恢复',
+	11: 'M11 · 收口:作品集',
+	12: 'M12 · 投递与面试',
+};

@@ -254,6 +254,19 @@ hr {
 	border-bottom-color: var(--rule);
 }
 
+/* The AI Infra posts carry wide spec tables and bare URLs; on a phone the tables scroll sideways
+   and long links wrap, instead of widening the page. */
+.prose-infra a {
+	overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+	.prose-infra table {
+		display: block;
+		overflow-x: auto;
+	}
+}
+
 /* ---------- Code ---------- */
 
 :not(pre) > code {

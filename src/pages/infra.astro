@@ -1,0 +1,901 @@
+---
+import { getCollection } from 'astro:content';
+import BaseHead from '../components/BaseHead.astro';
+import Footer from '../components/Footer.astro';
+import Header from '../components/Header.astro';
+import Roofline from '../components/Roofline.astro';
+import { INFRA_SERIES, INFRA_TITLE, SITE_TITLE } from '../consts';
+import { MONTH_TITLES, monthOf } from '../lib/course';
+import { breadcrumbSchema } from '../lib/seo';
+
+const TOTAL_DAYS = 365;
+
+const days = (
+	await getCollection('blog', ({ data }) => !data.draft && data.series === INFRA_SERIES && data.day !== undefined)
+).sort((a, b) => a.data.day! - b.data.day!);
+
+const byMonth = new Map<number, typeof days>();
+for (const d of days) {
+	const m = monthOf(d.data.day!);
+	byMonth.set(m, [...(byMonth.get(m) ?? []), d]);
+}
+
+// What each month is meant to deliver. Months without posts yet show as the road ahead.
+const MONTH_OUT: Record<number, string> = {
+	0: '想清楚为什么走这条路,12 个月各交什么',
+	1: '亲手算出、测出、画出一张自己的 roofline',
+	2: 'KV cache、continuous batching、量化各自省在哪',
+	3: '读懂 vLLM 的调度器和 PagedAttention',
+	4: '一份带实测数字的推理优化报告',
+	5: '用 Triton 写出第一个能跑的 kernel',
+	6: '一个比 PyTorch 原生更快的自写 kernel',
+	7: '最小推理引擎的设计和显存分配器',
+	8: '一个开源的小推理引擎',
+	9: '多卡训练:DDP 和 FSDP 的通信账',
+	10: '训练任务的故障恢复和 checkpoint',
+	11: '把四个产出物整理成作品集',
+	12: '简历、作品讲解和系统设计面试',
+};
+
+const months = Object.keys(MONTH_TITLES)
+	.map(Number)
+	.map((m) => {
+		const posts = byMonth.get(m) ?? [];
+		const size = m === 0 ? 1 : m === 12 ? TOTAL_DAYS - 330 : 30;
+		const status = posts.length >= size ? 'done' : posts.length > 0 ? 'live' : 'next';
+		const [tag, ...rest] = MONTH_TITLES[m].split(' · ');
+		return { m, tag: m === 0 ? '00' : tag, name: m === 0 ? '序章' : `第 ${m} 个月`, title: rest.join(' · ') || tag, out: MONTH_OUT[m], posts, size, status };
+	});
+const written = months.filter((x) => x.posts.length > 0);
+const ahead = months.filter((x) => x.posts.length === 0);
+const monthsDone = months.filter((x) => x.m > 0 && x.status === 'done').length;
+const latest = days.at(-1);
+const pct = Math.round(((latest ? latest.data.day! + 1 : 0) / (TOTAL_DAYS + 1)) * 1000) / 10;
+const strip = (t: string) => t.replace(/^Day \d+ · /, '');
+
+const description =
+	'从 transformer 零基础到能写推理引擎的 365 天 AI Infra 自学课程:roofline、KV cache、profiler、CUDA、vLLM、Triton。每天一篇中文学习日志,记录算出的每个数字和犯过的每个错。';
+const schema = [
+	{
+		'@type': 'CollectionPage',
+		'@id': new URL('/infra/#series', Astro.site).toString(),
+		name: INFRA_TITLE,
+		url: new URL('/infra/', Astro.site).toString(),
+		description,
+		inLanguage: 'zh-CN',
+		isPartOf: { '@id': new URL('/#website', Astro.site).toString() },
+		mainEntity: {
+			'@type': 'ItemList',
+			numberOfItems: days.length,
+			itemListOrder: 'https://schema.org/ItemListOrderAscending',
+			itemListElement: days.map((d) => ({
+				'@type': 'ListItem',
+				position: d.data.day! + 1,
+				name: d.data.title,
+				url: new URL(`/blog/${d.id}/`, Astro.site).toString(),
+			})),
+		},
+	},
+	breadcrumbSchema(Astro.site, [
+		{ name: SITE_TITLE, path: '/' },
+		{ name: INFRA_TITLE, path: '/infra/' },
+	]),
+];
+---
+
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<BaseHead title={`${INFRA_TITLE} — ${SITE_TITLE}`} description={description} lang="zh" schema={schema} />
+	</head>
+	<body>
+		<Header />
+		<main>
+			<section class="stage">
+				<div class="glow glow-a" aria-hidden="true"></div>
+				<div class="glow glow-b" aria-hidden="true"></div>
+				<div class="shell stage-grid">
+					<div class="pitch">
+						<p class="kicker">AI INFRA · 365-DAY STUDY LOG</p>
+						<h1 class="hero-title">
+							<span style="--k:0">365 天,</span><span style="--k:1">从 Transformer</span><span style="--k:2">到<em class="shine">推理引擎</em></span>
+						</h1>
+						<p class="lede">
+							多数推理不是算力不够,是在等显存。这条线从 transformer 零基础开始,先把算力和带宽的账算清楚,再读 vLLM、写 Triton kernel、做一个自己的小推理引擎。每天一篇中文学习日志,记下算出的每个数字和犯过的每个错。
+						</p>
+						<div class="actions">
+							{days[0] && <a class="btn btn-primary" href={`/blog/${days[0].id}/`}>从 Day 0 开始</a>}
+							<a class="btn btn-ghost" href="#months">看 {days.length} 篇目录</a>
+						</div>
+						<dl class="stats">
+							<div><dt>篇日志</dt><dd>{days.length}</dd></div>
+							<div><dt>已写到</dt><dd>Day {latest?.data.day ?? 0}</dd></div>
+							<div><dt>个月完成 / 12</dt><dd>{monthsDone}</dd></div>
+						</dl>
+					</div>
+
+					<figure class="roof-panel">
+						<div class="panel-bar">
+							<span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+							<span class="panel-title">roofline · A100-80GB · BF16</span>
+							<span class="panel-tag">ridge 161 FLOP/B</span>
+						</div>
+						<div class="panel-plot">
+							<Roofline />
+						</div>
+						<figcaption>单条序列 decode 每字节只做约 1 次运算,离屋脊差两个数量级。M1 整个月就在算这张图、测这张图。</figcaption>
+					</figure>
+				</div>
+			</section>
+
+			<section class="shell road" aria-label="12 个月路线">
+				<div class="road-head">
+					<p class="eyebrow">THE ROAD</p>
+					<h2>12 个月,四个产出物</h2>
+					<p class="road-pct">全程进度 {pct}%</p>
+				</div>
+				<ol class="road-track">
+					{
+						months.map((x) => (
+							<li class:list={['stop', x.status]}>
+								<a href={x.posts.length ? `#m${x.m}` : '#ahead'}>
+									<span class="stop-tag">{x.tag}</span>
+									<span class="stop-bar" aria-hidden="true">
+										<i style={`--p:${Math.min(1, x.posts.length / x.size)}`}></i>
+									</span>
+									<span class="stop-title">{x.title}</span>
+								</a>
+							</li>
+						))
+					}
+				</ol>
+			</section>
+
+			<div class="shell months" id="months">
+				{
+					written.map((x) => (
+						<section class="month" id={`m${x.m}`}>
+							<header class="month-head">
+								<p class="month-tag" aria-hidden="true">{x.tag}</p>
+								<h2>
+									<span class="month-name">
+										{x.name} · {x.status === 'done' ? '已完成' : `已更新 ${x.posts.length} 篇`}
+									</span>
+									{x.title}
+								</h2>
+								<p class="month-out">做出来:{x.out}</p>
+							</header>
+							<ol class="days">
+								{x.posts.map((d) => (
+									<li class="day">
+										<a class="day-link" href={`/blog/${d.id}/`}>
+											<span class="day-num">Day {String(d.data.day).padStart(2, '0')}</span>
+											<span class="day-title">{strip(d.data.title)}</span>
+											<span class="day-desc">{d.data.description}</span>
+										</a>
+									</li>
+								))}
+							</ol>
+						</section>
+					))
+				}
+
+				{
+					ahead.length > 0 && (
+						<section class="ahead" id="ahead">
+							<header>
+								<p class="eyebrow">COMING NEXT</p>
+								<h2>即将更新</h2>
+								<p>后面 {ahead.length} 个月还没写。下面是计划,写到哪一天就在这里亮到哪一天。</p>
+							</header>
+							<ol class="ahead-list">
+								{ahead.map((x) => (
+									<li>
+										<span class="ahead-tag">{x.tag}</span>
+										<span class="ahead-title">{x.title}</span>
+										<span class="ahead-out">{x.out}</span>
+									</li>
+								))}
+							</ol>
+						</section>
+					)
+				}
+
+				<a class="cross" href="/agent">
+					<div>
+						<p class="eyebrow">ANOTHER TRACK · AI AGENT</p>
+						<h2>想先做应用层?</h2>
+						<p>60 天 AI Agent 工程师速成课:大模型 API、工具调用、RAG、MCP、评测、上线,最后做一个能放进简历的完整项目。</p>
+					</div>
+					<span class="cross-cta">去 AI Agent →</span>
+				</a>
+			</div>
+		</main>
+		<Footer />
+	</body>
+</html>
+
+<style>
+	/* ---------- Stage: always dark, same palette as the rest of the site ---------- */
+	.stage {
+		--s-bg: #0b0e11;
+		--s-raised: #181a20;
+		--s-rule: #2b3139;
+		--s-ink: #eaecef;
+		--s-soft: #b7bdc6;
+		--s-faint: #848e9c;
+		--s-amber: #f0b90b;
+		--s-green: #0ecb81;
+		position: relative;
+		background:
+			radial-gradient(circle at 1px 1px, var(--s-rule) 1px, transparent 0) 0 0 / 22px 22px,
+			var(--s-bg);
+		color: var(--s-ink);
+		border-bottom: 1px solid var(--s-rule);
+		overflow: hidden;
+	}
+
+	.stage-grid {
+		position: relative;
+		z-index: 1;
+		display: grid;
+		grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+		gap: clamp(2rem, 5vw, 4rem);
+		align-items: center;
+		padding-block: clamp(3rem, 7vw, 5.5rem);
+	}
+
+	.kicker {
+		margin: 0 0 1rem;
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+		letter-spacing: 0.12em;
+		color: var(--s-amber);
+	}
+
+	.hero-title {
+		color: var(--s-ink);
+		font-size: clamp(2.4rem, 5.4vw, 3.9rem);
+		line-height: 1.08;
+		letter-spacing: -0.01em;
+		margin: 0 0 1.4rem;
+	}
+
+	.hero-title span {
+		display: block;
+		animation: rise 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+		animation-delay: calc(var(--k) * 0.12s + 0.1s);
+	}
+
+	.shine {
+		font-style: normal;
+		background: linear-gradient(100deg, #f0b90b 0%, #fcd535 30%, #ffffff 45%, #fcd535 60%, #0ecb81 100%) 0 0 / 250% 100%;
+		-webkit-background-clip: text;
+		background-clip: text;
+		color: transparent;
+		animation: shine 6s ease-in-out infinite;
+	}
+
+	.lede {
+		color: var(--s-soft);
+		font-size: 1.06rem;
+		line-height: 1.9;
+		margin: 0 0 1.8rem;
+		max-width: 32rem;
+	}
+
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+	}
+
+	.btn {
+		display: inline-block;
+		padding: 0.7rem 1.25rem;
+		border-radius: 6px;
+		font-family: var(--font-display);
+		font-size: 0.98rem;
+		font-weight: 600;
+		text-decoration: none;
+		border: 1px solid transparent;
+	}
+
+	.btn:focus-visible {
+		outline: 2px solid var(--s-amber);
+		outline-offset: 3px;
+	}
+
+	.btn-primary {
+		background: var(--s-amber);
+		color: #0b0e11;
+	}
+
+	.btn-primary:hover {
+		background: #fcd535;
+	}
+
+	.btn-ghost {
+		color: var(--s-ink);
+		border-color: var(--s-rule);
+	}
+
+	.btn-ghost:hover {
+		border-color: var(--s-soft);
+	}
+
+	.stats {
+		display: flex;
+		gap: 2rem;
+		margin: 1.8rem 0 0;
+	}
+
+	.stats div {
+		display: flex;
+		flex-direction: column-reverse;
+	}
+
+	.stats dd {
+		margin: 0;
+		font-family: var(--font-display);
+		font-weight: 800;
+		font-size: 2rem;
+		line-height: 1.1;
+		color: var(--s-ink);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.stats dt {
+		font-size: 0.8rem;
+		color: var(--s-faint);
+	}
+
+	.pitch .lede,
+	.pitch .actions,
+	.stats {
+		animation: rise 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) 0.5s both;
+	}
+
+	/* The roofline panel. Roofline.astro reads the site tokens, so pin them to the dark values here. */
+	.roof-panel {
+		--paper: #181a20;
+		--paper-raised: #181a20;
+		--ink: #eaecef;
+		--ink-soft: #b7bdc6;
+		--ink-faint: #848e9c;
+		--rule: #2b3139;
+		--rule-soft: #1e2329;
+		--mem: #f0b90b;
+		--mem-wash: #2b2410;
+		--compute: #0ecb81;
+		--compute-wash: #0f2a20;
+		margin: 0;
+		min-width: 0;
+		background: var(--s-raised);
+		border: 1px solid var(--s-rule);
+		border-radius: 10px;
+		box-shadow:
+			0 0 0 1px rgba(240, 185, 11, 0.06),
+			0 30px 80px -20px rgba(0, 0, 0, 0.6);
+		animation: float-in 1s cubic-bezier(0.2, 0.7, 0.2, 1) 0.3s both;
+	}
+
+	.panel-bar {
+		display: flex;
+		align-items: center;
+		gap: 0.8rem;
+		padding: 0.7rem 1rem;
+		border-bottom: 1px solid var(--s-rule);
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+		color: var(--s-faint);
+	}
+
+	.lights {
+		display: inline-flex;
+		gap: 6px;
+	}
+
+	.lights i {
+		width: 9px;
+		height: 9px;
+		border-radius: 50%;
+		background: var(--s-rule);
+	}
+
+	.panel-title {
+		flex: 1;
+		min-width: 0;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.panel-tag {
+		color: var(--s-amber);
+		white-space: nowrap;
+	}
+
+	.panel-plot {
+		padding: 0.6rem 0.8rem 0;
+	}
+
+	.roof-panel figcaption {
+		margin: 0;
+		padding: 0.8rem 1rem 1rem;
+		border-top: 1px solid var(--s-rule);
+		font-size: 0.82rem;
+		line-height: 1.7;
+		color: var(--s-faint);
+	}
+
+	.glow {
+		position: absolute;
+		width: 46rem;
+		height: 46rem;
+		border-radius: 50%;
+		filter: blur(90px);
+		opacity: 0.2;
+		pointer-events: none;
+		z-index: 0;
+	}
+
+	.glow-a {
+		background: radial-gradient(circle, #f0b90b, transparent 65%);
+		top: -18rem;
+		left: -12rem;
+		animation: drift-a 18s ease-in-out infinite alternate;
+	}
+
+	.glow-b {
+		background: radial-gradient(circle, #0ecb81, transparent 65%);
+		bottom: -24rem;
+		right: -10rem;
+		opacity: 0.14;
+		animation: drift-b 22s ease-in-out infinite alternate;
+	}
+
+	@keyframes drift-a {
+		to {
+			transform: translate(14rem, 8rem) scale(1.15);
+		}
+	}
+
+	@keyframes drift-b {
+		to {
+			transform: translate(-16rem, -6rem) scale(0.9);
+		}
+	}
+
+	@keyframes rise {
+		from {
+			opacity: 0;
+			transform: translateY(18px);
+			filter: blur(6px);
+		}
+	}
+
+	@keyframes shine {
+		0%,
+		100% {
+			background-position: 100% 0;
+		}
+		50% {
+			background-position: 0 0;
+		}
+	}
+
+	@keyframes float-in {
+		from {
+			opacity: 0;
+			transform: perspective(1200px) rotateY(-10deg) translateX(30px);
+		}
+	}
+
+	/* ---------- 12-month road ---------- */
+	.eyebrow {
+		margin: 0 0 0.6rem;
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+		letter-spacing: 0.08em;
+		color: var(--mem);
+	}
+
+	.road {
+		padding-block: 3rem 1rem;
+	}
+
+	.road-head {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 0.4rem 1.2rem;
+		margin-bottom: 1.4rem;
+	}
+
+	.road-head .eyebrow {
+		flex-basis: 100%;
+	}
+
+	.road-head h2 {
+		margin: 0;
+		font-size: clamp(1.6rem, 3vw, 2.1rem);
+		letter-spacing: 0;
+	}
+
+	.road-pct {
+		margin: 0;
+		font-family: var(--font-mono);
+		font-size: 0.86rem;
+		color: var(--ink-faint);
+	}
+
+	.road-track {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: grid;
+		grid-template-columns: repeat(13, minmax(0, 1fr));
+		gap: 0.5rem;
+	}
+
+	.stop a {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+		height: 100%;
+		padding: 0.75rem 0.7rem;
+		border: 1px solid var(--rule);
+		border-radius: 10px;
+		background: var(--paper-raised);
+		text-decoration: none;
+		color: var(--ink);
+		transition: border-color 0.15s ease;
+	}
+
+	.stop a:hover {
+		border-color: var(--mem);
+	}
+
+	.stop.next a {
+		background: transparent;
+		border-style: dashed;
+	}
+
+	.stop-tag {
+		font-family: var(--font-display);
+		font-weight: 800;
+		font-size: 1.05rem;
+		color: var(--mem);
+	}
+
+	.stop.done .stop-tag {
+		color: var(--compute);
+	}
+
+	.stop.next .stop-tag {
+		color: var(--ink-faint);
+	}
+
+	.stop-bar {
+		height: 4px;
+		border-radius: 2px;
+		background: var(--rule);
+		overflow: hidden;
+	}
+
+	.stop-bar i {
+		display: block;
+		height: 100%;
+		width: calc(var(--p) * 100%);
+		background: var(--mem);
+	}
+
+	.stop.done .stop-bar i {
+		background: var(--compute);
+	}
+
+	.stop-title {
+		font-size: 0.76rem;
+		line-height: 1.5;
+		color: var(--ink-soft);
+	}
+
+	.stop.next .stop-title {
+		color: var(--ink-faint);
+	}
+
+	/* ---------- Months: same card language as /course ---------- */
+	.months {
+		padding-block: 1rem 4rem;
+	}
+
+	.month {
+		display: grid;
+		grid-template-columns: 19rem minmax(0, 1fr);
+		gap: clamp(1.5rem, 4vw, 3.5rem);
+		padding-block: 2.6rem;
+		border-bottom: 1px solid var(--rule);
+		scroll-margin-top: 4rem;
+	}
+
+	.month-head {
+		position: sticky;
+		top: 5rem;
+		align-self: start;
+	}
+
+	.month-tag {
+		margin: 0;
+		font-family: var(--font-display);
+		font-weight: 800;
+		font-size: clamp(3.6rem, 7vw, 5rem);
+		line-height: 0.95;
+		color: transparent;
+		-webkit-text-stroke: 1.5px var(--mem);
+		letter-spacing: -0.03em;
+	}
+
+	.month-head h2 {
+		font-size: 1.45rem;
+		letter-spacing: 0;
+		line-height: 1.35;
+		margin: 0.7rem 0 0.5rem;
+	}
+
+	.month-name {
+		display: block;
+		font-family: var(--font-body);
+		font-weight: 400;
+		font-size: 0.86rem;
+		color: var(--ink-faint);
+		margin-bottom: 0.25rem;
+	}
+
+	.month-out {
+		margin: 0;
+		font-size: 0.92rem;
+		line-height: 1.7;
+		color: var(--compute);
+	}
+
+	.days {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: grid;
+		gap: 0.6rem;
+	}
+
+	.day {
+		background: var(--paper-raised);
+		border: 1px solid var(--rule);
+		border-radius: 10px;
+		transition: border-color 0.15s ease;
+	}
+
+	.day:hover {
+		border-color: var(--mem);
+	}
+
+	.day-link {
+		display: grid;
+		grid-template-columns: 5rem minmax(0, 1fr);
+		gap: 0.2rem 1rem;
+		padding: 1rem 1.2rem;
+		text-decoration: none;
+		color: var(--ink);
+	}
+
+	.day-num {
+		grid-row: span 2;
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		color: var(--mem);
+		padding-top: 0.2rem;
+	}
+
+	.day-title {
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: 1.08rem;
+		line-height: 1.45;
+	}
+
+	.day-link:hover .day-title {
+		color: var(--mem);
+	}
+
+	.day-desc {
+		font-size: 0.92rem;
+		line-height: 1.75;
+		color: var(--ink-soft);
+	}
+
+	.ahead {
+		padding-block: 3rem 1rem;
+		scroll-margin-top: 4rem;
+	}
+
+	.ahead h2 {
+		font-size: clamp(1.6rem, 3vw, 2.1rem);
+		letter-spacing: 0;
+		margin: 0 0 0.5rem;
+	}
+
+	.ahead header p:last-child {
+		margin: 0 0 1.4rem;
+		color: var(--ink-soft);
+	}
+
+	.ahead-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+		gap: 0.6rem;
+	}
+
+	.ahead-list li {
+		display: grid;
+		grid-template-columns: 3rem minmax(0, 1fr);
+		gap: 0.15rem 0.8rem;
+		padding: 0.9rem 1rem;
+		border: 1px dashed var(--rule);
+		border-radius: 10px;
+	}
+
+	.ahead-tag {
+		grid-row: span 2;
+		font-family: var(--font-display);
+		font-weight: 800;
+		color: var(--ink-faint);
+	}
+
+	.ahead-title {
+		font-family: var(--font-display);
+		font-weight: 600;
+		font-size: 0.98rem;
+	}
+
+	.ahead-out {
+		font-size: 0.86rem;
+		line-height: 1.6;
+		color: var(--ink-faint);
+	}
+
+	/* Cross-link to the other track: a small dark stage of its own. */
+	.cross {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1.5rem;
+		margin-top: 3.5rem;
+		padding: 2.2rem 2.4rem;
+		border-radius: 14px;
+		background:
+			radial-gradient(circle at 1px 1px, #2b3139 1px, transparent 0) 0 0 / 22px 22px,
+			#0b0e11;
+		color: #eaecef;
+		text-decoration: none;
+		border: 1px solid #2b3139;
+		transition: border-color 0.2s ease;
+	}
+
+	.cross:hover {
+		border-color: #f0b90b;
+	}
+
+	.cross .eyebrow {
+		color: #0ecb81;
+	}
+
+	.cross h2 {
+		color: #eaecef;
+		font-size: clamp(1.5rem, 3vw, 2rem);
+		letter-spacing: 0;
+		margin: 0 0 0.5rem;
+	}
+
+	.cross p:last-child {
+		margin: 0;
+		color: #b7bdc6;
+		line-height: 1.8;
+		max-width: 42rem;
+	}
+
+	.cross-cta {
+		flex: none;
+		padding: 0.7rem 1.2rem;
+		border-radius: 6px;
+		background: #f0b90b;
+		color: #0b0e11;
+		font-family: var(--font-display);
+		font-weight: 600;
+	}
+
+	@media (max-width: 1100px) {
+		.road-track {
+			grid-template-columns: repeat(7, minmax(0, 1fr));
+		}
+	}
+
+	@media (max-width: 900px) {
+		.stage-grid {
+			grid-template-columns: 1fr;
+		}
+
+		.month {
+			grid-template-columns: 1fr;
+			gap: 1.2rem;
+		}
+
+		.month-head {
+			position: static;
+		}
+
+		.month-tag {
+			font-size: 3rem;
+		}
+
+		.cross {
+			flex-direction: column;
+			align-items: flex-start;
+		}
+	}
+
+	@media (max-width: 560px) {
+		/* Thirteen stops would stack five rows deep; let the road scroll sideways instead. */
+		.road-track {
+			grid-template-columns: none;
+			grid-auto-flow: column;
+			grid-auto-columns: 7.2rem;
+			overflow-x: auto;
+			padding-bottom: 0.5rem;
+			scroll-snap-type: x proximity;
+		}
+
+		.stop {
+			scroll-snap-align: start;
+		}
+
+		.stats {
+			gap: 1.3rem;
+		}
+
+		.stats dd {
+			font-size: 1.6rem;
+		}
+
+		.day-link {
+			grid-template-columns: 1fr;
+		}
+
+		.day-num {
+			grid-row: auto;
+		}
+
+		.cross {
+			padding: 1.6rem 1.4rem;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.glow,
+		.shine,
+		.hero-title span,
+		.pitch .lede,
+		.pitch .actions,
+		.stats,
+		.roof-panel {
+			animation: none;
+		}
+
+		.day,
+		.stop a,
+		.cross {
+			transition: none;
+		}
+	}
+</style>
