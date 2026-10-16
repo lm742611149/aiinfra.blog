@@ -33,6 +33,43 @@ const isAbout = path === '/about' || path === '/about/';
 	</div>
 </header>
 
+<script>
+	// Tuck the bar away once the reader stops scrolling mid-page; bring it back on the next scroll.
+	const header = document.querySelector<HTMLElement>('.site-header');
+	if (header) {
+		const IDLE_MS = 1400;
+		const TOP_ZONE = 96;
+		let timer: number | undefined;
+
+		const show = () => header.classList.remove('is-tucked');
+		const tuck = () => {
+			if (window.scrollY < TOP_ZONE || header.matches(':hover, :focus-within')) return;
+			header.classList.add('is-tucked');
+		};
+		const restartTimer = () => {
+			window.clearTimeout(timer);
+			timer = window.setTimeout(tuck, IDLE_MS);
+		};
+		const wake = () => {
+			show();
+			restartTimer();
+		};
+
+		window.addEventListener('scroll', wake, { passive: true });
+		// A pointer heading for the top edge, or keyboard focus inside the bar, means the reader wants it.
+		window.addEventListener(
+			'pointermove',
+			(e) => {
+				if (e.pointerType === 'mouse' && e.clientY < 72) wake();
+			},
+			{ passive: true },
+		);
+		header.addEventListener('focusin', show);
+		header.addEventListener('mouseleave', restartTimer);
+		restartTimer();
+	}
+</script>
+
 <style>
 	/* Always dark, so it runs straight into the dark stage on the home and lesson pages. */
 	.site-header {
@@ -43,6 +80,26 @@ const isAbout = path === '/about' || path === '/about/';
 		backdrop-filter: saturate(140%) blur(10px);
 		-webkit-backdrop-filter: saturate(140%) blur(10px);
 		border-bottom: 1px solid #2b3139;
+		transition:
+			transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+			opacity 0.35s ease;
+	}
+
+	.site-header.is-tucked {
+		transform: translateY(-100%);
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.site-header {
+			transition: opacity 0.2s linear;
+		}
+
+		.site-header.is-tucked {
+			transform: none;
+			visibility: hidden;
+		}
 	}
 
 	.bar {
