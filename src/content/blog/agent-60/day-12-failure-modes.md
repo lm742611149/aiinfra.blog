@@ -107,6 +107,8 @@ Python 里最省事的是 `tenacity` 库,一个装饰器搞定。有个细节要
 
 把上面所有防线加到 Day 9 的循环上,得到 `RobustAgent`。工具注册表直接复用 Day 9 的 `ToolRegistry`。
 
+先装重试库:在 `agent-60-lab` 根目录执行 `uv add tenacity`(pytest 在 Day 4 已经装过)。和 Day 9 一样,所有命令都在**仓库根目录**跑,所以导入写成 `from w2.agent_loop import ...`,不要写 `from agent_loop import ...`,否则会报 `ModuleNotFoundError`。
+
 ```python
 # agent-60-lab/w2/robust_agent.py
 import hashlib
@@ -122,7 +124,7 @@ import openai
 from openai import OpenAI
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
-from agent_loop import ToolRegistry
+from w2.agent_loop import ToolRegistry
 
 RETRYABLE = (openai.APIConnectionError, openai.APITimeoutError, openai.RateLimitError, openai.InternalServerError)
 
@@ -155,7 +157,7 @@ class RobustAgent:
         self.model = os.environ.get("LLM_MODEL", "fake")
         self.registry = registry
         self.limits = limits or Limits()
-        self.messages: list[dict] = [{"role": "system", "content": system}]
+        self.messages: list[Any] = [{"role": "system", "content": system}]  # 写 list[dict] 传给 SDK 会报类型红线
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
         self.seen: dict[str, int] = {}
         self.pool = ThreadPoolExecutor(max_workers=4)
@@ -217,6 +219,8 @@ class RobustAgent:
 
             looping = False
             for tc in msg.tool_calls:
+                if tc.type != "function":  # 和 Day 8 一样先收窄类型,下面才能用 tc.function
+                    continue
                 if self._is_loop(tc.function.name, tc.function.arguments):
                     looping = True
                     out = json.dumps({"error": "这个调用和之前完全一样,结果不会变。请换一种做法,或者直接根据已有信息回答。"}, ensure_ascii=False)
@@ -258,11 +262,11 @@ import json
 import time
 from types import SimpleNamespace
 
-import httpx
+import httpx2  # openai 3.x 内部用的是 httpx2,构造错误响应要用同一个包,否则类型检查报红
 import openai
 
-from agent_loop import ToolRegistry
-from robust_agent import Limits, RobustAgent
+from w2.agent_loop import ToolRegistry
+from w2.robust_agent import Limits, RobustAgent
 
 
 def tool_call(name, args, i=0):
@@ -333,8 +337,8 @@ def test_big_result_truncated():
 
 
 def test_rate_limit_is_retried():
-    req = httpx.Request("POST", "https://x.invalid/v1/chat/completions")
-    err = openai.RateLimitError("429", response=httpx.Response(429, request=req), body=None)
+    req = httpx2.Request("POST", "https://x.invalid/v1/chat/completions")
+    err = openai.RateLimitError("429", response=httpx2.Response(429, request=req), body=None)
     client = FakeClient([err, err, reply("第三次成功")])
     r = RobustAgent(reg, "sys", client=client).run("hi")
     assert r.status == "ok" and len(client.calls) == 3
@@ -347,7 +351,7 @@ def test_budget_stops_agent():
     assert r.status == "budget" and r.needs_human
 ```
 
-这五个测试我在本机实际跑过,`uv run pytest -q test_robust_agent.py` 的结果是 `5 passed`,用时 9 秒左右。慢主要是因为 429 那个测试里 tenacity 真的在退避等待,以及超时测试里那个工具真的睡了 2 秒。如果嫌慢,可以在测试里把等待策略换成 `wait_none()`,tenacity 支持在运行时替换。
+这五个测试我在本机实际跑过,在仓库根目录执行 `uv run pytest -q w2/test_robust_agent.py`,结果是 `5 passed`,用时 5 到 9 秒。慢主要是因为 429 那个测试里 tenacity 真的在退避等待,以及超时测试里那个工具真的睡了 2 秒。如果嫌慢,可以在测试里把等待策略换成 `wait_none()`,tenacity 支持在运行时替换。
 
 这个「假模型」技巧在后面会反复用到。W5 讲评测时,规则类的检查(工具有没有按顺序调、撞线后有没有转人工)都可以这样离线测;只有「回答质量好不好」这类问题才需要真模型和 LLM 评分。把能确定性测试的部分剥离出来,是 Agent 工程化最实用的一招。
 
@@ -359,15 +363,214 @@ def test_budget_stops_agent():
 
 ## 动手练习
 
-**练习 1:跑通测试。** 把 `robust_agent.py` 和 `test_robust_agent.py` 放进 `agent-60-lab/w2/`,`uv add tenacity pytest`,运行 `uv run pytest -q`。全部通过后,故意把 `_is_loop` 里的 `>` 改成 `>=`,看哪个测试会失败、为什么。
+下面四个练习的代码我都在 `agent-60-lab` 里实际跑过(DeepSeek `deepseek-flash`,2026-10-16),每段后面写了你应该看到的结果。所有命令都在仓库根目录执行。
 
-**练习 2:补两个测试。** 给假模型写两个新剧本:一是模型返回的 arguments 是坏掉的 JSON(比如 `'{"x": '`),断言 tool 消息里包含 `JSONDecodeError` 且任务最终正常完成;二是模型调用了不存在的工具 `search_web`,断言 tool 消息里列出了可用工具。
+### 练习 1:跑通测试,再故意改坏
 
-**练习 3:接上真模型。** 用 Day 9 的工具(天气、计算器、读文件)构造 `RobustAgent`,设置 `Limits(max_steps=3)`,问一个需要 5 步以上的问题,观察收尾时模型给出的部分答案质量。再把 `max_tokens` 调到 2000,看 budget 分支。
+把上面的 `robust_agent.py` 和 `test_robust_agent.py` 放进 `agent-60-lab/w2/`,然后:
 
-**练习 4:失败日志。** 在 `run` 返回前把 `self.messages`、结果状态、用量写进 `runs/时间戳_状态.json`。跑 10 次不同问题,用一行 shell 命令统计各状态的数量。
+```bash
+uv add tenacity
+uv run pytest -q w2/test_robust_agent.py
+# .....                                   [100%]
+# 5 passed in 5.32s
+```
 
-**验收标准:** 练习 1 能解释改动后哪个测试失败;练习 2 两个新测试通过;练习 3 撞线后用户拿到的是有内容的部分答案,而不是空字符串或异常;练习 4 能列出 10 次运行的状态分布。
+现在故意把 `_is_loop` 里的 `>` 改成 `>=`:
+
+```python
+        return self.seen[key] >= self.limits.max_repeats   # 原来是 >
+```
+
+再跑一遍。你会发现**还是 5 个全过**。这才是这个练习要你看到的东西:代码已经有 bug 了(`max_repeats=2` 的意思是「同样的调用允许做 2 次」,改成 `>=` 以后第 2 次就被当成循环拦下了),但现有的测试没有一个覆盖到「第 2 次应该照常执行」这个边界,所以抓不住它。
+
+补一个专门测边界的用例,加在 `test_robust_agent.py` 末尾:
+
+```python
+def test_second_identical_call_still_runs():
+    """max_repeats=2 表示同样的调用允许做 2 次,第 2 次必须真的执行,不能被当成循环拦下。"""
+    same = lambda i: reply(calls=[tool_call("big", {"x": "a"}, i)])
+    client = FakeClient([same(0), same(1), reply("好的")])
+    agent = RobustAgent(reg, "sys", Limits(max_repeats=2), client=client)
+    r = agent.run("hi")
+    tool_msgs = [m["content"] for m in agent.messages if m["role"] == "tool"]
+    assert len(tool_msgs) == 2
+    assert all("完全一样" not in c for c in tool_msgs)  # 两次都是真结果,不是循环警告
+    assert r.status == "ok"
+```
+
+`>=` 的版本下它会失败:
+
+```text
+FAILED w2/test_robust_agent.py::test_second_identical_call_still_runs - asser...
+1 failed, 5 passed
+```
+
+把 `>=` 改回 `>`,6 个全过。记住这个套路:**改一个比较符号测试还全绿,说明测试漏了边界**。写阈值类的逻辑时,恰好等于阈值的那一次一定要单独测。
+
+### 练习 2:坏掉的 JSON 和不存在的工具
+
+模型偶尔会吐出半截 JSON,或者调用一个根本没注册的工具。Day 9 的 `ToolRegistry.call` 已经把这两种情况变成了错误消息,这两个测试确认它们真的会回到模型那里,而不是让程序崩掉。同样加在 `test_robust_agent.py` 末尾:
+
+```python
+def test_broken_json_arguments():
+    fn = SimpleNamespace(name="big", arguments='{"x": ')  # 模型吐出来的半截 JSON
+    tc = SimpleNamespace(id="call_0", type="function", function=fn)
+    tc.model_dump = lambda: {"id": "call_0", "type": "function", "function": {"name": "big", "arguments": fn.arguments}}
+    client = FakeClient([reply(calls=[tc]), reply("参数写错了,我换个方式回答。")])
+    agent = RobustAgent(reg, "sys", client=client)
+    r = agent.run("hi")
+    tool_msg = [m for m in agent.messages if m["role"] == "tool"][0]
+    assert "JSONDecodeError" in tool_msg["content"]  # 错误原样告诉模型
+    assert r.status == "ok"
+
+
+def test_unknown_tool_lists_available_ones():
+    client = FakeClient([reply(calls=[tool_call("search_web", {"q": "退款"})]), reply("我没有搜索工具。")])
+    agent = RobustAgent(reg, "sys", client=client)
+    r = agent.run("hi")
+    tool_msg = [m for m in agent.messages if m["role"] == "tool"][0]
+    assert "search_web" in tool_msg["content"]
+    assert "slow" in tool_msg["content"] and "big" in tool_msg["content"]  # 列出了可用工具
+    assert r.status == "ok"
+```
+
+这里不能用 `tool_call()` 辅助函数造坏 JSON,因为它内部会 `json.dumps`,永远是合法的 JSON;所以手工拼了一个 `arguments` 是半截字符串的调用。跑一遍应该是 `8 passed`。
+
+### 练习 3:接上真模型,看撞线时的部分答案
+
+新建 `w2/day12_real.py`,直接复用 Day 9 `day09_demo.py` 里注册好的三个工具(导入它时会顺带执行 `load_dotenv()`,所以 `.env` 里的 key 能读到;它的 `if __name__ == "__main__":` 部分不会执行):
+
+```python
+# agent-60-lab/w2/day12_real.py  练习 3:真模型撞线,看收尾给出的部分答案
+from w2.day09_demo import reg  # 复用 Day 9 的三个工具:天气、计算器、读文件
+from w2.robust_agent import Limits, RobustAgent
+
+SYSTEM = "你是一个做事很仔细的中文助手。需要外部信息时调用工具;算术一律用 calculate。"
+QUESTION = "读一下 cities.txt,查这几个城市现在的气温,算出平均气温,再告诉我最冷和最热的各是哪个、温差多少。"
+
+for limits in (Limits(max_steps=3), Limits(max_tokens=2000)):
+    agent = RobustAgent(reg, SYSTEM, limits)
+    r = agent.run(QUESTION)
+    print(f"\n=== {limits} ===")
+    print(f"status={r.status} steps={r.steps} needs_human={r.needs_human} usage={r.usage}")
+    print("回答:", r.answer)
+```
+
+`workspace/cities.txt` 是 Day 9 跑 demo 时生成的;如果没有,先跑一次 `uv run python -m w2.day09_demo`。然后:
+
+```bash
+uv run python -m w2.day12_real
+```
+
+我这里的结果(只摘状态行):
+
+```text
+=== Limits(max_steps=3, ...) ===
+status=max_steps steps=3 needs_human=True usage={'prompt_tokens': 2157, 'completion_tokens': 293}
+回答: 三家城市的气温都拿到了(杭州第一次超时,重试后成功),结果如下: ……
+=== Limits(max_steps=12, max_tokens=2000, ...) ===
+status=budget steps=4 needs_human=True usage={'prompt_tokens': 2159, 'completion_tokens': 300}
+回答: ## 目前能给出的结果 ……
+```
+
+两条撞线分支都走到了 `_wrap_up`:状态分别是 `max_steps` 和 `budget`,`needs_human` 都是 `True`,而回答是有内容的部分结果(气温表、平均值、还差什么),不是空字符串也不是异常。两点说明:
+
+- `deepseek-flash` 在收尾时接受 `tool_choice="none"`。Day 8 说过思考模式下**强制调用某个工具**会报 400,但「禁止调工具」不受影响。如果你换的模型在这一步报错,`_wrap_up` 里的 try 会兜住,返回固定文案。
+- 打印出来的 `usage` 不含收尾那一次调用的 token,因为 `_wrap_up` 没往 `self.usage` 里加。想算准的话,在 `_wrap_up` 里也累加一次 `resp.usage`。
+
+### 练习 4:每次运行留一份日志
+
+在 `robust_agent.py` 里做三处改动。
+
+第一处,文件顶部加两个导入:
+
+```python
+from datetime import datetime
+from pathlib import Path
+```
+
+第二处,把原来的 `def run(self, user_input: str) -> AgentResult:` 改名为 `def _run(...)`,函数体一个字都不用动。
+
+第三处,在类里加一个新的 `run` 和一个 `_save`(放在 `_assistant_dict` 前面就行):
+
+```python
+    def run(self, user_input: str) -> AgentResult:
+        t0 = time.monotonic()
+        result = self._run(user_input)
+        self._save(result, time.monotonic() - t0)
+        return result
+
+    def _save(self, r: AgentResult, seconds: float) -> None:
+        """一次运行一个文件:runs/20261016-170102-123456_max_steps.json"""
+        Path("runs").mkdir(exist_ok=True)
+        name = f"{datetime.now():%Y%m%d-%H%M%S-%f}_{r.status}.json"
+        record = {
+            "status": r.status,
+            "steps": r.steps,
+            "needs_human": r.needs_human,
+            "seconds": round(seconds, 2),
+            "usage": r.usage,
+            "answer": r.answer,
+            "messages": self.messages,  # 完整轨迹:出问题时就靠它回放
+        }
+        Path("runs", name).write_text(json.dumps(record, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+```
+
+这样所有调用方(包括测试)都不用改,`run` 照旧返回 `AgentResult`,只是多了一个副作用。也正因为多了副作用,测试跑起来会往仓库里写 `runs/`。在 `test_robust_agent.py` 的 `reg = ToolRegistry()` 上面加一个自动生效的 fixture,让每个测试都在临时目录里跑(`import pytest` 放到文件顶部,和其他 import 放在一起,否则 Ruff 会提示 import 不在顶部):
+
+```python
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _run_in_tmp(tmp_path, monkeypatch):
+    """run() 会写 runs/;测试时切到临时目录,不弄脏仓库。"""
+    monkeypatch.chdir(tmp_path)
+```
+
+再把 `runs/` 加进 `.gitignore`,日志里有完整对话,不该进仓库。
+
+然后新建 `w2/day12_runs.py`,一口气跑 10 个问题:
+
+```python
+# agent-60-lab/w2/day12_runs.py  练习 4:跑 10 个问题,每次运行都会在 runs/ 留一份日志
+from w2.day09_demo import reg
+from w2.robust_agent import Limits, RobustAgent
+
+SYSTEM = "你是一个做事很仔细的中文助手。需要外部信息时调用工具;算术一律用 calculate。"
+QUESTIONS = [
+    "北京现在多少度?",
+    "(37.5 - 12) * 4 等于多少?",
+    "读一下 cities.txt,告诉我要去几个城市。",
+    "上海和广州现在哪个更热?热多少?",
+    "读一下 cities.txt,查这几个城市现在的气温,算平均值,再说最冷和最热的温差。",
+    "读一下 notes.txt。",  # 不存在的文件
+    "东京、首尔、曼谷、新加坡、悉尼现在的气温,从高到低排个序。",
+    "1 到 100 的平方和是多少?",
+    "哈尔滨现在冷不冷?适合穿什么?",
+    "把杭州、成都、哈尔滨的气温都换成华氏度。",
+]
+
+for q in QUESTIONS:
+    r = RobustAgent(reg, SYSTEM, Limits(max_steps=2, max_tokens=6000)).run(q)
+    print(f"[{r.status:9}] steps={r.steps} {q}")
+```
+
+```bash
+uv run python -m w2.day12_runs
+ls runs | cut -d_ -f2- | sed 's/\.json$//' | sort | uniq -c
+#    5 max_steps
+#    5 ok
+```
+
+统计命令为什么这样写:文件名是 `时间戳_状态.json`,而状态本身也可能带下划线(`max_steps`、`llm_error`)。`cut -d_ -f2-` 取第一个下划线之后的全部内容,再用 `sed` 去掉 `.json`。如果写成 `sed 's/.*_//'`,`max_steps` 会被截成 `steps`。
+
+故意把 `max_steps` 设成 2,是为了让分布里出现撞线的情况。设成 4 的话,`deepseek-flash` 十个问题全是 `ok`,看不出东西。
+
+跑完挑一个 `max_steps` 的文件打开看看。我这里连「北京现在多少度」这种一步就能答的问题也撞线了,翻 `messages` 才知道原因:天气接口第一次连接超时,模型重试了一次,两步就用完了。**不看日志,你只会以为模型变笨了。** 这就是上面说的「读失败的轨迹」。
+
+**验收标准:** 练习 1 能说清为什么改成 `>=` 后原来的 5 个测试仍然全过,新加的边界测试能抓住它;练习 2 两个新测试通过(共 8 个);练习 3 两次撞线拿到的都是有内容的部分答案;练习 4 能用一行命令列出 10 次运行的状态分布,并能从至少一个撞线日志里找出撞线原因。
 
 ## 名词解释
 
