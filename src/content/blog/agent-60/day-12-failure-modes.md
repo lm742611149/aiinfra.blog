@@ -107,6 +107,8 @@ Python 里最省事的是 `tenacity` 库,一个装饰器搞定。有个细节要
 
 把上面所有防线加到 Day 9 的循环上,得到 `RobustAgent`。工具注册表直接复用 Day 9 的 `ToolRegistry`。
 
+> 忘了 `ToolRegistry` 是干什么的?一句话:它是**工具登记处**,只管两件事。一是**登记**:`@reg.tool` 读函数名、参数类型和 docstring,自动生成模型看得懂的 JSON schema,放在 `reg.schemas` 里,调模型时作为 `tools=` 传进去。二是**执行**:模型回来的只是工具名和参数 JSON 字符串,`reg.call(name, arguments)` 负责找到函数、解析参数、调用、把结果转回字符串。出错时它不抛异常,而是返回 `{"error": ...}` 给模型看,让模型自己改正。分工是 Agent 管循环,ToolRegistry 管工具。今天的 `RobustAgent` 只换掉循环那一半,工具那一半原样复用。详见 [Day 9](/blog/agent-60/day-09-agent-loop-from-scratch/)。
+
 先装重试库:在 `agent-60-lab` 根目录执行 `uv add tenacity`(pytest 在 Day 4 已经装过)。和 Day 9 一样,所有命令都在**仓库根目录**跑,所以导入写成 `from w2.agent_loop import ...`,不要写 `from agent_loop import ...`,否则会报 `ModuleNotFoundError`。
 
 ```python
