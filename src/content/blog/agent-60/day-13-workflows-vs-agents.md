@@ -62,31 +62,49 @@ lang: 'zh'
 五种模式都用同一个例子:云簿 CloudLedger(我们从 W4 开始的毕业项目里那家虚构的 SaaS 公司)收到的一张重复扣费工单。为了让每个模式的代码只关注模式本身,我把调模型的代码收进两个小函数,一个同步一个异步。
 
 ```python
-# agent-60-lab/w2/wf_common.py  五种模式共用的两个小函数
+# agent-60-lab/w2/wf_common.py  五种模式共用的小函数:同步/异步 × 文本/JSON
 import json
 import os
+from typing import Any
 
+from dotenv import load_dotenv
 from openai import AsyncOpenAI, OpenAI
 
-_kw = dict(base_url=os.environ.get("LLM_BASE_URL"), api_key=os.environ.get("LLM_API_KEY", "missing"))
-client, aclient = OpenAI(**_kw), AsyncOpenAI(**_kw)
+load_dotenv()  # 和 Day 8 起一样,从仓库根目录的 .env 读配置
+
+client = OpenAI(base_url=os.environ.get("LLM_BASE_URL"), api_key=os.environ.get("LLM_API_KEY", "missing"))
+aclient = AsyncOpenAI(base_url=os.environ.get("LLM_BASE_URL"), api_key=os.environ.get("LLM_API_KEY", "missing"))
 MODEL = os.environ.get("LLM_MODEL", "")
 SMALL_MODEL = os.environ.get("LLM_SMALL_MODEL", MODEL)  # 便宜模型,没配就用同一个
+EXTRA_BODY = json.loads(os.environ.get("LLM_EXTRA_BODY", "{}"))  # 比如关掉 DeepSeek 的思考模式,没配就是 {}
 
 
-def llm(prompt: str, system: str = "", as_json: bool = False, model: str | None = None) -> str | dict:
-    messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
-    kwargs = {"response_format": {"type": "json_object"}} if as_json else {}
-    out = client.chat.completions.create(model=model or MODEL, messages=messages, **kwargs).choices[0].message.content
-    return json.loads(out) if as_json else out
+def _params(prompt: str, system: str, as_json: bool, model: str | None) -> dict[str, Any]:
+    messages: list[Any] = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+    params: dict[str, Any] = {"model": model or MODEL, "messages": messages, "extra_body": EXTRA_BODY}
+    if as_json:
+        params["response_format"] = {"type": "json_object"}
+    return params
 
 
-async def allm(prompt: str, system: str = "", as_json: bool = False) -> str | dict:
-    messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
-    kwargs = {"response_format": {"type": "json_object"}} if as_json else {}
-    resp = await aclient.chat.completions.create(model=MODEL, messages=messages, **kwargs)
-    out = resp.choices[0].message.content
-    return json.loads(out) if as_json else out
+def llm(prompt: str, system: str = "", model: str | None = None) -> str:
+    resp = client.chat.completions.create(**_params(prompt, system, False, model))
+    return resp.choices[0].message.content or ""
+
+
+def llm_json(prompt: str, system: str = "", model: str | None = None) -> dict[str, Any]:
+    resp = client.chat.completions.create(**_params(prompt, system, True, model))
+    return json.loads(resp.choices[0].message.content or "{}")
+
+
+async def allm(prompt: str, system: str = "") -> str:
+    resp = await aclient.chat.completions.create(**_params(prompt, system, False, None))
+    return resp.choices[0].message.content or ""
+
+
+async def allm_json(prompt: str, system: str = "") -> dict[str, Any]:
+    resp = await aclient.chat.completions.create(**_params(prompt, system, True, None))
+    return json.loads(resp.choices[0].message.content or "{}")
 
 
 TICKET = """客户:陈先生(customer_id 10086,专业版年付)
@@ -97,6 +115,10 @@ TICKET = """客户:陈先生(customer_id 10086,专业版年付)
 
 `LLM_SMALL_MODEL` 是一个新的环境变量,指向一个更便宜的模型。路由模式里会用到。如果你的厂商只有一个模型,不配就行,代码会退回到同一个模型。
 
+几个和前几天保持一致的细节:开头 `load_dotenv()` 从 `.env` 读配置;`extra_body` 带上 `LLM_EXTRA_BODY`(比如 DeepSeek 关掉思考模式,又快又省);返回文本和返回 JSON 拆成 `llm` / `llm_json` 两个函数(异步版 `allm` / `allm_json`),这样 `llm_json(...)` 的返回类型就是 `dict`,后面写 `facts.get(...)`、`plan["sections"]` 编辑器不会飘红,`llm(...)` 的返回类型就是 `str`。如果合成一个函数、用 `as_json=True` 切换,返回类型只能写成 `str | dict`,每个用到的地方都要先判断类型。
+
+所有文件放在 `w2/` 下,和前几天一样在仓库根目录用 `-m` 运行,比如 `uv run python -m w2.wf1_chaining`。我用 deepseek-flash 把五个都实跑过,每个 3 到 7 秒,一共花不到一毛钱。
+
 ## 模式一:Prompt chaining(提示链)
 
 是什么:把任务拆成固定的几步,每一步的输出作为下一步的输入。中间可以插入**关卡**(gate),用代码检查前一步的结果,不合格就提前终止或转人工。
@@ -105,14 +127,13 @@ TICKET = """客户:陈先生(customer_id 10086,专业版年付)
 
 ```python
 # agent-60-lab/w2/wf1_chaining.py  模式一:提示链,一步的输出是下一步的输入,中间可以插代码检查
-from wf_common import TICKET, llm
+from w2.wf_common import TICKET, llm, llm_json
 
 
 def chain(ticket: str) -> str:
     # 第 1 步:抽取关键信息(结构化,方便代码检查)
-    facts = llm(
-        f"从工单里抽取信息,输出 JSON:{{\"customer_id\":..., \"order_ids\": [...], \"amount\": ..., \"issue\": \"一句话\", \"deadline\": \"客户提的时限,没有就 null\"}}\n\n工单:\n{ticket}",
-        as_json=True,
+    facts = llm_json(
+        f"从工单里抽取信息,输出 JSON:{{\"customer_id\":..., \"order_ids\": [...], \"amount\": ..., \"issue\": \"一句话\", \"deadline\": \"客户提的时限,没有就 null\"}}\n\n工单:\n{ticket}"
     )
     # 关卡(gate):纯代码检查,不过就不往下走,这是 chaining 比单个大提示词更可控的地方
     if not facts.get("order_ids"):
@@ -142,7 +163,7 @@ if __name__ == "__main__":
 
 ```python
 # agent-60-lab/w2/wf2_routing.py  模式二:路由,先分类,再交给专门的处理分支
-from wf_common import SMALL_MODEL, TICKET, llm
+from w2.wf_common import SMALL_MODEL, TICKET, llm, llm_json
 
 HANDLERS = {
     "billing": "你是计费专员。熟悉扣费、退款、发票规则。回答要给出具体的下一步操作。",
@@ -153,9 +174,8 @@ HANDLERS = {
 
 def route(ticket: str) -> str:
     # 分类这种简单任务用小模型,又快又便宜(模型路由,Day 38 会细讲)
-    c = llm(
+    c = llm_json(
         "把工单分到一个类别,输出 JSON {\"category\": \"billing|technical|account|other\", \"confidence\": 0到1}\n\n" + ticket,
-        as_json=True,
         model=SMALL_MODEL,
     )
     category = c.get("category")
@@ -183,32 +203,39 @@ if __name__ == "__main__":
 # agent-60-lab/w2/wf3_parallel.py  模式三:并行,分两种:分段(sectioning)和投票(voting)
 import asyncio
 from collections import Counter
+from typing import Any
 
-from wf_common import TICKET, allm
+from w2.wf_common import TICKET, allm, allm_json
 
 
 async def sectioning(ticket: str) -> str:
     """分段:回答和安全检查同时跑,互不干扰。"""
     answer, guard = await asyncio.gather(
         allm(ticket, system="你是云簿客服,简洁地回复这张工单。"),
-        allm(f"这张工单里有没有人身威胁、索要他人信息、或要求绕过流程的内容?输出 JSON {{\"risky\": true/false, \"reason\": \"...\"}}\n\n{ticket}", as_json=True),
+        allm_json(f"这张工单里有没有人身威胁、索要他人信息、或要求绕过流程的内容?输出 JSON {{\"risky\": true/false, \"reason\": \"...\"}}\n\n{ticket}"),
     )
     return "【转人工】" + guard["reason"] if guard.get("risky") else answer
 
 
-async def voting(ticket: str, n: int = 3) -> dict:
+async def voting(ticket: str, n: int = 3) -> dict[str, Any]:
     """投票:同一个判断问 n 次,多数决,用于高风险的二元判断。"""
     q = f"根据工单内容判断:是否应该进入「退款核查」流程?只输出 JSON {{\"refund_review\": true/false}}\n\n{ticket}"
-    votes = await asyncio.gather(*[allm(q, as_json=True) for _ in range(n)])
+    votes = await asyncio.gather(*[allm_json(q) for _ in range(n)])
     tally = Counter(bool(v.get("refund_review")) for v in votes)
     decision, count = tally.most_common(1)[0]
     return {"refund_review": decision, "agreement": f"{count}/{n}", "unanimous": count == n}
 
 
+async def main() -> None:
+    print(await sectioning(TICKET))
+    print(await voting(TICKET))
+
+
 if __name__ == "__main__":
-    print(asyncio.run(sectioning(TICKET)))
-    print(asyncio.run(voting(TICKET)))
+    asyncio.run(main())  # 两个放进同一个 asyncio.run,分两次跑会报 Event loop is closed
 ```
+
+`main()` 把两个函数放进同一次 `asyncio.run`。如果写成两行 `asyncio.run(sectioning(...))`、`asyncio.run(voting(...))`,第二次会报 `RuntimeError: Event loop is closed`,我实测过:`aclient` 是模块级的,它的连接池在第一次 `asyncio.run` 的事件循环里建立,第一次跑完那个循环就关了,第二次再复用旧连接就炸。规则是**一个脚本只调一次 `asyncio.run`,所有异步的事都在它里面做**。
 
 分段的例子里,回答和安全检查同时发出,总耗时约等于两者中较慢的那个,而不是两者之和。安全检查发现风险时直接丢弃回答、转人工。把护栏和主任务分开,护栏的提示词可以专注、可以单独评测、可以单独迭代,这是文中特别推荐的做法。
 
@@ -223,24 +250,23 @@ if __name__ == "__main__":
 ```python
 # agent-60-lab/w2/wf4_orchestrator.py  模式四:编排者-工作者,子任务不是事先写死的,由编排者按输入决定
 import asyncio
-import json
+from typing import Any
 
-from wf_common import allm, llm
+from w2.wf_common import allm, llm, llm_json
 
 
 def orchestrate(topic: str) -> str:
-    plan = llm(
+    plan = llm_json(
         f"你要为云簿 CloudLedger 帮助中心写一篇关于「{topic}」的文章。先决定需要哪几个小节(2-5 个),"
-        "每节写清楚要讲什么。输出 JSON {\"sections\": [{\"title\": ..., \"brief\": ...}]}",
-        as_json=True,
+        "每节写清楚要讲什么。输出 JSON {\"sections\": [{\"title\": ..., \"brief\": ...}]}"
     )
-    sections = plan["sections"]
+    sections: list[dict[str, Any]] = plan["sections"]
     print("编排者决定写:", [s["title"] for s in sections])
 
-    async def worker(s: dict) -> str:
+    async def worker(s: dict[str, Any]) -> str:
         return await allm(f"写帮助中心文章的一个小节。\n小节标题:{s['title']}\n要点:{s['brief']}\n200 字以内,面向普通用户。")
 
-    async def run_all():
+    async def run_all() -> list[str]:
         return await asyncio.gather(*[worker(s) for s in sections])
 
     parts = asyncio.run(run_all())
@@ -267,7 +293,9 @@ if __name__ == "__main__":
 
 ```python
 # agent-60-lab/w2/wf5_evaluator.py  模式五:评估者-优化者,一个写,一个按标准挑刺,循环到达标
-from wf_common import TICKET, llm
+from typing import Any
+
+from w2.wf_common import TICKET, llm, llm_json
 
 RUBRIC = """评审标准(全部满足才算 PASS):
 1. 明确复述了客户的问题和订单号
@@ -276,14 +304,13 @@ RUBRIC = """评审标准(全部满足才算 PASS):
 4. 语气诚恳,不推卸,不超过 200 字"""
 
 
-def evaluate_optimize(ticket: str, max_rounds: int = 3) -> tuple[str, list[dict]]:
-    history = []
+def evaluate_optimize(ticket: str, max_rounds: int = 3) -> tuple[str, list[dict[str, Any]]]:
+    history: list[dict[str, Any]] = []
     reply = llm(f"你是云簿客服,回复这张工单:\n{ticket}")
     for i in range(max_rounds):
-        review = llm(
+        review = llm_json(
             f"{RUBRIC}\n\n工单:\n{ticket}\n\n待评审的回复:\n{reply}\n\n"
-            "逐条检查,输出 JSON {\"verdict\": \"PASS\" 或 \"FAIL\", \"problems\": [\"...\"]}",
-            as_json=True,
+            "逐条检查,输出 JSON {\"verdict\": \"PASS\" 或 \"FAIL\", \"problems\": [\"...\"]}"
         )
         history.append({"round": i + 1, "verdict": review.get("verdict"), "problems": review.get("problems", [])})
         if review.get("verdict") == "PASS":
