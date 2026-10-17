@@ -478,6 +478,8 @@ X 个行为符合预期,合计约 $X。详见下方测试表。
 
 「实测」里的 X 填你练习 2 的真实结果,别抄别人的数字。简历上一两行就够:**命令行 AI Agent(Python,个人项目)**:不依赖框架手写 Agent 循环和工具注册表,集成天气、计算、文件、搜索五个工具;实现重试、超时、循环检测、token 预算和撞线降级;自建 8 题测试集评估工具选择和边界行为。
 
+**录终端 GIF:** 用 asciinema 录、agg 转成 GIF。asciinema 自己敲一遍就行:`asciinema rec demo.cast` 开始录,正常运行 `uv run python main.py` 问几个问题,`exit` 结束;然后 `agg --font-family "Menlo,PingFang SC" --idle-time-limit 2.5 demo.cast docs/demo.gif`。两个参数都别省:不指定中文字体,GIF 里的中文会变成方框;`--idle-time-limit` 把等模型回答的几十秒压成 2.5 秒,否则 GIF 又长又大。三四个问题录出来约 400 KB,放在 `docs/` 里,README 用 `![演示](docs/demo.gif)` 引用。Homebrew 在较老的 macOS 上可能没有预编译包(`no bottle available`),这时去 agg 的 [GitHub Releases](https://github.com/asciinema/agg/releases) 直接下载单个可执行文件。
+
 推之前先在 GitHub 网页上建一个**空仓库**(不要勾 README、.gitignore、License,否则第一次 push 会冲突),然后:
 
 ```bash
