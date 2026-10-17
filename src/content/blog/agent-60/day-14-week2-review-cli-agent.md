@@ -493,7 +493,11 @@ git remote add origin https://github.com/你的用户名/cli-agent.git
 git push -u origin main
 ```
 
-`git config` 不带 `--global` 就只改当前仓库。提交记录里的邮箱是公开的,别人点开 commit 就能看到,所以作品集仓库要用个人邮箱。
+`git config` 不带 `--global` 就只改当前仓库。
+
+如果 push 时报 `could not read Username for 'https://github.com'`,说明这个终端没存 HTTPS 凭据。已经在 GitHub 配过 SSH key 的话(`ssh -T git@github.com` 能看到 `Hi 你的用户名!`),把远程地址换成 SSH 再推:`git remote set-url origin git@github.com:你的用户名/cli-agent.git`。
+
+推之前再把每个命令手动敲一遍:`/tools` 列完工具后不该再出现「助手>」,`/cost` 的金额不该几乎是 0。手敲代码时少一个 `continue`、多一个数字(`1e6` 敲成 `1e67`)类型检查都查不出来,只能靠实际跑一遍。提交记录里的邮箱是公开的,别人点开 commit 就能看到,所以作品集仓库要用个人邮箱。
 
 ## W2 面试题汇总
 
