@@ -284,6 +284,8 @@ class RobustAgent:
 
 几个设计点再说一下。
 
+`run()` 开头的 `start = time.monotonic()` 是在掐表。`time.monotonic()` 返回一个「只会往前走的秒数」,数值本身没有意义(不是几点几分),只能拿两次的差来算过了多久:循环里每一步 `time.monotonic() - start` 就是任务已经跑了几秒,超过 `max_seconds`(默认 120)就收尾。相当于 JS 的 `performance.now()`,只不过单位是秒、带小数。为什么不用 `time.time()`?`time.time()` 是系统时钟,电脑自动对时、手动改时间时会往回跳或突然往前跳,算出来的耗时可能是负数或者多出几分钟;`monotonic` 保证不回退,**算耗时一律用它,要显示「现在几点」才用 `time.time()`**。
+
 返回值从字符串变成了 `AgentResult`,带上状态、步数、用量和 `needs_human`。调用方拿到结果就知道这次是正常完成还是撞线收尾,该怎么处理。这是从「脚本」走向「服务」的一小步,Day 36 把它做成 API 时会直接用上。
 
 `_llm` 的返回类型 `-> ChatCompletion` 一定要写。`client` 参数标的是 `Any`(为了测试时能塞假模型),于是 `self.client.chat.completions.create(...)` 的返回值也被推断成 `Any`,一路传下去 `resp`、`msg`、`tc` 全是 `Any`,编辑器里敲 `tc.` 就什么提示都没有了。在 `_llm` 上写明返回 `ChatCompletion`,类型从这里重新接上,`tc` 经过 `tc.type != "function"` 收窄后就是 `ChatCompletionMessageFunctionToolCall`,`tc.function.name` 这些都能补全。规律是:**`Any` 会顺着调用链传染,在源头最近的函数上把返回类型写死就能截断它。**
@@ -707,6 +709,7 @@ ls runs | cut -d_ -f2- | sed 's/\.json$//' | sort | uniq -c
 | needs_human | 结果上的转人工标记,交给上游系统处理 |
 | SimpleNamespace | 标准库里的空对象,传什么关键字参数就有什么属性,测试里用来随手造假响应 |
 | lambda | 一行的匿名函数,`lambda x: x + 1` 相当于 JS 的 `(x) => x + 1` |
+| time.monotonic() | 只增不减的计时器,用来算耗时(两次相减),不受系统改时间影响 |
 | 假模型(fake client) | 按剧本返回响应的测试替身,用于离线、确定性地测试 Agent 逻辑 |
 
 ## 常见误区
