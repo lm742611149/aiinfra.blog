@@ -161,6 +161,7 @@ from typing import Any
 
 import openai
 from openai import OpenAI
+from openai.types.chat import ChatCompletion
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
 from w2.agent_loop import ToolRegistry
@@ -207,7 +208,7 @@ class RobustAgent:
         stop=stop_after_attempt(4),
         reraise=True,
     )
-    def _llm(self, **kwargs):
+    def _llm(self, **kwargs: Any) -> ChatCompletion:  # 返回类型要写,否则后面 resp/msg/tc 全是 Any,没有代码提示
         return self.client.chat.completions.create(model=self.model, messages=self.messages, **kwargs)
 
     def _run_tool(self, name: str, arguments: str) -> str:
@@ -284,6 +285,8 @@ class RobustAgent:
 几个设计点再说一下。
 
 返回值从字符串变成了 `AgentResult`,带上状态、步数、用量和 `needs_human`。调用方拿到结果就知道这次是正常完成还是撞线收尾,该怎么处理。这是从「脚本」走向「服务」的一小步,Day 36 把它做成 API 时会直接用上。
+
+`_llm` 的返回类型 `-> ChatCompletion` 一定要写。`client` 参数标的是 `Any`(为了测试时能塞假模型),于是 `self.client.chat.completions.create(...)` 的返回值也被推断成 `Any`,一路传下去 `resp`、`msg`、`tc` 全是 `Any`,编辑器里敲 `tc.` 就什么提示都没有了。在 `_llm` 上写明返回 `ChatCompletion`,类型从这里重新接上,`tc` 经过 `tc.type != "function"` 收窄后就是 `ChatCompletionMessageFunctionToolCall`,`tc.function.name` 这些都能补全。规律是:**`Any` 会顺着调用链传染,在源头最近的函数上把返回类型写死就能截断它。**
 
 `_wrap_up` 自己也包了 try。收尾的那次模型调用也可能失败(比如正是因为模型服务挂了才撞的线),这时只能给一段固定文案。**兜底逻辑本身要有兜底**,不然最后一道防线一破,用户看到的就是一个 500。
 
