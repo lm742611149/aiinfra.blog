@@ -462,6 +462,12 @@ def test_loop_detected_and_wrapped_up():
     # 检查 2:client.calls 记录了每次调模型时传的参数,[-1] 是最后一次(收尾那次),它必须禁止再调工具
 ```
 
+这三行的值都能在 `RobustAgent` 源码里找到出处,对照着看就不玄了:
+
+- `r` 是 `run()` 的返回值,也就是一个 `AgentResult`。第 4 次重复调用时,`run()` 走到 `return self._wrap_up("loop", step, ...)`;`_wrap_up` 最后一行 `return AgentResult(answer, status, step, dict(self.usage), needs_human=True)`,把传进来的 `"loop"` 填进 `status`、`needs_human` 写死成 `True`。所以 `r.status == "loop"`、`r.needs_human` 为真。
+- `client.calls` 是 `FakeClient` 的记录本,每个元素是一次调用传进来的参数字典(`_create(self, **kwargs)` 里的 `kwargs`)。`_wrap_up` 调的是 `self._llm(tools=..., tool_choice="none")`,`_llm` 再把这些参数原样传给 `create(...)`,于是最后一条记录长这样:`{"model": "fake", "messages": [...], "tools": [...], "tool_choice": "none"}`。`client.calls[-1]["tool_choice"]` 就是从这个字典里取 `"tool_choice"` 这个键。
+- 反过来想:如果哪天有人把 `_wrap_up` 里的 `tool_choice="none"` 删了,第二条断言会报 `KeyError` 或不等于 `"none"`,测试变红,这条防线就被守住了。
+
 所以两条断言分别检查:`r.status == "loop" and r.needs_human`,结束原因是循环、并标记转人工;`client.calls[-1]["tool_choice"] == "none"`,`FakeClient` 记下了每次被调用时的参数,最后一次(收尾那次)确实禁止了再调工具。剧本正好排 5 条也不是随便写的:如果 Agent 多调了一次模型,剧本被 `pop` 空了会直接报错,测试就挂了;反过来剧本有剩余不会报错,这个测试查不出「少调了」。再验证它是不是真的在测东西:把被测代码故意改坏(练习 1 就是这么做的),测试应该变红;改坏了还是绿的,说明这个测试没用,AI 写测试最常见的问题就是这个。面试里问 Agent 怎么保证可靠性,能讲清楚「用假模型离线测失败路径」比会写测试代码本身更加分。
 
 这个「假模型」技巧在后面会反复用到。W5 讲评测时,规则类的检查(工具有没有按顺序调、撞线后有没有转人工)都可以这样离线测;只有「回答质量好不好」这类问题才需要真模型和 LLM 评分。把能确定性测试的部分剥离出来,是 Agent 工程化最实用的一招。
