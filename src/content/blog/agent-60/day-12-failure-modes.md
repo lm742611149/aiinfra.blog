@@ -412,6 +412,10 @@ def test_budget_stops_agent():
 
 意思就是「模型说:我要调 `big`,参数 `x="a"`」。`reply("好的")` 则是「模型直接回了一句『好的』,不调工具」,Agent 看到没有 `tool_calls` 就会结束循环。
 
+`FakeClient` 是那个「按剧本演的假模型」。`FakeClient([a, b, c])` 把一个列表交给它当剧本,存在 `self.script` 里。Agent 每调一次 `client.chat.completions.create(...)`,实际走到的是 `_create`,它做三件事:`self.calls.append(kwargs)` 把这次传进来的参数记进记录本;`self.script.pop(0)` 从剧本**开头**取出一条并删掉,相当于 JS 的 `script.shift()`;取出来的如果是异常就 `raise` 抛出(模拟 429 之类的报错),否则当作模型响应返回。所以剧本里第 1 条给第 1 次调用,第 2 条给第 2 次,依次往下。
+
+`FakeClient([same(0), same(1), same(2), same(3), reply("根据已有信息,部分完成。")])` 就是一份 5 幕的剧本:前 4 次被调都回「我要调 `big`」,第 5 次回一句文字。列表里的 `same(0)` 这些在建剧本时就已经执行完了,存进去的是 5 个造好的响应对象,不是函数。
+
 测试里有两个之前没出现过的写法,再解释一下。
 
 **`SimpleNamespace`:随手捏一个「有这些属性的对象」。** `SimpleNamespace(name="big", arguments="{...}")` 造出来的对象可以用 `fn.name`、`fn.arguments` 点出属性,相当于 JS 里直接写对象字面量 `{ name: "big", arguments: "{...}" }`。Python 的 dict 只能 `d["name"]`,不能 `d.name`,而 `RobustAgent` 里读模型响应用的是 `resp.choices[0].message.tool_calls`、`tc.function.name` 这种点号写法,所以假响应得是「能点出属性的对象」。`reply()` 和 `tool_call()` 就是用一层层 `SimpleNamespace` 搭出一个和真 `ChatCompletion` 长得一样的结构;`FakeClient` 里 `self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))` 也是同一个思路,凑出 `client.chat.completions.create(...)` 这条调用路径。这就是 Python 的「鸭子类型」:代码只管对象有没有这个属性,不管它是不是真的 `ChatCompletion` 类。
