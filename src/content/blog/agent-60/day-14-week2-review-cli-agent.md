@@ -131,7 +131,27 @@ printf '.env\nruns/\n' >> .gitignore
 - **`robust_agent.py` 要改一行 import。** 练习仓里它写的是 `from w2.agent_loop import ToolRegistry`(Day 12 为了能在根目录 `-m` 运行这么写的),复制到新目录后没有 `w2` 这个包了,`import` 会报 `ModuleNotFoundError: No module named 'w2'`。新目录里两个文件平级,改成 `from agent_loop import` 即可,上面的 `sed` 就是干这个的。
 - **`pytest` 用 `--dev` 装。** 它只在开发时用,放进 `dependencies` 的话,别人装你的项目也会被迫装一个测试框架。
 
-`.env.example` 进仓库,真正的 `.env` 不进。这一条请当成肌肉记忆:**任何时候都不要把 API key 提交到 git**。GitHub 上有大量机器人在扫描新提交里的 key,泄露后几分钟内就可能被盗刷。`runs/` 也不进 git,里面是你的真实对话记录。`main.py` 第一件事就是用 Day 2 学的 `python-dotenv` 加载 `.env`。
+`.env.example` 进仓库,真正的 `.env` 不进。这一条请当成肌肉记忆:**任何时候都不要把 API key 提交到 git**。GitHub 上有大量机器人在扫描新提交里的 key,泄露后几分钟内就可能被盗刷。
+
+<details>
+<summary>这些机器人到底在扫什么?</summary>
+
+扫的是全站公开仓库的**新提交**,目的是捡能直接用的密钥:
+
+1. **盯实时提交流。** GitHub 有一个公开的事件接口,所有公开 push 几乎实时出现在里面。机器人不停拉取,每个新提交都把 diff 抓下来。
+2. **按格式匹配。** 各家 key 前缀很固定:OpenAI/DeepSeek 是 `sk-`,AWS 是 `AKIA`,GitHub token 是 `ghp_`。再配合「高随机度长字符串」的判断,并重点看 `.env`、`config.py` 这类文件。
+3. **验证有效性。** 拿到 key 就调一下厂商 API(查余额、列模型),能用就入库。
+4. **使用或转卖。** 大模型 key 拿去盗刷 token,或者卖给做「低价 API 中转」的人;云厂商 key 拿去开机器挖矿。从 push 到被盗用,最快几分钟。
+
+几个常见误会:
+
+- **再提交一次把 key 删掉没用。** 它还在 git 历史里,而且多半在你删之前就被扫到了。唯一可靠的做法是**立刻去厂商后台作废这个 key**,换新的。
+- **私有仓库也不保险。** 机器人扫不到私有仓库,但仓库哪天改成公开,或者被别人 clone、fork 走,历史里的 key 就跟着出去了。
+- **也有「好机器人」。** GitHub 自带密钥扫描(Secret scanning),会通知合作厂商自动作废泄露的 key,有的还会在 push 时直接拦下。但不是每家厂商都参与,不能指望它兜底。
+
+下面「推到 GitHub」一节里的 `git status` 和 `grep 'sk-...'` 两步,就是在 push 之前自己先当一回扫描机器人。想要更全的检查,可以用开源工具 [gitleaks](https://github.com/gitleaks/gitleaks) 扫整个仓库历史。
+
+</details>`runs/` 也不进 git,里面是你的真实对话记录。`main.py` 第一件事就是用 Day 2 学的 `python-dotenv` 加载 `.env`。
 
 ### tools.py
 
