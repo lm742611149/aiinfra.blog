@@ -393,6 +393,17 @@ def test_budget_stops_agent():
     assert r.status == "budget" and r.needs_human
 ```
 
+测试里有两个之前没出现过的写法,先解释一下。
+
+**`SimpleNamespace`:随手捏一个「有这些属性的对象」。** `SimpleNamespace(name="big", arguments="{...}")` 造出来的对象可以用 `fn.name`、`fn.arguments` 点出属性,相当于 JS 里直接写对象字面量 `{ name: "big", arguments: "{...}" }`。Python 的 dict 只能 `d["name"]`,不能 `d.name`,而 `RobustAgent` 里读模型响应用的是 `resp.choices[0].message.tool_calls`、`tc.function.name` 这种点号写法,所以假响应得是「能点出属性的对象」。`reply()` 和 `tool_call()` 就是用一层层 `SimpleNamespace` 搭出一个和真 `ChatCompletion` 长得一样的结构;`FakeClient` 里 `self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))` 也是同一个思路,凑出 `client.chat.completions.create(...)` 这条调用路径。这就是 Python 的「鸭子类型」:代码只管对象有没有这个属性,不管它是不是真的 `ChatCompletion` 类。
+
+**`lambda`:一行的匿名函数,相当于 JS 的箭头函数。** `lambda i: reply(...)` 就是 `(i) => reply(...)`,冒号前是参数,冒号后是返回值,只能写一个表达式。测试里用了两处:
+
+- `tc.model_dump = lambda: {...}`:没有参数的 lambda,相当于 `tc.model_dump = () => ({...})`。真的 tool call 对象有 `model_dump()` 方法(pydantic 提供),`_assistant_dict` 会调它把工具调用转成 dict 存进 `messages`,`SimpleNamespace` 没有这个方法,就手动挂一个上去。
+- `same = lambda i: reply(calls=[tool_call("big", {"x": "a"}, i)])`:造一个「每次都发出完全相同调用」的响应,`i` 只用来让每次的 `call_id` 不同。`same(0)`、`same(1)`…连续四个,正好触发循环检测。
+
+把 lambda 赋给变量(`same = lambda ...`)在正式代码里不推荐,Ruff 会报 E731,建议改成 `def same(i): return ...`;测试里图省事这样写问题不大。lambda 最常见的正经用法是当参数传,比如 Day 2 里的 `sorted(ok, key=lambda x: x.stars)`。
+
 这五个测试我在本机实际跑过,在仓库根目录执行 `uv run pytest -q w2/test_robust_agent.py`,结果是 `5 passed`,用时 5 到 9 秒。慢主要是因为 429 那个测试里 tenacity 真的在退避等待,以及超时测试里那个工具真的睡了 2 秒。如果嫌慢,可以在测试里把等待策略换成 `wait_none()`,tenacity 支持在运行时替换。
 
 这个「假模型」技巧在后面会反复用到。W5 讲评测时,规则类的检查(工具有没有按顺序调、撞线后有没有转人工)都可以这样离线测;只有「回答质量好不好」这类问题才需要真模型和 LLM 评分。把能确定性测试的部分剥离出来,是 Agent 工程化最实用的一招。
@@ -630,6 +641,8 @@ ls runs | cut -d_ -f2- | sed 's/\.json$//' | sort | uniq -c
 | 预算(budget) | 步数、token、时间三类上限,防止任务失控 |
 | 优雅收尾(graceful degradation) | 撞线后禁用工具、基于已有信息给部分答案 |
 | needs_human | 结果上的转人工标记,交给上游系统处理 |
+| SimpleNamespace | 标准库里的空对象,传什么关键字参数就有什么属性,测试里用来随手造假响应 |
+| lambda | 一行的匿名函数,`lambda x: x + 1` 相当于 JS 的 `(x) => x + 1` |
 | 假模型(fake client) | 按剧本返回响应的测试替身,用于离线、确定性地测试 Agent 逻辑 |
 
 ## 常见误区
