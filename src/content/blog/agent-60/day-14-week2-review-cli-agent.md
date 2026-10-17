@@ -89,21 +89,29 @@ Workflow(Day 13):下一步由代码决定的是 workflow,由模型决定的是 a
 
 ### 目录结构
 
+这个项目要单独推到 GitHub,所以**不要建在 `agent-60-lab` 里面**,和它并排单独建一个目录 `cli-agent`。建在练习仓里面会变成「仓库里套仓库」,以后在练习仓 `git add` 会报 embedded repository 警告。
+
 ```text
-agent-60-lab/w2/cli_agent/
-├── agent_loop.py      # Day 9,原样复制(用其中的 ToolRegistry)
-├── robust_agent.py    # Day 12,原样复制
+cli-agent/                 # 和 agent-60-lab 并排
+├── agent_loop.py      # Day 9,复制过来(用其中的 ToolRegistry)
+├── robust_agent.py    # Day 12,复制过来,改一行 import
 ├── tools.py           # 今天写:五个工具
 ├── main.py            # 今天写:命令行交互
 ├── workspace/         # Agent 能读的文件放这里
-├── runs/              # /save 保存的对话
+├── runs/              # /save 保存的对话(不进 git)
 ├── .env.example       # 环境变量模板,不放真 key
 └── README.md
 ```
 
 ```bash
-cd agent-60-lab/w2/cli_agent
-uv init --no-workspace . && uv add openai httpx tenacity ddgs pytest
+cd ~/Documents            # 换成你 agent-60-lab 所在的目录
+mkdir cli-agent && cd cli-agent
+uv init --no-package --author-from none .
+rm main.py                # uv 生成的 hello world,下面要换成自己的
+uv add openai httpx tenacity ddgs python-dotenv
+uv add --dev pytest
+cp ../agent-60-lab/w2/agent_loop.py ../agent-60-lab/w2/robust_agent.py .
+sed -i '' 's/^from w2\.agent_loop import/from agent_loop import/' robust_agent.py   # Linux 去掉 ''
 cat > .env.example <<'ENV'
 LLM_BASE_URL=https://api.deepseek.com
 LLM_API_KEY=sk-你的key
@@ -113,15 +121,22 @@ PRICE_OUT=1.2
 # 国内网络搜索用 Tavily(https://www.tavily.com 免费每月 1000 次),不配则用 DuckDuckGo
 TAVILY_API_KEY=
 ENV
-echo ".env" >> .gitignore
+cp .env.example .env      # 然后打开 .env 填真 key
+printf '.env\nruns/\n' >> .gitignore
 ```
 
-`.env.example` 进仓库,真正的 `.env` 不进。这一条请当成肌肉记忆:**任何时候都不要把 API key 提交到 git**。GitHub 上有大量机器人在扫描新提交里的 key,泄露后几分钟内就可能被盗刷。用 Day 2 学的 `python-dotenv` 加载 `.env`,或者用 `uv run --env-file .env python main.py`。
+这几行里有三个坑,都是实跑踩出来的:
+
+- **`uv init` 一定要带 `--no-package`。** uv 0.13 起,默认的 `uv init` 会生成 `src/cli_agent/__init__.py` 的「包」结构,还在 pyproject 里加 `[build-system]`。我们的代码是几个平铺的 `.py` 文件,如果把 `src/` 删掉,下一次 `uv add` 会直接报错 `Expected a Python module at: src/cli_agent/__init__.py`。`--no-package` 生成的是普通应用结构:一个 pyproject、一个 `main.py`,没有构建配置。`--author-from none` 是不让 uv 把 git 全局邮箱写进 `authors`,很多人的全局邮箱是公司邮箱,不该出现在个人作品里。
+- **`robust_agent.py` 要改一行 import。** 练习仓里它写的是 `from w2.agent_loop import ToolRegistry`(Day 12 为了能在根目录 `-m` 运行这么写的),复制到新目录后没有 `w2` 这个包了,`import` 会报 `ModuleNotFoundError: No module named 'w2'`。新目录里两个文件平级,改成 `from agent_loop import` 即可,上面的 `sed` 就是干这个的。
+- **`pytest` 用 `--dev` 装。** 它只在开发时用,放进 `dependencies` 的话,别人装你的项目也会被迫装一个测试框架。
+
+`.env.example` 进仓库,真正的 `.env` 不进。这一条请当成肌肉记忆:**任何时候都不要把 API key 提交到 git**。GitHub 上有大量机器人在扫描新提交里的 key,泄露后几分钟内就可能被盗刷。`runs/` 也不进 git,里面是你的真实对话记录。`main.py` 第一件事就是用 Day 2 学的 `python-dotenv` 加载 `.env`。
 
 ### tools.py
 
 ```python
-# agent-60-lab/w2/cli_agent/tools.py
+# cli-agent/tools.py
 import ast
 import operator as op
 import os
@@ -273,11 +288,15 @@ web_search(...)                     → {"error": "搜索服务暂时不可用(D
 ### main.py
 
 ```python
-# agent-60-lab/w2/cli_agent/main.py  运行:uv run python main.py
+# cli-agent/main.py  运行:uv run python main.py
 import json
 import os
 import time
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()  # 必须在下面两个 import 之前:tools.py 导入时就读 AGENT_WORKSPACE
 
 from robust_agent import Limits, RobustAgent
 from tools import WORKSPACE, reg
@@ -309,6 +328,7 @@ def main():
     WORKSPACE.mkdir(exist_ok=True)
     Path("runs").mkdir(exist_ok=True)
     agent = new_agent()
+    total = {"prompt_tokens": 0, "completion_tokens": 0}  # 整段对话的累计用量,给 /cost 看
     print(f"CLI Agent 已启动,模型 {agent.model},工作目录 {WORKSPACE}\n{HELP}")
     while True:
         try:
@@ -320,11 +340,11 @@ def main():
         if q == "/quit":
             break
         if q == "/reset":
-            agent = new_agent()
+            agent = new_agent()  # 只清对话,不清 total,/cost 仍是本次启动以来的总花费
             print("已清空对话。")
             continue
         if q == "/cost":
-            print(f"累计 token {agent.usage},约 ${cost(agent.usage):.5f}")
+            print(f"累计 token {total},约 ${cost(total):.5f}")
             continue
         if q == "/tools":
             for s in reg.schemas:
@@ -336,11 +356,15 @@ def main():
             print("已保存到", f)
             continue
 
-        agent.seen.clear()  # 循环检测按轮计算,新问题重新计数
-        before = dict(agent.usage)
+        # 循环检测和 token 预算都按轮算:RobustAgent 是按「一个任务」设计的,
+        # 不清零的话,聊十几轮后每一轮一开始就会撞 max_tokens,直接以 budget 收尾
+        agent.seen.clear()
+        agent.usage = {"prompt_tokens": 0, "completion_tokens": 0}
         t0 = time.time()
         result = agent.run(q)
-        spent = {k: agent.usage[k] - before[k] for k in before}
+        spent = agent.usage
+        for k in total:
+            total[k] += spent[k]
         print(f"\n助手> {result.answer}")
         flag = "  [需要人工跟进]" if result.needs_human else ""
         print(f"  ({result.status},{result.steps} 步,{time.time() - t0:.1f}s,本轮 ${cost(spent):.5f}){flag}")
@@ -350,18 +374,13 @@ if __name__ == "__main__":
     main()
 ```
 
-有两处值得说。一是每轮开始前 `agent.seen.clear()`:Day 12 的循环检测是按整个对话计数的,多轮对话里用户第二次问天气,模型调用同样的工具是完全合理的,不该被当成循环。二是每轮的花费单独算(`spent` 是本轮前后用量的差),这样你能直观地看到,随着对话变长,同样一个简单问题的花费会越来越高,因为每次都要带上更长的历史。这个现象 Day 20 讲上下文工程时会正面处理。
+有三处值得说。
 
-我用 Day 12 的假模型驱动 `main.py` 跑了一遍交互流程,确认命令和统计都正常:
+一是 `load_dotenv()` 放在 `from robust_agent ...` 和 `from tools ...` **之前**。`tools.py` 在被导入的那一刻就执行了 `WORKSPACE = Path(os.environ.get("AGENT_WORKSPACE", ...))`,如果先导入再加载 `.env`,你在 `.env` 里配的 `AGENT_WORKSPACE` 就不生效。Ruff 可能会提示 E402(import 不在文件顶部),这里是故意的,可以忽略。
 
-```text
-CLI Agent 已启动,模型 fake,工作目录 .../cli_agent/workspace
-命令:/reset 清空对话  /cost 查看花费  /tools 列出工具  /save 保存对话  /quit 退出
+二是每轮开始前把 `agent.seen` 和 `agent.usage` 都清零。Day 12 的 `RobustAgent` 是按「一个任务」设计的:循环检测按整个对话计数,token 预算 `max_tokens` 比的也是 `self.usage` 的累计值。放进多轮对话就出问题了。用户第二次问天气,模型调用同样的工具完全合理,不该被当成循环。预算更隐蔽:我实测前八个测试问题就累计了约 42k token,`max_tokens=80_000` 的话聊到十三四轮,之后**每一轮一开始就撞预算**,直接以 `budget` 状态收尾,回答全是「信息不足」。所以预算按轮算,整段对话的总量另外记在 `total` 里给 `/cost` 用。`/reset` 只换 agent,不清 `total`。
 
-助手> 等于 2
-  (ok,2 步,0.0s,本轮 $0.00011)
-累计 token {'prompt_tokens': 200, 'completion_tokens': 40},约 $0.00011
-```
+三是每轮的花费单独打印。你能直观地看到,随着对话变长,同样一个简单问题的花费会越来越高,因为每次都要带上更长的历史(下面实测里第一轮 `$0.0007`,第八轮 `$0.004`)。这个现象 Day 20 讲上下文工程时会正面处理。
 
 ### 接上真模型试一试
 
@@ -380,11 +399,43 @@ CLI Agent 已启动,模型 fake,工作目录 .../cli_agent/workspace
 
 记录每个问题的状态、步数和花费。这张表就是你的第一份「评测集」雏形,W5 会把它扩展成自动化的评测。
 
+下面是我 2026-10-17 用 deepseek-flash 实跑的结果(`workspace/` 里放了 `trip.txt` 和 `weekly.md` 两个文件,周报里只有周一到周三的数字),八个问题合计约 $0.015:
+
+| # | 实际调用 | 状态 / 步数 | 符合期望吗 |
+| --- | --- | --- | --- |
+| 1 | 一轮并行 3 个 weather_now | ok / 2 | 符合 |
+| 2 | 直接 calculate `(30.3 + 23.4 + 13.8) / 3`,没重新查天气 | ok / 2 | 符合 |
+| 3 | files_list | ok / 2 | 符合 |
+| 4 | files_read → calculate,还主动指出周报缺周四到周日 | ok / 3 | 符合 |
+| 5 | weather_now(上海) + web_search「上海 明天 降雨」 | ok / 2 | **不完全符合**:没有乱答,但绕过工具边界去搜了 |
+| 6 | calculate 报「指数太大」后,又用 calculate 算对数估计 | ok / 3 | 符合,还给了 ≈1.995×10³⁰¹⁰ |
+| 7 | 没调用任何工具,直接拒绝 | ok / 1 | 符合 |
+| 8 | web_search 第一次超时,换了更短的词再搜 | ok / 3 | 符合,附了官网和 GitHub 链接 |
+
+第 5 题很有意思:模型知道 `weather_now` 查不了预报(它回答里原话就是这么说的),但它没停在「我查不了」,而是自己想到用 `web_search` 去搜天气预报网站。这算不算错,取决于你的产品定义。如果你希望它搜,这就是好行为;如果你担心搜索摘要不可靠,就要在 `web_search` 的描述或系统提示里写清楚。这正好是练习 3 的素材。你的结果会和我的不同,模型每次的选择都有随机性,所以练习 3 要求「重跑三次」。
+
 ### 推到 GitHub
 
 README 至少写清楚这几件事:这个项目是什么(一句话);演示(一段终端录屏 GIF 或者一段对话截图);怎么运行(三步之内);架构(Agent 循环 + 工具注册表 + 防线,可以直接用今天的知识地图);设计取舍(为什么没用框架、工具怎么设计的、失败怎么处理的)。
 
 最后一项最重要。面试官看你的仓库,看的不是代码量,而是你**为什么这么做**。「手写循环是为了完全掌控重试和预算逻辑」「web_search 描述里写了不要重复搜索,配合循环检测双保险」「计算器用 AST 而不是 eval,防止代码注入」,这些句子比一千行代码更能说明你懂行。
+
+推之前先在 GitHub 网页上建一个**空仓库**(不要勾 README、.gitignore、License,否则第一次 push 会冲突),然后:
+
+```bash
+cd cli-agent
+git config user.email "你的个人邮箱"     # 只对这个仓库生效;全局可能是公司邮箱
+git config user.name "你的名字"
+git add .
+git status                # 确认列表里没有 .env 和 runs/
+git diff --cached | grep -E 'sk-[A-Za-z0-9]{20,}' && echo "有真 key,别提交!"
+git commit -m "CLI agent: 5 tools, robust loop, multi-turn REPL"
+git branch -M main        # uv init 建的是 master,GitHub 默认是 main
+git remote add origin https://github.com/你的用户名/cli-agent.git
+git push -u origin main
+```
+
+`git config` 不带 `--global` 就只改当前仓库。提交记录里的邮箱是公开的,别人点开 commit 就能看到,所以作品集仓库要用个人邮箱。
 
 ## W2 面试题汇总
 
@@ -502,6 +553,8 @@ for 循环,上限 N 步:调模型(带 messages 和 tools);把 assistant 消息�
 - **用 eval 实现计算器。** 等于给模型开了一个任意代码执行的后门。
 - **读文件工具不检查路径。** `../../` 一路读到系统文件。
 - **API key 提交进 git。** 几分钟内就可能被盗刷。
+- **单任务的预算和循环检测直接搬进多轮对话。** 累计值越滚越大,聊十几轮后每轮都撞线。多轮场景要按轮清零。
+- **复制代码到新项目后 import 路径没改。** `from w2.xxx` 在新目录里找不到包。
 
 ## 动手练习
 
