@@ -393,7 +393,26 @@ def test_budget_stops_agent():
     assert r.status == "budget" and r.needs_human
 ```
 
-测试里有两个之前没出现过的写法,先解释一下。
+先看最上面两个辅助函数,后面每个测试都靠它们造假响应。
+
+`reply(content=None, calls=None)` 造一条「模型的回应」。两个参数都可选:传 `content` 就是模型回了一段文字,传 `calls` 就是模型要调工具,`calls` 是一个列表,因为模型一次可以调好几个工具。`reply(calls=[...])` 里的 `calls=` 是**关键字参数**,按名字传参,相当于 JS 里传 `{ calls: [...] }` 这种选项对象。`tool_call(name, args, i)` 造列表里的一个工具调用。
+
+所以 `reply(calls=[tool_call("big", {"x": "a"}, 0)])` 造出来的东西,结构和真模型返回的 JSON 一样:
+
+```
+{
+  "choices": [{ "message": {
+      "content": null,
+      "tool_calls": [{ "id": "call_0", "type": "function",
+                       "function": { "name": "big", "arguments": "{\"x\": \"a\"}" } }]
+  }}],
+  "usage": { "prompt_tokens": 100, "completion_tokens": 20 }
+}
+```
+
+意思就是「模型说:我要调 `big`,参数 `x="a"`」。`reply("好的")` 则是「模型直接回了一句『好的』,不调工具」,Agent 看到没有 `tool_calls` 就会结束循环。
+
+测试里有两个之前没出现过的写法,再解释一下。
 
 **`SimpleNamespace`:随手捏一个「有这些属性的对象」。** `SimpleNamespace(name="big", arguments="{...}")` 造出来的对象可以用 `fn.name`、`fn.arguments` 点出属性,相当于 JS 里直接写对象字面量 `{ name: "big", arguments: "{...}" }`。Python 的 dict 只能 `d["name"]`,不能 `d.name`,而 `RobustAgent` 里读模型响应用的是 `resp.choices[0].message.tool_calls`、`tc.function.name` 这种点号写法,所以假响应得是「能点出属性的对象」。`reply()` 和 `tool_call()` 就是用一层层 `SimpleNamespace` 搭出一个和真 `ChatCompletion` 长得一样的结构;`FakeClient` 里 `self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))` 也是同一个思路,凑出 `client.chat.completions.create(...)` 这条调用路径。这就是 Python 的「鸭子类型」:代码只管对象有没有这个属性,不管它是不是真的 `ChatCompletion` 类。
 
