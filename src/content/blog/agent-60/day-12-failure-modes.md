@@ -422,6 +422,23 @@ def test_budget_stops_agent():
 | 4 | `same(3)`:还是同样的调用 | 4 > 3 | 判定陷入循环,调 `_wrap_up("loop")` |
 | 5 | `reply("根据已有信息,部分完成。")` | | 收尾这次调用带 `tool_choice="none"`,模型只能给文字答案 |
 
+逐句加上注释是这样的:
+
+```python
+def test_loop_detected_and_wrapped_up():
+    # pytest 会自动运行所有 test_ 开头的函数,函数名就是这个测试在验证什么
+    same = lambda i: reply(calls=[tool_call("big", {"x": "a"}, i)])
+    # 定义一个小函数 same(i):造一条「模型要调 big,参数 x="a"」的响应;i 只是调用编号,不影响指纹
+    client = FakeClient([same(0), same(1), same(2), same(3), reply("根据已有信息,部分完成。")])
+    # 假模型的剧本:前 4 次被调都发出同一个工具调用,第 5 次回一句文字
+    r = RobustAgent(reg, "sys", Limits(max_repeats=2), client=client).run("hi")
+    # 建 Agent:工具表 reg、系统提示 "sys"、同样的调用最多允许 2 次、用假模型;然后发一句 "hi" 跑起来,结果存到 r
+    assert r.status == "loop" and r.needs_human
+    # 检查 1:结束原因是 loop(不是 ok 或 max_steps),并且标记了转人工
+    assert client.calls[-1]["tool_choice"] == "none"
+    # 检查 2:client.calls 记录了每次调模型时传的参数,[-1] 是最后一次(收尾那次),它必须禁止再调工具
+```
+
 所以两条断言分别检查:`r.status == "loop" and r.needs_human`,结束原因是循环、并标记转人工;`client.calls[-1]["tool_choice"] == "none"`,`FakeClient` 记下了每次被调用时的参数,最后一次(收尾那次)确实禁止了再调工具。剧本正好排 5 条也不是随便写的:如果 Agent 多调了一次模型,剧本被 `pop` 空了会直接报错,测试就挂了;反过来剧本有剩余不会报错,这个测试查不出「少调了」。再验证它是不是真的在测东西:把被测代码故意改坏(练习 1 就是这么做的),测试应该变红;改坏了还是绿的,说明这个测试没用,AI 写测试最常见的问题就是这个。面试里问 Agent 怎么保证可靠性,能讲清楚「用假模型离线测失败路径」比会写测试代码本身更加分。
 
 这个「假模型」技巧在后面会反复用到。W5 讲评测时,规则类的检查(工具有没有按顺序调、撞线后有没有转人工)都可以这样离线测;只有「回答质量好不好」这类问题才需要真模型和 LLM 评分。把能确定性测试的部分剥离出来,是 Agent 工程化最实用的一招。
