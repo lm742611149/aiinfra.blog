@@ -226,6 +226,15 @@ if __name__ == "__main__":
     print("本次消耗 token:", total_tokens)
 ```
 
+**`embed()` 逐行在干什么:**
+
+- `global total_tokens`:要修改文件顶部的全局变量。Python 在函数里给变量赋值时默认当成新的局部变量,不写 `global` 的话 `+=` 会报 `UnboundLocalError`(TS 函数里直接改外层 `let` 没这个限制)。
+- `for start in range(0, len(texts), EMB_BATCH)`:分批,`range(0, 25, 10)` 产生 0、10、20,相当于 `for (let start = 0; start < texts.length; start += EMB_BATCH)`。embedding 接口一次能收的条数有上限,一次全发会报错。
+- `[t.replace("\n", " ").strip() or " " for t in texts[start:start + EMB_BATCH]]`:取这一批并逐条清洗,相当于 `texts.slice(start, start + EMB_BATCH).map(t => t.replaceAll("\n", " ").trim() || " ")`。换行换成空格;清洗后变成空字符串就用一个空格代替,很多接口传空字符串会报 400(空字符串在 Python 里算「假」,`"" or " "` 得到 `" "`,和 JS 的 `||` 一样)。
+- `sorted(resp.data, key=lambda d: d.index)`:按 `index` 排序,保证第 i 个向量对应第 i 条输入。顺序一旦乱了,检索结果全错还很难发现。`lambda d: d.index` 就是 `d => d.index`;`extend` 相当于 `push(...xs)`。
+- `np.asarray(vectors, dtype=np.float32)`:嵌套列表转成 numpy 数组才能做矩阵运算,`float32` 比默认 `float64` 省一半内存,向量精度够用。
+- `arr / np.linalg.norm(arr, axis=1, keepdims=True)`:归一化,把每个向量长度缩放成 1。`axis=1` 是按行算长度;`keepdims=True` 让结果保持 `(N, 1)` 形状,`(N, 1024)` 除以 `(N, 1)` 时每一行自动除以自己的长度(numpy 的「广播」)。归一化后余弦相似度就等于点积,后面一次矩阵乘法就能算出问题和所有文档的相似度。
+
 跑一下:
 
 ```bash
