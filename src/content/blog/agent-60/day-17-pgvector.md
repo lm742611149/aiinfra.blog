@@ -124,6 +124,8 @@ CREATE INDEX IF NOT EXISTS kb_chunks_embedding_hnsw
 | `CREATE INDEX ... (category)` | 普通索引,按分类过滤时不用逐行找 | 书后的索引页 |
 | `IF NOT EXISTS` | 已经有了就跳过,重复执行不报错 | — |
 
+**EXTENSION 和 TABLE 有什么区别?** 完全不是一类东西:扩展是「给数据库加功能」,装的是代码(新类型、函数、运算符、索引方式);表是「存数据」,装的是一行行记录。`CREATE EXTENSION vector` 之后,数据库才有 `vector` 类型、`<=>` 等距离运算符和 `hnsw` 索引方式,所以必须先装扩展再建表,否则建表报 `type "vector" does not exist`。类比前端:扩展像 `npm install` 一个库,表像用库里的类型装数据的数组。扩展文件已经随 Postgres.app(或 Docker 镜像)装在电脑上,`CREATE EXTENSION` 只是把它启用到**当前这个数据库**,每个库要分别启用一次;`psql -d agent60 -c '\dx'` 能看到启用了哪些扩展。
+
 `pg_store.py` 里写的是 `vector({dim})`,`{dim}` 是 Python 的占位符,会被 `.format(dim=sql.Literal(DIM))` 换成 `.env` 里 `EMB_DIM` 的值(1024)。
 
 `vector(1024)` 声明了维度,必须和 embedding 模型输出的维度一致,插入 1536 维的向量会直接报错。这个报错反而是好事,它帮你挡住了「索引和查询用了不同模型」的事故。
