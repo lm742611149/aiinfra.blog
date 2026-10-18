@@ -234,6 +234,21 @@ def search(conn: psycopg.Connection, query_vec: np.ndarray, k: int = 4,
 
 `SCHEMA` 这里没有用 f-string,而是 `sql.SQL(...).format(dim=sql.Literal(DIM))`。如果写成 `f"... vector({DIM}) ..."`,代码能跑,但 Zed 里会出两条红线(`Argument of type "str" cannot be assigned to parameter "query"`)。psycopg 的类型标注故意只接受**写死在代码里的 SQL 字面量**:用变量拼出来的 SQL 字符串,类型检查器没法保证里面没混进用户输入,这正是 SQL 注入的来源。需要往 SQL 里放变量时,值用 `%s` 参数传(下面的 `INSERT` 就是这样),表名、维度这类不能当参数的部分,用 `psycopg.sql` 模块来拼。
 
+`sql.SQL(...).format(dim=sql.Literal(DIM))` 确实是把 `{dim}` 替换掉,但它是在 **Python 这边先拼好文本**,再整段发给数据库,和 `%s` 那种「参数单独传给数据库」不同。它和 Python 自己的 `str.format` 的区别在于 `sql.Literal` 会按 SQL 规矩转义。拿一段恶意文本实跑对比:
+
+```text
+psycopg 的 sql.Literal:  WHERE title = 'x''; DROP TABLE kb_chunks; --'
+Python 的 str.format:    WHERE title = x'; DROP TABLE kb_chunks; --
+```
+
+前者整段加了引号、单引号被转义成 `''`,数据库只当它是一个字符串值;后者原样拼进去,`DROP TABLE` 会被当成真命令执行。这里不能直接用 `%s`,是因为建表语句(DDL)不支持参数占位符,`vector(1024)` 里的维度必须是写死的文本。三种写法:
+
+| 写法 | 在哪里替换 | 用在哪 | 安全吗 |
+| --- | --- | --- | --- |
+| `%s` / `%(name)s` | 数据库那边,参数单独传 | 值的位置(`INSERT` 的值、`WHERE` 比较的值) | 安全,首选 |
+| `sql.SQL(...).format(x=sql.Literal(...))` | Python 这边,会转义 | 不能用参数的位置(维度;表名用 `sql.Identifier`) | 安全 |
+| `"...".format()` / f-string | Python 这边,不转义 | 不要用来拼 SQL | 不安全 |
+
 再写一个同步脚本:
 
 ```python
