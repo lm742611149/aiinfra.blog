@@ -562,7 +562,18 @@ if __name__ == "__main__":
 uv run python w3/ask.py 年付套餐买错了能退款吗
 ```
 
-今天所有脚本都**按文件路径运行**(`uv run python w3/xxx.py`),不要用 `-m w3.xxx`,原因和 Day 15 的 `sim_matrix.py` 一样:脚本之间是 `from embed import ...`、`from chunking import ...` 这种平级导入,只有按路径运行时 Python 才会把 `w3/` 加进搜索路径。
+今天所有脚本都**按文件路径运行**(`uv run python w3/xxx.py`),不要用 `-m w3.xxx`。什么时候用 `/`、什么时候用 `-m` 加 `.`,核心只有一句:**Python 从哪个目录开始找 `import` 的模块,取决于你怎么启动程序。**
+
+| | 按文件路径运行 | 按模块名运行 |
+| --- | --- | --- |
+| 命令 | `uv run python w3/ask.py` | `uv run python -m w2.robust_agent` |
+| 分隔符 | `/`:这是**文件路径**,和 `cd w3/` 一样 | `.`:这是**模块名**,和 `import w2.robust_agent` 一样 |
+| 从哪里找 import | **脚本所在目录**(`w3/`) | **当前目录**(项目根目录 `agent-60-lab/`) |
+| 文件里的 import 写法 | `from embed import embed`(平级文件名) | `from w2.agent_loop import ToolRegistry`(从根目录写全) |
+
+所以运行方式不是随便选的,**看文件开头的 import 有没有目录前缀**:没前缀(`from embed import`)就按路径运行用 `/`;有前缀(`from w2.xxx import`)就用 `-m` 加 `.`。两种都在项目根目录下执行。拿 `rag_numpy.py` 举例,它写的是 `from embed import embed_one`:按路径运行时从 `w3/` 里找,找得到;用 `-m w3.rag_numpy` 时从根目录找,根目录下没有 `embed.py`,就报 `No module named 'embed'`。TS 类比:有点像 `"./embed"`(相对当前文件)和 `"w3/embed"`(相对 tsconfig 的 `baseUrl`)的区别,只是 Python 不看 import 写在哪个文件里,而看程序怎么启动。
+
+课程里两种都有,是因为 W2 的文件互相引用还要配 pytest 写测试,统一写成 `from w2.xxx` 用 `-m` 运行;W3 的脚本只在 `w3/` 里互相引用,写的是平级导入,按路径运行。
 
 输出大致长这样(分数和措辞会因模型而异):
 
