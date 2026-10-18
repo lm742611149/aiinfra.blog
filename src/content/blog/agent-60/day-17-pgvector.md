@@ -230,7 +230,7 @@ def search(conn: psycopg.Connection, query_vec: np.ndarray, k: int = 4,
     return [dict(zip(cols, r)) for r in rows]
 ```
 
-**`connect()` 在干什么?** 连上数据库,并做好用向量的准备。`autocommit=True` 让每条 SQL 执行完立刻生效;不加的话 psycopg 默认把所有语句放进一个事务,要手动 `conn.commit()`,忘了提交程序一结束改动就全丢了。需要多条语句一起成功或一起失败的地方(`sync_chunks` 的批量写入),另外用 `with conn.transaction():` 包起来。`register_vector(conn)` 告诉 psycopg 怎么在 numpy 数组和数据库的 `vector` 类型之间互相转换:注册后,写入时可以直接把 numpy 数组当 SQL 参数传,查询返回的向量也会自动变回 numpy 数组(有点像给 `JSON.parse` 传 reviver)。它要去数据库里查 `vector` 类型的内部编号,所以必须先 `CREATE EXTENSION`,否则报错找不到类型。
+**`connect()` 在干什么?** 连上数据库,并做好用向量的准备。`autocommit=True` 让每条 SQL 执行完立刻生效;不加的话 psycopg 默认把所有语句放进一个事务,要手动 `conn.commit()`,忘了提交程序一结束改动就全丢了。需要多条语句一起成功或一起失败的地方(`sync_chunks` 的批量写入),另外用 `with conn.transaction():` 包起来。`register_vector(conn)` 告诉 psycopg 怎么在 numpy 数组和数据库的 `vector` 类型之间互相转换:注册后,写入时可以直接把 numpy 数组当 SQL 参数传,查询返回的向量也会自动变回 numpy 数组(有点像给 `JSON.parse` 传 reviver)。它要去数据库里查 `vector` 类型的内部编号,所以必须先 `CREATE EXTENSION`,否则报错找不到类型。为什么 `SCHEMA` 里已经有这句,`connect()` 还要再执行一次?因为 `connect()` 总是最先调用的:`pg_sync.py` 是先 `connect()` 再 `init_schema()`,`rag_pg.py` 更是只调 `connect()`、从不建表。在全新的数据库上,`connect()` 不自己先装扩展,`register_vector` 就会报错。`SCHEMA` 里留着那句,是为了让这段 SQL 单独贴进 `psql` 也能执行;两处都带 `IF NOT EXISTS`,重复执行直接跳过。这种「执行一次和执行多次结果一样」的写法叫**幂等**,初始化代码都尽量这么写,就不用操心调用顺序。
 
 **`sha()` 在干什么?** 给一段文字算「指纹」:内容一样指纹一定一样,改一个字就完全不同。实跑:`'3 个工作日内原路退回'` → `478405b7…`,`'5 个工作日内原路退回'` → `ecbcc12a…`。`encode("utf-8")` 先把字符串转成字节(哈希只能处理字节,TS 里是 `new TextEncoder().encode()`),`hexdigest()` 转成 64 个十六进制字符方便存进 `text` 列。`sync_chunks` 用它做增量更新:从库里取出每块上次的指纹,和现在算的比,**对不上的才重新算 embedding**,所以第二次同步是 `embedded: 0`。不直接比全文,是因为指纹固定 64 个字符,存得小、比得快。Webpack 产物 `main.3f2a1c.js` 文件名里的哈希是同一个思路。
 
