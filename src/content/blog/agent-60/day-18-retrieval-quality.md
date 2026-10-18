@@ -127,6 +127,17 @@ if __name__ == "__main__":
 uv run python w3/bm25_index.py
 ```
 
+`tokenize()` 那一行是列表推导式,`[输出 for 变量 in 列表 if 条件]`,相当于 TS 的 `.filter(...).map(...)` 合成一行。拆开就是:jieba 切词 → `WORD.fullmatch` 去掉空格和标点 → 去掉停用词 → 转小写。拿「导入的时候报 E1043」走一遍:
+
+```text
+jieba.lcut   ['导入', '的', '时候', '报', ' ', 'E1043']
+去空格标点   ['导入', '的', '时候', '报', 'E1043']
+去停用词     ['导入', 'E1043']
+转小写       ['导入', 'e1043']
+```
+
+转小写是为了让用户打的 `e1043` 和文档里的 `E1043` 算同一个词。建索引(`BM25Index.__init__`)和查询(`search`)都调同一个 `tokenize`,两边切法才一致。
+
 第一次运行 jieba 会打印两行 `SyntaxWarning: invalid escape sequence`,是 jieba 源码老写法在新版 Python 下的警告,不影响结果,忽略即可。
 
 这段不调任何 API,我在本机跑过,输出是这样的(分数是 BM25 原始分,只在同一个查询内部可比):
