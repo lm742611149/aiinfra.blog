@@ -91,7 +91,7 @@ jieba.setLogLevel(logging.WARNING)
 for word in ["免费版", "专业版", "企业版", "年付", "月付", "红冲", "自动续费", "宽限期", "两步验证", "多币种", "账本"]:
     jieba.add_word(word)
 
-STOPWORDS = set("的 了 是 吗 呢 啊 吧 在 和 与 及 或 我 你 我们 你们 怎么 怎么办 什么 如何 可以 能 还 要 就 都 也 把 被 让 会 有 没有 一个".split())
+STOPWORDS = set("的 了 是 吗 呢 啊 吧 在 和 与 及 或 我 你 我们 你们 怎么 怎么办 什么 如何 可以 能 还 要 就 都 也 把 被 让 会 有 没有 一个 时候 报".split())
 WORD = re.compile(r"\w+")  # \w 在 Python 里包含汉字、字母、数字,用来去掉标点和空格
 
 
@@ -122,6 +122,8 @@ if __name__ == "__main__":
 uv run python w3/bm25_index.py
 ```
 
+第一次运行 jieba 会打印两行 `SyntaxWarning: invalid escape sequence`,是 jieba 源码老写法在新版 Python 下的警告,不影响结果,忽略即可。
+
 这段不调任何 API,我在本机跑过,输出是这样的(分数是 BM25 原始分,只在同一个查询内部可比):
 
 ```text
@@ -135,10 +137,12 @@ E1043 是什么错误 ['e1043', '错误']
 企业版年付中途取消能退多少 ['企业版', '年付', '中途', '取消', '退', '多少']
     12.02  kb-002#1
      7.75  kb-002#2
-     4.19  kb-006#1
+     4.18  kb-006#1
 ```
 
 E1042 和 E1043 各自精确命中了自己那篇,这就是 BM25 的价值。第三个查询加了业务词典后,「企业版」「年付」都切对了。但查询里的「退」和文档里的「退款」是两个不同的词,BM25 匹配不上。它照样找对了,靠的是「企业版」「年付」「中途」「取消」这些词。这也说明了 BM25 的短板:用户说「退」、文档写「退款」,用户说「把钱要回来」、文档写「退款」,它都无能为力。这部分正好是向量检索擅长的。两者互补,所以要混合。
+
+停用词表里的「时候」「报」是我实测踩坑后加的。最初的表里没有它们,结果「导入的时候报 E1043」这个问题,BM25 把《自动续费与扣款规则》排了第一。拆开看各个词的 IDF:「时候」在 42 块里只出现在 kb-004 一处,IDF 是 3.32;「e1043」出现在 kb-011 的两块里,IDF 只有 2.79。一个口语虚词的权重压过了错误码,原因就是它在语料里碰巧少见。所以 BM25 的停用词表不是网上抄一份就完事,要拿真实的用户问题跑一跑,看哪些口语词在捣乱。
 
 还有一个 `rank_bm25` 的小坑:它的 IDF 计算在文档很少时会出现 0 甚至负数(一个词出现在一半以上的文档里时)。比如你用 2 篇文档测试,分数全是 0,别以为代码写错了。我们有 42 块,大部分词不会碰到这个问题。
 
@@ -308,7 +312,15 @@ uv add httpx
 uv run python w3/rerank.py
 ```
 
-你应该看到 E1043 那条排第一,而且分数和第二名拉开明显的差距。rerank 分数的另一个用处是做「不相关」判断:如果精排后的最高分都很低,说明知识库里大概率没有答案,可以直接走「转人工」,不用浪费一次大模型调用。阈值同样要在 Day 19 的评估集上定。
+你应该看到 E1043 那条排第一,而且分数和第二名拉开明显的差距。我实测的输出:
+
+```text
+0.895  错误码 E1043:文件编码错误。文件不
+0.038  错误码 E1042:银行流水导入失败。列
+0.017  导入银行流水:支持 CSV 和 XLSX
+```
+
+embedding 眼里这两篇很像,rerank 直接拉开到 0.895 对 0.038。这就是 cross-encoder「逐字对照」的效果。rerank 分数的另一个用处是做「不相关」判断:如果精排后的最高分都很低,说明知识库里大概率没有答案,可以直接走「转人工」,不用浪费一次大模型调用。阈值同样要在 Day 19 的评估集上定。
 
 rerank 的代价要心里有数。每次查询多一次网络调用,对 20–30 个候选打分,通常增加几十到几百毫秒延迟。如果自己部署 bge-reranker,需要 GPU 才快。客服这种场景,多 200 毫秒换准确率,非常值。
 
@@ -367,11 +379,11 @@ if __name__ == "__main__":
 
 这里用了 Day 6 的 JSON mode(`response_format={"type": "json_object"}`)。DeepSeek 和大部分 OpenAI 兼容服务都支持,如果你用的服务不支持,去掉这个参数,靠 prompt 约束加 `try/except` 兜底。注意兜底逻辑:改写失败就用原问题。检索链路上的任何增强步骤失败了,都应该降级,而不是让整个请求报错。
 
-输出大致是:
+我用 deepseek-flash 实测的输出(每次措辞会略有不同):
 
 ```text
-['如何修改发票抬头或重新开具发票', '导入银行流水报错 E1043 怎么解决']
-['年付套餐能不能退款']
+['发票开错了怎么处理', '导入流水报错 E1043 怎么解决']
+['年付套餐是否支持退款']
 ```
 
 改写不是免费的:多一次大模型调用,增加几百毫秒到一两秒的延迟,也多花钱。我的做法是:多轮对话里只要有历史就改写;单轮问题先不改写,等评估数据证明有收益再开。另外改写有时会「改坏」,比如把用户说的「E1043」改成了「编码错误」,错误码丢了,BM25 反而找不到了。所以多路查询里保留原问题作为其中一路,下面的代码就是这么做的。
@@ -472,7 +484,31 @@ if __name__ == "__main__":
 | 发票抬头写错了 | kb-007 |  |  |  |  |
 | API 调用返回 429 | kb-019 |  |  |  |  |
 
+跑一次要调 18 次 embedding、6 次 rerank,大约 8 秒,费用可以忽略。
+
 我预期的规律是:纯 BM25 在错误码类问题上稳,在「把钱要回来」这种口语问题上容易失手;纯向量反过来;混合两类都不差;rerank 让排序再稳一点。如果你的结果和预期不一致,那就更有意思了,去看具体哪一块排在了前面、为什么。6 个问题太少,说明不了统计意义,这正是明天要建 30 条评估集的原因。
+
+<details><summary>我的实测结果(bge-m3 + bge-reranker-v2-m3,自己跑完再看)</summary>
+
+```text
+导入的时候报 E1043   期望 kb-011  vector:kb-011✓  bm25:kb-011✓  hybrid:kb-011✓  hybrid+rerank:kb-011✓
+E1042 是什么意思     期望 kb-010  vector:kb-010✓  bm25:kb-010✓  hybrid:kb-010✓  hybrid+rerank:kb-010✓
+买错了能把钱要回来吗  期望 kb-002  vector:kb-002✓  bm25:-✗       hybrid:kb-002✓  hybrid+rerank:kb-003✗
+这个月被重复扣了两次钱 期望 kb-002  vector:kb-002✓  bm25:kb-002✓  hybrid:kb-002✓  hybrid+rerank:kb-002✓
+发票抬头写错了       期望 kb-007  vector:kb-007✓  bm25:kb-007✓  hybrid:kb-007✓  hybrid+rerank:kb-007✓
+API 调用返回 429    期望 kb-019  vector:kb-019✓  bm25:kb-019✓  hybrid:kb-019✓  hybrid+rerank:kb-019✓
+top-1 命中: {'vector': 6, 'bm25': 5, 'hybrid': 6, 'hybrid+rerank': 5}
+```
+
+和「预期规律」不完全一样,有三点值得说:
+
+纯向量 6 题全对。 我们的帮助中心只有 20 篇、42 块,每篇主题差别很大,bge-m3 在这么小的库上几乎不会错。E1042/E1043 这种「近亲」它也分开了,因为块里除了错误码还有「编码」「日期格式」这些区别明显的词。向量检索的短板要在几千篇、主题互相重叠的库上才会明显暴露。
+
+纯 BM25 栽在「把钱要回来」上,返回 `-`。 分词后是「买错」「钱」「要回来」,没有一个词出现在任何文档里,所有块得分都是 0,一个结果都没有。这正是上面说的 BM25 短板。另外如果你的停用词表里没加「时候」,第一题 BM25 也会错(见 BM25 那一节)。
+
+rerank 把「买错了能把钱要回来吗」排成了 kb-003《如何申请退款》,标成了 ✗。 但你读一下这个问题,用户想把钱要回来,《如何申请退款》其实也是对的答案,甚至比《退款政策》更直接。这不是 rerank 错了,是我的标注只写了一个「正确答案」。真实的评估集里,一个问题经常有多篇相关文档,标注要允许多个答案。这也是明天建评估集时要处理的问题。
+
+</details>
 
 ## Contextual Retrieval:把上下文写进每一块
 
@@ -520,26 +556,31 @@ import pdfplumber
 
 
 def table_to_markdown(rows: list[list[str | None]]) -> str:
-    rows = [[(c or "").replace("\n", " ").strip() for c in row] for row in rows if row and any(row)]
-    if len(rows) < 2:
+    # 换个变量名:rows 声明的是 str | None,洗成 str 后放进新变量,否则 join 会报类型红线
+    clean = [[(c or "").replace("\n", " ").strip() for c in row] for row in rows if row and any(row)]
+    if len(clean) < 2:
         return ""
-    header, body = rows[0], rows[1:]
+    header, body = clean[0], clean[1:]
     lines = ["| " + " | ".join(header) + " |", "|" + " --- |" * len(header)]
     lines += ["| " + " | ".join(r + [""] * (len(header) - len(r))) + " |" for r in body]
     return "\n".join(lines)
 
 
+_ocr_engine = None  # 模型加载慢,全局只建一次
+
+
 def ocr_page(page) -> str:
-    """扫描件:把这一页渲染成图片再 OCR。没装 rapidocr 就返回空,并提醒。"""
+    """扫描件:把这一页渲染成图片再 OCR。没装 rapidocr 就返回提示文字。"""
+    global _ocr_engine
     try:
         import numpy as np
-        from rapidocr import RapidOCR
+        from rapidocr import RapidOCR  # 没装时编辑器会标黄/红,正常
     except ImportError:
         return "(这一页是扫描图片,没有文字层;安装 rapidocr 后可 OCR)"
-    engine = getattr(ocr_page, "_engine", None) or RapidOCR()
-    ocr_page._engine = engine  # 模型加载慢,只建一次
+    if _ocr_engine is None:
+        _ocr_engine = RapidOCR()
     img = page.to_image(resolution=200).original  # PIL 图片
-    result = engine(np.array(img))
+    result = _ocr_engine(np.array(img))
     return "\n".join(result.txts or [])
 
 
@@ -568,15 +609,15 @@ def parse_pdf(path: Path, title: str | None = None) -> str:
     return "\n\n".join(parts)
 
 
-if __name__ == "__main__":
-    print(parse_pdf(Path(sys.argv[1])))
-
-
 def table_rows_to_chunks(table_title: str, rows: list[list[str | None]]) -> list[str]:
     """大表格按行切块,每一块都带上表名和表头,单独检索到一行时也看得懂。"""
-    rows = [[(c or "").strip() for c in row] for row in rows if row and any(row)]
-    header, body = rows[0], rows[1:]
+    clean = [[(c or "").strip() for c in row] for row in rows if row and any(row)]
+    header, body = clean[0], clean[1:]
     return [f"{table_title}:" + ";".join(f"{h}={v}" for h, v in zip(header, row) if v) for row in body]
+
+
+if __name__ == "__main__":
+    print(parse_pdf(Path(sys.argv[1])))
 ```
 
 我用 reportlab 生成了一个带表格的两页测试 PDF,跑出来是这样的(英文内容是因为生成 PDF 时没配中文字体,解析逻辑和中文一样):
@@ -600,13 +641,13 @@ Second page text about invoices.
 
 调这段代码时我踩了两个坑,都值得记下来。第一个:最开始我用 `page.outside_bbox(表格范围)` 去掉表格区域的文字,结果表格上方那一行正文被截成了「CloudLedger plans. Annua」,后半截不见了。原因是这个裁剪方法会把和表格范围有交叠的字符一起裁掉。改成按每个字符的中心点判断是否落在表格内,才正确。第二个:同一张表如果没有画边框线,pdfplumber 默认的表格识别(按线条找表格)根本识别不出来,整张表会被当成普通文字抽出来,又变回「Pro 49 468 5」。真实文档里无框表格非常多,这时候要么调 pdfplumber 的 `table_settings` 改成按文字对齐识别(容易误判),要么换下面说的版面分析工具。
 
-表格怎么切块。 小表格整张作为一块就行。大表格(几十上百行的价格表、对照表)整张放一块,向量会被稀释;按行切又会丢掉表头,单独检索到「专业版 49 468 5」也看不懂。我的做法是按行切,每一块都带上表名和表头,也就是上面 `doc_parse.py` 末尾的这个函数:
+表格怎么切块。 小表格整张作为一块就行。大表格(几十上百行的价格表、对照表)整张放一块,向量会被稀释;按行切又会丢掉表头,单独检索到「专业版 49 468 5」也看不懂。我的做法是按行切,每一块都带上表名和表头,也就是上面 `doc_parse.py` 里的这个函数:
 
 ```python
 def table_rows_to_chunks(table_title: str, rows: list[list[str | None]]) -> list[str]:
     """大表格按行切块,每一块都带上表名和表头,单独检索到一行时也看得懂。"""
-    rows = [[(c or "").strip() for c in row] for row in rows if row and any(row)]
-    header, body = rows[0], rows[1:]
+    clean = [[(c or "").strip() for c in row] for row in rows if row and any(row)]
+    header, body = clean[0], clean[1:]
     return [f"{table_title}:" + ";".join(f"{h}={v}" for h, v in zip(header, row) if v) for row in body]
 ```
 
