@@ -395,6 +395,21 @@ uv run python w3/chunking.py
 - `dict(line.split(": ", 1) for line in fm.strip().splitlines())`:按行切,每行按**第一个** `": "` 切成 `[键, 值]`,再用 `dict()` 拼成字典,相当于 TS 的 `Object.fromEntries(...)`。只切 1 刀,所以标题里本身带冒号也没事。
 - 局限:这是给我们自己生成、格式固定的文件写的简化版。frontmatter 里只要有一行不含 `": "`(空行、YAML 列表),就会报 `ValueError: dictionary update sequence element #0 has length 1`。真实项目用 `python-frontmatter` 这类库解析完整的 YAML。
 
+**`split_long()` 在干什么?** 小节超过 `max_chars` 时按固定长度切,相邻两块留 `overlap` 个字重叠。拿 20 个字、每块 8 字、重叠 3 字实跑:
+
+```text
+'一二三四五六七八'
+'六七八九十ABC'
+'ABCDEFGH'
+'FGHIJ'
+```
+
+- `pieces, start = [], 0`:同时给两个变量赋值,相当于 `let pieces: string[] = [], start = 0`。
+- `text[start:start + max_chars]`:切片,相当于 `text.slice(a, b)`,超出末尾不报错,有多少取多少。
+- `if start + max_chars >= len(text): break`:这一块已经到末尾就停,否则会多出几块只有重叠部分的短尾巴。
+- `start += max_chars - overlap`:下一刀不从这一块末尾开始,而是往回退 `overlap` 个字,所以上例起点依次是 0、5、10、15。重叠是为了让被一刀切断的关键句,至少在一块里是完整的。
+- 隐藏的坑:`overlap` 必须小于 `max_chars`。两者相等时 `start += 0` 起点不动,`while` 变成死循环,程序卡住还不报错。真实项目在函数开头加一行 `assert 0 <= overlap < max_chars`。
+
 输出应该是「42 块」(如果你改过文章,数字会不同),外加前三块的内容。打开看一眼第一块,`text` 字段应该以「套餐与价格 > 三种套餐」开头。
 
 切块大小怎么定?没有标准答案,但有几个经验:
