@@ -111,6 +111,21 @@ CREATE INDEX IF NOT EXISTS kb_chunks_embedding_hnsw
 
 **这段 SQL 不用手动执行**,它是让你看懂表结构的。同样的内容写在下面 `pg_store.py` 的 `SCHEMA` 里,跑 `pg_sync.py` 时 `init_schema()` 会自动执行;每句都带 `IF NOT EXISTS`,就算你手动执行过,重复执行也不会报错。跑完后可以用 `psql -d agent60 -c '\d kb_chunks'` 查看建好的表和索引。
 
+没写过 SQL 的话,先看懂这几个基础概念:
+
+| 写法 | 意思 | TS 类比 |
+| --- | --- | --- |
+| `CREATE EXTENSION vector` | 给当前数据库加载 pgvector,之后才有 `vector` 类型和 `<=>` 运算符 | 装好库后 `import` |
+| `text` | 不限长度的字符串 | `string` |
+| `NOT NULL` | 这一列必须有值 | 必填字段,而不是 `string \| null` |
+| `PRIMARY KEY` | 主键,这一列不能重复,用来唯一标识一行 | 对象的唯一 `id` |
+| `timestamptz` | 带时区的时间 | `Date` |
+| `DEFAULT now()` | 插入时不填就自动用当前时间 | 参数默认值 |
+| `CREATE INDEX ... (category)` | 普通索引,按分类过滤时不用逐行找 | 书后的索引页 |
+| `IF NOT EXISTS` | 已经有了就跳过,重复执行不报错 | — |
+
+`pg_store.py` 里写的是 `vector({dim})`,`{dim}` 是 Python 的占位符,会被 `.format(dim=sql.Literal(DIM))` 换成 `.env` 里 `EMB_DIM` 的值(1024)。
+
 `vector(1024)` 声明了维度,必须和 embedding 模型输出的维度一致,插入 1536 维的向量会直接报错。这个报错反而是好事,它帮你挡住了「索引和查询用了不同模型」的事故。
 
 `USING hnsw (embedding vector_cosine_ops)` 建 HNSW 索引,`vector_cosine_ops` 表示这个索引是为余弦距离服务的。如果你查询时用的是 L2 距离(`<->`),这个索引就用不上。**索引的距离类型和查询的操作符必须对应**,这是 pgvector 最常见的「明明建了索引为什么还是慢」的原因。
