@@ -55,7 +55,23 @@ docker run -d --name agent60-pg \
 
 国内拉 Docker Hub 镜像可能很慢甚至失败,这时候要给 Docker 配镜像加速器,或者走代理。这个坑太普遍了,如果卡住,不要在这里耗一下午,换个网络或者问问身边的人。
 
-把连接串加到 `.env`:
+**Mac 上没装 Docker,或者电脑配置比较低,用 Postgres.app 更省事。** Docker Desktop 在 Mac 上要先起一个虚拟机,常驻占 2 GB 左右内存,老电脑会明显变卡。[Postgres.app](https://postgresapp.com/) 是一个普通的 Mac 应用,**自带 pgvector**,空闲时 Postgres 只占十几 MB 内存。我 2026-10-18 在一台 2019 款 Intel MacBook 上实测可用:
+
+1. 到 [GitHub Releases](https://github.com/PostgresApp/PostgresApp/releases/tag/v2.9.6) 下载 `Postgres-2.9.6-17.dmg`(只含 PostgreSQL 17,约 114 MB,Intel 和 Apple 芯片通用,自带 pgvector 0.8.6)。别下页面最上面的 `v3beta`,那是测试版。
+2. 打开 dmg,把 Postgres.app 拖进「应用程序」,打开它,点 **Initialize**。看到绿色的「Running」就是起来了,监听 5432 端口。
+3. 把命令行工具加进 PATH,然后建库:
+
+```bash
+echo 'export PATH="/Applications/Postgres.app/Contents/Versions/latest/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+createdb agent60
+```
+
+4. Postgres.app 默认的数据库用户就是你的 Mac 用户名,本机连接**不需要密码**,所以下面 `.env` 里的连接串要换成 `PG_DSN=postgresql://你的Mac用户名@localhost:5432/agent60`(终端里 `whoami` 能看到用户名)。
+
+不学的时候可以在菜单栏的大象图标里点 Stop,省电省内存。Homebrew 的 `brew install postgresql@17 pgvector` 在较老的 macOS 上可能失败:依赖的 readline 没有预编译包,要从源码编译,又会要求先更新 Xcode 命令行工具。我实测就卡在这一步,所以推荐 Postgres.app。
+
+把连接串加到 `.env`(用 Postgres.app 的按上面第 4 步改):
 
 ```bash
 # agent-60-lab/.env  新增
@@ -108,29 +124,30 @@ CREATE INDEX IF NOT EXISTS kb_chunks_embedding_hnsw
 """知识库的 pgvector 存储:建表、增量写入、检索。"""
 import hashlib
 import os
-from pathlib import Path
 
 import numpy as np
 import psycopg
 from dotenv import load_dotenv
 from pgvector.psycopg import register_vector
+from psycopg import sql
 
 load_dotenv()
 DSN = os.environ["PG_DSN"]
 DIM = int(os.environ.get("EMB_DIM", "1024"))
 
-SCHEMA = f"""
+# 用 sql.SQL + format 拼维度,而不是 f-string:psycopg 只接受写死的 SQL 字面量,防 SQL 注入
+SCHEMA = sql.SQL("""
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS kb_chunks (
     id text PRIMARY KEY, doc_id text NOT NULL, title text NOT NULL,
     category text NOT NULL, section text NOT NULL, content text NOT NULL,
-    content_hash text NOT NULL, embedding vector({DIM}) NOT NULL,
+    content_hash text NOT NULL, embedding vector({dim}) NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS kb_chunks_category_idx ON kb_chunks (category);
 CREATE INDEX IF NOT EXISTS kb_chunks_embedding_hnsw
     ON kb_chunks USING hnsw (embedding vector_cosine_ops);
-"""
+""").format(dim=sql.Literal(DIM))
 
 
 def connect() -> psycopg.Connection:
@@ -194,6 +211,8 @@ def search(conn: psycopg.Connection, query_vec: np.ndarray, k: int = 4,
     return [dict(zip(cols, r)) for r in rows]
 ```
 
+`SCHEMA` 这里没有用 f-string,而是 `sql.SQL(...).format(dim=sql.Literal(DIM))`。如果写成 `f"... vector({DIM}) ..."`,代码能跑,但 Zed 里会出两条红线(`Argument of type "str" cannot be assigned to parameter "query"`)。psycopg 的类型标注故意只接受**写死在代码里的 SQL 字面量**:用变量拼出来的 SQL 字符串,类型检查器没法保证里面没混进用户输入,这正是 SQL 注入的来源。需要往 SQL 里放变量时,值用 `%s` 参数传(下面的 `INSERT` 就是这样),表名、维度这类不能当参数的部分,用 `psycopg.sql` 模块来拼。
+
 再写一个同步脚本:
 
 ```python
@@ -216,7 +235,7 @@ uv run python w3/pg_sync.py
 # 第二次:{'total': 42, 'embedded': 0, 'deleted': 0}
 ```
 
-第二次运行 `embedded` 是 0,因为内容哈希没变,一个 embedding 都没算。现在去 `make_helpcenter.py` 里把退款政策里重复扣款的「3 个工作日」改成「5 个工作日」,重新生成文章,再同步一次,你会看到 `embedded` 只有 1 或 2。这就是增量更新。
+第二次运行 `embedded` 是 0,因为内容哈希没变,一个 embedding 都没算。现在去 `make_helpcenter.py` 里把退款政策里重复扣款那句「全额退还重复的那一笔,3 个工作日内原路退回」的 3 改成 5,重新生成文章(`uv run python w3/make_helpcenter.py`),再同步一次,你会看到 `embedded` 只有 1(我实测就是 1)。注意文件里有两处「3 个工作日」,另一处是「支付宝 1 到 3 个工作日到账」,两处都改的话就是 2。这就是增量更新。
 
 为什么要费这个劲?CloudLedger 只有 42 块,全量重算也就几秒钟。但真实的知识库几万篇文章,运营每天改几篇。全量重建一次可能要几十分钟、花几块到几十块钱,而且重建期间索引是旧的或者是空的。用内容哈希判断变化,是生产 RAG 系统最基本的工程素养,面试问「知识库怎么更新」时这是标准答案的一部分。
 
@@ -411,6 +430,8 @@ LIMIT 5;
 
     ```bash
     docker exec -it agent60-pg psql -U postgres -d agent60
+    # 用 Postgres.app 的直接:
+    psql -d agent60
     ```
 
     ```sql
@@ -419,24 +440,53 @@ LIMIT 5;
     \d kb_chunks
     ```
 
-3. 跑 `rag_pg.py`,对比「不过滤」和「只搜退款类」的检索结果。再试一个问题「发票开错了怎么办」,用 `categories=["退款"]` 过滤,看会发生什么(提示:过滤错了比不过滤更糟)。
-4. (选做,体会过滤的坑)造 5 万行随机向量,10% 标成 `退款`,其余标成别的,然后对比开关 `hnsw.iterative_scan` 时 `LIMIT 20` 实际返回的行数:
+3. 跑 `rag_pg.py`,对比「不过滤」和「只搜退款类」的检索结果。再试一个问题「发票开错了怎么办」,用 `categories=["退款"]` 过滤,看会发生什么(提示:过滤错了比不过滤更糟)。我实测:检索到的 4 块全是退款类(只有一块「已经开了发票怎么办」沾边),模型回答「帮助中心里没有找到这个问题的说明」,而真正讲改发票的 kb-007 被过滤掉了。
+4. (选做,体会过滤的坑)造 5 万行随机向量,10% 标成 `退款`,其余标成别的,然后对比开关 `hnsw.iterative_scan` 时 `LIMIT 20` 实际返回的行数。
+
+    **先删 HNSW 索引再插数据,插完再建索引。** 我第一次直接往带着 HNSW 索引的表里插,每插一行都要实时更新索引图,2000 行就要 51 秒,5 万行跑了 16 分钟还没完;删掉索引后,插 5 万行只要 12 秒,再建索引 89 秒,加起来不到两分钟。生产环境批量导入数据也是这个套路。用 `psql -d agent60`(Docker 的用 `docker exec -it agent60-pg psql -U postgres -d agent60`)进去执行:
 
     ```sql
+    DROP INDEX IF EXISTS kb_chunks_embedding_hnsw;
+
     INSERT INTO kb_chunks (id, doc_id, title, category, section, content, content_hash, embedding)
     SELECT 'fake-' || i, 'fake', 'fake', CASE WHEN i % 10 = 0 THEN '退款' ELSE '其他' END,
            'fake', 'fake', 'fake',
            (SELECT array_agg(random())::vector(1024) FROM generate_series(1, 1024) WHERE i > 0)
     FROM generate_series(1, 50000) AS i;
+
+    SET maintenance_work_mem = '512MB';  -- 建索引时给足内存,默认 64MB 会慢很多
+    CREATE INDEX kb_chunks_embedding_hnsw ON kb_chunks USING hnsw (embedding vector_cosine_ops);
+    ANALYZE kb_chunks;
     ```
 
-    这条 SQL 在笔记本上要跑一两分钟,建 HNSW 索引也要一会儿。做完记得 `DELETE FROM kb_chunks WHERE doc_id = 'fake';` 清理。子查询里的 `WHERE i > 0` 是为了让它变成相关子查询,每行都重新生成随机向量,否则 Postgres 可能只算一次,5 万行全是同一个向量。
+    子查询里的 `WHERE i > 0` 是为了让它变成相关子查询,每行都重新生成随机向量,否则 Postgres 可能只算一次,5 万行全是同一个向量。
+
+    **直接查,你多半看不到这个坑。** 我第一次测三种设置都返回了 20 行。用 `EXPLAIN` 一看,Postgres 根本没走 HNSW:`category` 上有普通索引,它先挑出 5000 行退款类再精确排序,自然不会少;删掉那个索引后,它又改成全表扫描,因为 5 万行扫一遍也只要几十毫秒。要亲眼看到,得在事务里临时删掉 `category` 索引、关掉全表扫描,逼它走 HNSW,测完回滚:
+
+    ```sql
+    CREATE TEMP TABLE q AS SELECT embedding AS v FROM kb_chunks WHERE id = 'fake-7';  -- 拿一行当查询向量
+    BEGIN;
+    DROP INDEX kb_chunks_category_idx;
+    SET LOCAL enable_seqscan = off;
+    EXPLAIN (COSTS OFF) SELECT id FROM kb_chunks WHERE category = '退款' ORDER BY embedding <=> (SELECT v FROM q) LIMIT 20;
+    SELECT count(*) FROM (SELECT id FROM kb_chunks WHERE category = '退款' ORDER BY embedding <=> (SELECT v FROM q) LIMIT 20) t;
+    SET LOCAL hnsw.iterative_scan = relaxed_order;
+    SELECT count(*) FROM (SELECT id FROM kb_chunks WHERE category = '退款' ORDER BY embedding <=> (SELECT v FROM q) LIMIT 20) t;
+    SET LOCAL hnsw.iterative_scan = off;
+    SET LOCAL hnsw.ef_search = 200;
+    SELECT count(*) FROM (SELECT id FROM kb_chunks WHERE category = '退款' ORDER BY embedding <=> (SELECT v FROM q) LIMIT 20) t;
+    ROLLBACK;  -- 删掉的索引会恢复
+    ```
+
+    `EXPLAIN` 里看到 `Index Scan using kb_chunks_embedding_hnsw` 加 `Filter: (category = '退款')`,就说明走的是「先取候选、再过滤」。做完记得 `DELETE FROM kb_chunks WHERE doc_id = 'fake';` 清理。我 2026-10-18 的实测:
 
 | 设置 | LIMIT 20 实际返回行数 | 耗时 |
 | --- | --- | --- |
-| 默认(不开迭代扫描) |  |  |
-| `iterative_scan = relaxed_order` |  |  |
-| `ef_search = 200` |  |  |
+| 默认(不开迭代扫描) | **3** | 18 ms |
+| `iterative_scan = relaxed_order` | 20 | 34 ms |
+| `ef_search = 200` | 20 | 12 ms |
+
+    要 20 行只给了 3 行,这就是过滤的坑。它在真实系统里出现的条件也正是这三个:过滤字段上没有合适的普通索引、数据多到规划器不再选全表扫描、过滤条件又比较严。
 
 **验收标准:** 练习 1–3 完成;能用自己的话解释为什么「只搜退款类」时问发票问题会答不上来;能讲清楚 HNSW 过滤后结果变少的原因和至少两种解决办法。
 
