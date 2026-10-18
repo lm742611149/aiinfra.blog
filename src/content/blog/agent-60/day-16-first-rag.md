@@ -459,6 +459,14 @@ uv run python w3/build_index.py
 
 这就是我们的「向量数据库」:一个 `(块数, 1024)` 的 numpy 数组,加一个顺序对应的 JSON。第 i 行向量对应 JSON 里第 i 个块。简陋,但对几千块以内的数据,它比任何向量数据库都快,因为整个矩阵就在内存里,一次矩阵乘法搞定。
 
+`vectors.npy` 在 Zed 里打不开是正常的:它是 numpy 专用的**二进制格式**,开头约 128 字节的文本头记录形状和类型,后面是 42 × 1024 个 float32 的原始字节(每个 4 字节,约 172 KB),没有逗号和换行,文本编辑器只能显示乱码。存成二进制是因为又小又快,同样的数字存成 JSON 要大好几倍。想看内容就用 Python 读:
+
+```bash
+uv run python -c "import numpy as np; v = np.load('index/vectors.npy'); print(v.shape, v.dtype); print(v[:2, :5])"
+```
+
+配套的 `chunks.json` 是文本,Zed 能直接打开,第 i 个块对应 `v[i]` 那一行。
+
 这里我插一句:`import embed as emb` 然后用 `emb.total_tokens`,而不是 `from embed import total_tokens`。后者会在导入那一刻把值(0)复制过来,之后 `embed()` 里的 `global total_tokens += ...` 改的是模块里的变量,你这边看到的永远是 0。这是 Python 新手很常踩的坑,跟 Java 的引用语义不一样。
 
 ## 检索和回答
