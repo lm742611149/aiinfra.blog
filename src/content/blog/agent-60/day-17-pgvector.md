@@ -210,7 +210,7 @@ def sync_chunks(conn: psycopg.Connection, chunks: list, embed_fn) -> dict:
 
 def search(conn: psycopg.Connection, query_vec: np.ndarray, k: int = 4,
            categories: list[str] | None = None) -> list[dict]:
-    sql = """
+    stmt = """  # 别叫 sql:会遮住文件开头 import 的 psycopg.sql 模块
         SELECT id, doc_id, title, category, section, content,
                1 - (embedding <=> %(q)s) AS score
         FROM kb_chunks
@@ -223,7 +223,7 @@ def search(conn: psycopg.Connection, query_vec: np.ndarray, k: int = 4,
     if categories:
         where = "WHERE category = ANY(%(cats)s)"
         params["cats"] = categories
-    rows = conn.execute(sql.format(where=where), params).fetchall()
+    rows = conn.execute(stmt.format(where=where), params).fetchall()
     cols = ["id", "doc_id", "title", "category", "section", "content", "score"]
     return [dict(zip(cols, r)) for r in rows]
 ```
@@ -272,6 +272,15 @@ uv run python w3/pg_sync.py
 - `WHERE id = ANY(%s)` 配一个列表参数,一条 SQL 删多行,相当于 `IN (...)`。参数写成 `(list(gone),)`,末尾逗号不能省,否则不是元组。
 
 `ON CONFLICT (id) DO UPDATE` 是 Postgres 的 upsert 语法,有就更新,没有就插入,写 Java 的同学可以理解成 MyBatis 里的 `insertOrUpdate`。整批写入包在 `conn.transaction()` 里,中途失败会整体回滚,不会出现一半新一半旧的状态。
+
+**`search()` 里有两种占位符,别搞混:**
+
+| 写法 | 谁来替换 | 替换成什么 |
+| --- | --- | --- |
+| `{where}` | Python 的 `.format(where=where)` | 一段 SQL 文本:空字符串,或 `"WHERE category = ANY(%(cats)s)"` |
+| `%(q)s`、`%(k)s`、`%(cats)s` | psycopg 驱动 | `params` 字典里同名的值,作为参数单独传给数据库 |
+
+`{where}` 只可能是代码里写死的两个值之一,用户输入进不来,所以安全;问题向量和分类列表都走 `%(...)s` 参数。`%(q)s` 是带名字的参数,和 `sync_chunks` 里按位置对应元组的 `%s` 是同一种机制,按名字写是因为 `q` 要用两次(`SELECT` 和 `ORDER BY` 各一次)。最后 `dict(zip(cols, r))` 把每行元组和列名配对成字典,`rag_pg.py` 里才能写 `h["score"]`,相当于 `Object.fromEntries(cols.map((c, i) => [c, r[i]]))`。
 
 `ORDER BY embedding <=> %(q)s` 里的 `<=>` 是 pgvector 的余弦距离操作符,距离 = 1 - 余弦相似度,所以越小越近,`ORDER BY` 默认升序正好取最近的。`SELECT` 里的 `1 - (embedding <=> q)` 把距离换回相似度,方便和 Day 16 的 numpy 版本对比。另外两个操作符:`<->` 是 L2 距离,`<#>` 是负内积(取负是为了让 `ORDER BY` 升序仍然是最相似的在前,第一次看到这个负号我也懵了好一会儿)。
 
