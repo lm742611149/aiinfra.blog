@@ -260,6 +260,17 @@ uv run python w3/pg_sync.py
 
 为什么要费这个劲?CloudLedger 只有 42 块,全量重算也就几秒钟。但真实的知识库几万篇文章,运营每天改几篇。全量重建一次可能要几十分钟、花几块到几十块钱,而且重建期间索引是旧的或者是空的。用内容哈希判断变化,是生产 RAG 系统最基本的工程素养,面试问「知识库怎么更新」时这是标准答案的一部分。
 
+**`sync_chunks()` 分四步:** 读出库里每块的旧指纹 → 挑出指纹对不上的块(新增和改过的)→ 只给这些块算 embedding 并写入 → 删掉库里有、现在已经没有的块。几个细节:
+
+- `dict(conn.execute(...).fetchall())`:`fetchall()` 返回 `[(id, hash), ...]` 二元组列表,`dict()` 把它变成 `{id: hash}`。
+- `existing.get(c.id) != sha(c.text)`:新增的块 `.get` 查不到返回 `None`,和任何指纹都不相等,所以也会被选中(`existing[c.id]` 查不到会报 `KeyError`)。
+- `embed_fn` 是当参数传进来的函数,测试时可以换成假函数,不用真调接口。
+- `zip(todo, vectors)`:两个列表一一配对,相当于 `todo.map((c, i) => [c, vectors[i]])`。
+- `%s` 是 psycopg 的参数占位符,不是 Python 字符串格式化。值放在后面的元组里由驱动安全传给数据库,文章里有引号分号也不会被当成 SQL 执行。**千万别用 f-string 把值拼进 SQL**,那就是 SQL 注入。
+- `EXCLUDED.content`:这次想插入、但因为 `id` 冲突没插进去的那一行的值,`content = EXCLUDED.content` 就是用新内容覆盖旧的。
+- `set(existing) - {c.id for c in chunks}`:集合相减,得到库里有但现在没有的块(删了文章或小节)。`{... for ...}` 是集合推导式。
+- `WHERE id = ANY(%s)` 配一个列表参数,一条 SQL 删多行,相当于 `IN (...)`。参数写成 `(list(gone),)`,末尾逗号不能省,否则不是元组。
+
 `ON CONFLICT (id) DO UPDATE` 是 Postgres 的 upsert 语法,有就更新,没有就插入,写 Java 的同学可以理解成 MyBatis 里的 `insertOrUpdate`。整批写入包在 `conn.transaction()` 里,中途失败会整体回滚,不会出现一半新一半旧的状态。
 
 `ORDER BY embedding <=> %(q)s` 里的 `<=>` 是 pgvector 的余弦距离操作符,距离 = 1 - 余弦相似度,所以越小越近,`ORDER BY` 默认升序正好取最近的。`SELECT` 里的 `1 - (embedding <=> q)` 把距离换回相似度,方便和 Day 16 的 numpy 版本对比。另外两个操作符:`<->` 是 L2 距离,`<#>` 是负内积(取负是为了让 `ORDER BY` 升序仍然是最相似的在前,第一次看到这个负号我也懵了好一会儿)。
