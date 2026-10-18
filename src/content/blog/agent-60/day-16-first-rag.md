@@ -470,6 +470,7 @@ def search(question: str, k: int = 4) -> list[tuple[dict, float]]:
 SYSTEM = """你是云簿 CloudLedger 的客服助手。
 只根据 <资料> 里的内容回答用户问题,不要用你自己的常识补充 CloudLedger 的规则。
 每一个事实性的句子后面,用方括号标注出处,例如 [kb-002#1]。一句话用到多块资料就都标上。
+出处只能原样照抄 <doc> 标签里的 id,不要在后面再加编号。
 如果资料里没有足够的信息回答,就直接说「帮助中心里没有找到这个问题的说明,建议转人工客服」,不要猜。
 回答用简洁的中文,先给结论,再给条件和步骤。"""
 
@@ -494,7 +495,9 @@ def answer(question: str, k: int = 4, show_hits: bool = True) -> str:
 
 ```python
 # agent-60-lab/w3/llm.py
+import json
 import os
+from typing import Any
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -502,12 +505,15 @@ from openai import OpenAI
 load_dotenv()
 _client = OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"])
 MODEL = os.environ["LLM_MODEL"]
+EXTRA_BODY = json.loads(os.environ.get("LLM_EXTRA_BODY", "{}"))  # 和 Day 13 一样:比如关掉 DeepSeek 的思考模式
 
 
-def chat(messages: list[dict], **kwargs) -> str:
-    resp = _client.chat.completions.create(model=MODEL, messages=messages, **kwargs)
+def chat(messages: list[Any], **kwargs: Any) -> str:
+    resp = _client.chat.completions.create(model=MODEL, messages=messages, extra_body=EXTRA_BODY, **kwargs)
     return resp.choices[0].message.content or ""
 ```
+
+两处和最朴素的写法不一样,都是实跑踩出来的。一是 `messages: list[Any]`:如果写成 `list[dict]`,Zed 里会出两条类型红线(`No overloads for "create"`),因为 SDK 要的是它自己定义的消息类型,普通 `dict` 对不上,和 Day 8、Day 13 是同一个原因。二是 `extra_body=EXTRA_BODY`:读 `.env` 里的 `LLM_EXTRA_BODY`,用来关掉 DeepSeek 的思考模式,没配就是空字典,不影响别的厂商。
 
 最后一个命令行入口:
 
@@ -526,6 +532,8 @@ if __name__ == "__main__":
 ```bash
 uv run python w3/ask.py 年付套餐买错了能退款吗
 ```
+
+今天所有脚本都**按文件路径运行**(`uv run python w3/xxx.py`),不要用 `-m w3.xxx`,原因和 Day 15 的 `sim_matrix.py` 一样:脚本之间是 `from embed import ...`、`from chunking import ...` 这种平级导入,只有按路径运行时 Python 才会把 `w3/` 加进搜索路径。
 
 输出大致长这样(分数和措辞会因模型而异):
 
@@ -549,6 +557,8 @@ uv run python w3/ask.py 年付套餐买错了能退款吗
 「只根据资料回答,不要用你自己的常识补充」。不加这句,模型看到「退款」两个字,会顺手加上一句「一般 SaaS 产品支持 7 天无理由退款」,这在 CloudLedger 是错的。模型的常识在这里是噪音。
 
 「标注出处」。引用有两个用处。对用户,他能点进原文核对;对你,引用是排查问题的线索。用户投诉回答错了,你一看引用,就知道是检索拿错了资料(检索问题),还是资料对了但模型理解错了(生成问题)。这个区分是 Day 19 评估的基础。
+
+「出处只能原样照抄 id」。这句是我实跑后补的。没有它的时候,我问「退款几天能到账」三次,有两次模型写出了 `[kb-002#4#1]` 这种编号:它想精确到块里的第几句,就自己在 id 后面又加了一层。这个 id 在 `chunks.json` 里根本不存在,Day 21 做引用展示时就对不上任何一块资料。加上这句以后三次都是合法的 id。另外注意,即使 `temperature=0`,同一个问题三次的输出也不完全一样,所以验证提示词改动要多跑几次。
 
 「没有就说不知道」。这句最重要,也最难做到。试试问一个帮助中心里没有的问题:
 
@@ -574,6 +584,8 @@ uv run python w3/ask.py 你们支持微信支付吗
 
 ## 动手练习
 
+我 2026-10-17 用硅基流动 bge-m3 + deepseek-flash 跑过下面的练习,结果写在每题后面供你对照,你的数字会略有不同。
+
 1. 跑通 `make_helpcenter.py` → `chunking.py` → `build_index.py` → `ask.py`,问下面五个问题,把检索结果和回答记下来。
 
 | 问题 | top-1 是哪块 | 回答对吗 | 引用对吗 |
@@ -584,11 +596,13 @@ uv run python w3/ask.py 你们支持微信支付吗
 | 专业版最多几个人 |  |  |  |
 | 你们支持微信支付吗 |  |  |  |
 
-2. 把 `max_chars` 改成 80,`overlap` 改成 20,重建索引,再问「年付用了两个月取消能退多少」。观察回答有没有变差,看看是不是关键信息被切散了。
+我的结果:前四题 top-1 分别是 kb-002#1、kb-010#2、kb-007#1、kb-015#2,全对,回答和引用也都对;第五题回答「帮助中心里没有找到这个问题的说明」,没有编造。
 
-3. 去掉 `text` 里的标题前缀(只用 `piece`),重建索引,再问「E1043 是什么错误」。对比 top-1 有没有变。
+2. 把 `max_chars` 改成 80,`overlap` 改成 20,重建索引,再问「年付用了两个月取消能退多少」。观察回答有没有变差,看看是不是关键信息被切散了。(改的是 `load_chunks()` 的默认参数,`build_index.py` 调它时没传参数。)我的结果:块数只从 42 变成 49,因为大部分小节本来就不到 80 字;「年付套餐」那一节被切成两块,两块都被检索到了,所以答案还是对的,但模型变得更犹豫,多了一句「其他情形建议转人工客服确认」。想看到明显变差,可以再改小到 40。
 
-4. 把 SYSTEM 里「不知道就说不知道」那句删掉,问「你们支持微信支付吗」,看模型会不会开始编。
+3. 去掉 `text` 里的标题前缀(只用 `piece`),重建索引,再问「E1043 怎么解决」,看 top-4 里还有没有「错误码 E1043 > 解决办法」那一块。我的结果:有前缀时它排第 2(0.609);去掉前缀后它掉出了 top-4,模型只拿到「原因」那块,答不出解决步骤。原因是「解决办法」那块的正文是「在 Excel 里选择另存为 CSV UTF-8…」,里面根本没有「E1043」,全靠前缀里的标题把它和错误码连起来。如果问的是「E1043 是什么错误」就看不出差别,因为「原因」那块正文里本身就写着 E1043。
+
+4. 把 SYSTEM 里「不知道就说不知道」那句删掉,问「你们支持微信支付吗」,看模型会不会开始编。我的结果:deepseek-flash 三次都没编,还是说「资料中没有相关信息」;连「只根据资料回答」那句一起删掉,三次也都没编。新一代模型在这类问题上已经比较克制了。这不说明那两句可以删:换一个小模型、或者问题里有一半信息能在资料里找到时,模型更容易顺着编下去。练习的意义是让你知道,提示词里每一句防线都要用测试验证它有没有用,而不是凭感觉加或删。
 
 **验收标准:** 前四个问题 top-1 都是对的文章;回答带引用而且引用的块确实包含答案;第五个问题模型没有说「支持微信支付」。练习 2–4 至少完成两个,并用一两句话写下你观察到的变化。
 
