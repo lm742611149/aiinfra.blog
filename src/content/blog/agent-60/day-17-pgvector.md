@@ -109,6 +109,8 @@ CREATE INDEX IF NOT EXISTS kb_chunks_embedding_hnsw
     ON kb_chunks USING hnsw (embedding vector_cosine_ops);
 ```
 
+**这段 SQL 不用手动执行**,它是让你看懂表结构的。同样的内容写在下面 `pg_store.py` 的 `SCHEMA` 里,跑 `pg_sync.py` 时 `init_schema()` 会自动执行;每句都带 `IF NOT EXISTS`,就算你手动执行过,重复执行也不会报错。跑完后可以用 `psql -d agent60 -c '\d kb_chunks'` 查看建好的表和索引。
+
 `vector(1024)` 声明了维度,必须和 embedding 模型输出的维度一致,插入 1536 维的向量会直接报错。这个报错反而是好事,它帮你挡住了「索引和查询用了不同模型」的事故。
 
 `USING hnsw (embedding vector_cosine_ops)` 建 HNSW 索引,`vector_cosine_ops` 表示这个索引是为余弦距离服务的。如果你查询时用的是 L2 距离(`<->`),这个索引就用不上。**索引的距离类型和查询的操作符必须对应**,这是 pgvector 最常见的「明明建了索引为什么还是慢」的原因。
