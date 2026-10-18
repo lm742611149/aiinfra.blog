@@ -389,6 +389,12 @@ if __name__ == "__main__":
 uv run python w3/chunking.py
 ```
 
+**`parse_article()` 在干什么?** 把一篇文章拆成「元数据」和「正文」。文件开头两条 `---` 之间那几行是 frontmatter(`id: kb-002`、`title: 退款政策`…),返回值形如 `({"id": "kb-002", "title": "退款政策", "category": "退款"}, "# 退款政策\n## 年付套餐\n…")`。
+
+- `raw.split("---", 2)`:第二个参数是「最多切 2 刀」,所以一定得到 3 段:第一个 `---` 前的空字符串(用 `_` 接住表示不要)、frontmatter、后面的全部正文。限制刀数是为了正文里再出现 `---`(Markdown 分隔线)时不被切碎。注意 TS 的 `split(sep, n)` 意思不同,是「最多返回 n 段、多余的丢掉」。
+- `dict(line.split(": ", 1) for line in fm.strip().splitlines())`:按行切,每行按**第一个** `": "` 切成 `[键, 值]`,再用 `dict()` 拼成字典,相当于 TS 的 `Object.fromEntries(...)`。只切 1 刀,所以标题里本身带冒号也没事。
+- 局限:这是给我们自己生成、格式固定的文件写的简化版。frontmatter 里只要有一行不含 `": "`(空行、YAML 列表),就会报 `ValueError: dictionary update sequence element #0 has length 1`。真实项目用 `python-frontmatter` 这类库解析完整的 YAML。
+
 输出应该是「42 块」(如果你改过文章,数字会不同),外加前三块的内容。打开看一眼第一块,`text` 字段应该以「套餐与价格 > 三种套餐」开头。
 
 切块大小怎么定?没有标准答案,但有几个经验:
