@@ -138,6 +138,11 @@ jieba.lcut   ['导入', '的', '时候', '报', ' ', 'E1043']
 
 转小写是为了让用户打的 `e1043` 和文档里的 `E1043` 算同一个词。建索引(`BM25Index.__init__`)和查询(`search`)都调同一个 `tokenize`,两边切法才一致。
 
+`BM25Index` 两个方法:
+
+- `__init__` 建索引,只跑一次。传给 `BM25Okapi` 的是「每块分好词的列表」组成的列表(42 个),它在内部把每个词的 IDF、每块长度、平均长度都预先算好。
+- `search` 分三步。`get_scores` 返回 42 个分数,第 i 个对应第 i 块;`sorted(range(len(scores)), key=lambda i: -scores[i])[:k]` 排的是下标 0–41,按分数从高到低取前 k 个,相当于 TS 的 `[...Array(n).keys()].sort((a, b) => scores[b] - scores[a]).slice(0, k)`;最后把下标换回 `(块 id, 分数)`,丢掉 0 分的(一个词都没匹配上),`float()` 是把 numpy 的数字转成普通 Python float。纯 BM25 搜「把钱要回来」返回空,就是 42 块全是 0 分、在这一步被全部过滤了。
+
 第一次运行 jieba 会打印两行 `SyntaxWarning: invalid escape sequence`,是 jieba 源码老写法在新版 Python 下的警告,不影响结果,忽略即可。
 
 这段不调任何 API,我在本机跑过,输出是这样的(分数是 BM25 原始分,只在同一个查询内部可比):
