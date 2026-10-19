@@ -410,6 +410,21 @@ uv run python w3/chunking.py
 - `start += max_chars - overlap`:下一刀不从这一块末尾开始,而是往回退 `overlap` 个字,所以上例起点依次是 0、5、10、15。重叠是为了让被一刀切断的关键句,至少在一块里是完整的。
 - 隐藏的坑:`overlap` 必须小于 `max_chars`。两者相等时 `start += 0` 起点不动,`while` 变成死循环,程序卡住还不报错。真实项目在函数开头加一行 `assert 0 <= overlap < max_chars`。
 
+**`load_chunks()` 在干什么?** 把知识库里所有文章读进来,逐篇切块,拼成一个列表。后面 Day 17 的 `pg_sync.py`、Day 18 的 `retrieve.py` 都从它拿块。
+
+```text
+kb-001.md ──切──▶ [a#0, a#1, a#2]
+kb-002.md ──切──▶ [b#0, b#1]
+                   │ extend 拼起来
+                   ▼
+out = [a#0, a#1, a#2, b#0, b#1]
+```
+
+- `DATA.glob("kb-*.md")`:找出数据目录里所有 `kb-` 开头的 Markdown 文件。
+- `sorted(...)`:`glob` 返回的顺序跟操作系统有关,不排序的话每次跑出来块的顺序可能不同,评测结果也会跟着变。排序后结果可复现。
+- `out.extend(...)`:把一篇文章切出的块逐个追加进去,相当于 TS 的 `out.push(...chunks)`。写成 `append` 的话会变成列表套列表。
+- `max_chars`、`overlap` 原样传给 `chunk_article`,在这里设默认值,调参时只改这一处。
+
 输出应该是「42 块」(如果你改过文章,数字会不同),外加前三块的内容。打开看一眼第一块,`text` 字段应该以「套餐与价格 > 三种套餐」开头。
 
 切块大小怎么定?没有标准答案,但有几个经验:
