@@ -235,6 +235,13 @@ if __name__ == "__main__":
 
 跑一下 `python3 w3/fusion.py`,输出和上面手算的四行一致。
 
+逐行看 `rrf()`:
+
+- `defaultdict(float)`:访问不存在的 key 时自动当 0.0,所以能直接 `+=`,不用先判断 key 在不在。TS 里得写 `scores[cid] = (scores[cid] ?? 0) + x`。
+- 外层循环遍历每一路(向量一路、BM25 一路),内层 `enumerate(ranking, start=1)` 同时给出名次和块 id,名次从 1 开始,相当于 TS 的 `ranking.forEach((cid, i) => { const rank = i + 1 })`。同一个块在两路里都出现,就会被 `+=` 两次,这就是「多路认可的排前面」的来源。
+- `sorted(scores.items(), key=lambda kv: -kv[1])`:`items()` 得到 `(id, 分数)` 元组,`kv[1]` 是分数,负号表示从大到小。
+- 自己敲时常见两个笔误:返回类型写成 `tuple(str, float)`(类型标注只能用方括号 `tuple[str, float]`,圆括号会在运行时报错);循环变量叫 `rid`、下一行却用 `cid`,会报 `NameError`。
+
 RRF 简单到有点不像「算法」,但它非常好用,Elasticsearch、OpenSearch、各种向量数据库的混合检索默认都是它。它来自 2009 年 Cormack 等人在 SIGIR 发表的论文,论文的结论是这个简单方法打败了当时很多复杂的融合方法。
 
 ## Rerank:先粗筛,再精排
