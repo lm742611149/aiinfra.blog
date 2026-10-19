@@ -417,6 +417,14 @@ if __name__ == "__main__":
 
 这里用了 Day 6 的 JSON mode(`response_format={"type": "json_object"}`)。DeepSeek 和大部分 OpenAI 兼容服务都支持,如果你用的服务不支持,去掉这个参数,靠 prompt 约束加 `try/except` 兜底。注意兜底逻辑:改写失败就用原问题。检索链路上的任何增强步骤失败了,都应该降级,而不是让整个请求报错。
 
+逐行看 `rewrite()`:
+
+- `(history or [])[-6:]`:没传历史就当空列表(TS 的 `history ?? []`),只取最后 6 条(约 3 轮,`.slice(-6)`),太早的对话和当前问题关系不大还费 token。每条变成 `user: 月付的能退款吗` 这样一行,再用 `"\n".join` 拼起来。
+- `history_text or '(无)'`:历史是空字符串时写「(无)」,相当于 TS 的 `||`。
+- `json.loads(raw).get("queries", [])`:`JSON.parse` 后取 `queries` 字段,取不到就是空列表。
+- 列表推导式只留「是字符串且不是空白」的项,防模型返回 `null` 或 `""`;`[:3]` 最多三条;`or [question]` 过滤完是空的就退回原问题。
+- 小漏洞:模型如果返回 JSON 数组而不是对象,`.get` 会抛 `AttributeError`,`except json.JSONDecodeError` 接不住。要更稳就写 `except (json.JSONDecodeError, AttributeError):`。开了 JSON mode 后很少遇到。
+
 我用 deepseek-flash 实测的输出(每次措辞会略有不同):
 
 ```text
