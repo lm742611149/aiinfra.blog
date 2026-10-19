@@ -340,6 +340,8 @@ uv add httpx
 uv run python w3/rerank.py
 ```
 
+开头读配置那三行:`os.environ.get("RERANK_BASE_URL", os.environ["EMB_BASE_URL"])` 是「先读 RERANK_BASE_URL,没配就用 EMB_BASE_URL」;`.rstrip("/")` 去掉右边末尾的 `/`(r = right,相当于 TS 的 `.replace(/\/+$/, "")`)。因为下面是 `f"{BASE}/rerank"` 拼地址,`.env` 里如果写成 `.../v1/`,不去掉就会拼出 `.../v1//rerank`,有的服务直接 404。`lstrip` 去左边、`strip` 去两边,不传参数时去的是空格和换行。
+
 你应该看到 E1043 那条排第一,而且分数和第二名拉开明显的差距。我实测的输出:
 
 ```text
