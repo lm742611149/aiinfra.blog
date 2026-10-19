@@ -342,6 +342,14 @@ uv run python w3/rerank.py
 
 开头读配置那三行:`os.environ.get("RERANK_BASE_URL", os.environ["EMB_BASE_URL"])` 是「先读 RERANK_BASE_URL,没配就用 EMB_BASE_URL」;`.rstrip("/")` 去掉右边末尾的 `/`(r = right,相当于 TS 的 `.replace(/\/+$/, "")`)。因为下面是 `f"{BASE}/rerank"` 拼地址,`.env` 里如果写成 `.../v1/`,不去掉就会拼出 `.../v1//rerank`,有的服务直接 404。`lstrip` 去左边、`strip` 去两边,不传参数时去的是空格和换行。
 
+`rerank()` 本身就是一次 POST,相当于 TS 的 `fetch(url, { method: "POST", headers, body: JSON.stringify(...) })`。几个细节:
+
+- `if not documents: return []`:空列表直接返回,省一次请求,有的服务收到空列表会报 400。
+- 用 `httpx` 而不是 `openai` SDK,因为 OpenAI 协议里没有 rerank 接口。`json=` 会自动序列化,`timeout=30` 防止卡死。
+- `top_n` 取 `min(top_n, len(documents))`,不能超过文档数;`return_documents: False` 让响应里不带原文,只要下标和分数。
+- `resp.raise_for_status()`:状态码 4xx/5xx 时抛异常。`fetch` 遇到 4xx/5xx 不会抛,要自己判断 `resp.ok`,这行就相当于 `if (!resp.ok) throw ...`。
+- 响应是 `{"results": [{"index": 1, "relevance_score": 0.895}, ...]}`,已按分数从高到低排好。`index` 是你传进去的 `documents` 的下标。返回下标而不是文本,是因为调用方手里有完整的 `Chunk`,`retrieve.py` 最后用 `candidates[i]` 取回块 id、标题等信息。
+
 你应该看到 E1043 那条排第一,而且分数和第二名拉开明显的差距。我实测的输出:
 
 ```text
