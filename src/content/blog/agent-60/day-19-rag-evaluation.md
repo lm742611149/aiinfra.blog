@@ -227,6 +227,15 @@ if __name__ == "__main__":
     main()
 ```
 
+**`main()` 逐行在干什么?** 把 30 条 `CASES` 逐条转成 JSON 写进文件,一行一条。
+
+- `OUT.parent.mkdir(parents=True, exist_ok=True)`:先建 `data/eval/` 目录。`parents=True` 相当于 `mkdir -p`,上级目录不存在就一起建;`exist_ok=True` 表示目录已存在也不报错,脚本可以反复跑。
+- `OUT.open("w", encoding="utf-8")`:`"w"` 会清空重写,所以每次都是最新的 30 条,不会越积越多。`with` 保证块结束时自动关闭文件,相当于 TS 在 `try/finally` 里 `close()`。
+- `for i, (q, docs, typ, points) in enumerate(CASES, start=1)`:`enumerate` 给出从 1 开始的序号;每条 `CASES` 是四元组,括号里直接解包成四个变量,相当于 TS 的 `const [q, docs, typ, points] = c`。
+- `f"q{i:02d}"`:`02d` 表示整数至少 2 位、不够补 0,1 变成 `q01`。补零后按字符串排序 `q02` 才会在 `q10` 前面。
+- `json.dumps(row, ensure_ascii=False)`:相当于 `JSON.stringify`。`ensure_ascii=False` 让中文原样写入,不加的话「月付」会变成 `月付`。后面 `+ "\n"` 就是 JSONL 的「一行一条」。
+- `CASES` 用元组是为了手写方便;写进文件时转成带字段名的 JSON,后面 `eval_retrieval.py` 就能按 `row["question"]` 取值,比按位置 `row[0]` 清楚,以后加字段也不会弄乱顺序。
+
 用 JSONL(一行一个 JSON)存评估集,是业界的习惯:方便追加、方便 `git diff` 看改了哪条、方便用 `jq` 筛选。评估集要进 git,和代码一起做版本管理。改了评估集,之前的分数就不可比了,所以每次实验记录里要写「评估集版本」。
 
 30 条够吗?作为第一版够了,它能抓住大问题。但要知道它的局限:30 条里一条的变化就是 3.3 个百分点,两个方案差 3 分可能只是噪音。W5 讲测试集时会讨论样本量;实际项目里,我会从 30 条起步,每发现一个线上 bug 就加一条,几个月后自然长到几百条。
