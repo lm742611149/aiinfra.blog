@@ -522,6 +522,70 @@ if __name__ == "__main__":
 
 跑一下 `uv run python w3/memory_store.py`,你大致会看到抽出来三四条记忆:年付专业版、使用招商银行、E1043 导入问题已解决、偏好邮件联系。再跑一次,应该大部分是「更新」而不是「新增」,这就是去重在起作用。如果你发现同一件事被存了两条,说明 0.9 的阈值对你的 embedding 模型偏高,这正好是一个校准的机会。
 
+**`memory_store.py` 逐段在干什么?** 拿 `__main__` 里的三句对话走一遍。整体是四个函数:`remember` 写入(抽取 → 去重 → 新增或更新),`recall` 读取,`forget` 删除,`init` 建表。
+
+**建表 `SCHEMA`。** `f"""..."""` 是 f-string,`{DIM}` 会被替换成 1024(`pg_store.py` 里 `EMB_DIM` 的默认值),得到 `vector(1024)`,维数必须和 embedding 模型输出的一致。`bigserial` 是自增 id;`kind` 只存三种值:profile(稳定事实)、preference(偏好)、event(事件);`timestamptz ... DEFAULT now()` 表示插入时自动填当前时间。最后在 `user_id` 上建普通索引,因为每条查询都先按用户过滤。注意 `EXTRACT_PROMPT` 没有加 `f`,因为它里面有 JSON 的花括号 `{"memories": ...}`,加了 `f` 会被当成占位符,直接报错。
+
+**`extract`:让模型从对话里挑出值得记的事。**
+
+- `transcript = "\n".join(f"{m['role']}: {m['content']}" for m in conversation if ...)`:只保留 user 和 assistant(system、tool 消息不要),每条拼成「角色: 内容」,再用换行连起来。演示数据拼出来是:
+
+  ```text
+  user: 我们是年付的专业版,导入招商银行流水一直报 E1043
+  assistant: E1043 是编码问题,请另存为 CSV UTF-8 ……
+  user: 好了,解决了。以后有事发邮件给我就行,别打电话
+  ```
+
+- `chat(..., temperature=0, response_format={"type": "json_object"})`:`temperature=0` 让抽取结果尽量稳定;`json_object` 是 JSON 模式,保证返回的是一个合法的 JSON 对象(提示词里也必须出现「JSON」这个词,否则 OpenAI 兼容接口会报错)。模型大概返回:
+
+  ```json
+  {"memories": [
+    {"kind": "profile",    "content": "年付专业版"},
+    {"kind": "profile",    "content": "使用招商银行"},
+    {"kind": "event",      "content": "2026-10 导入招商银行流水报 E1043,另存为 CSV UTF-8 后已解决"},
+    {"kind": "preference", "content": "希望邮件联系,不要打电话"}
+  ]}
+  ```
+
+- `json.loads(raw).get("memories", [])`:解析后取 `memories`,没有这个键就返回空列表。万一返回的不是 JSON,`except json.JSONDecodeError: return []`,宁可这次什么都不记,也不让整个对话崩掉。
+- 最后的列表推导式是一道过滤:`content` 不能为空,`kind` 必须是三种之一。模型偶尔会自己发明一个 `"kind": "note"`,在这里就被扔掉了,不会写进数据库。
+
+**`remember`:去重以后写入。**
+
+- `vectors = embed([m["content"] for m in items])`:把 4 条内容一次性批量算 embedding,得到 4 个 1024 维的向量,比逐条调用省 3 次网络请求。
+- `for m, v in zip(items, vectors)`:`zip` 把两个列表一一配对,相当于 TS 的 `items.map((m, i) => [m, vectors[i]])`。
+- 查重的 SQL:在**同一个用户**的记忆里找和 `v` 最像的那一条。`<=>` 是 pgvector 的余弦距离(0 表示方向完全一样),`1 - 距离` 就是相似度。`v` 传了两次,因为 SELECT 里算 sim 要用一次,ORDER BY 排序又要用一次,每个 `%s` 各占一个参数。`fetchone()` 返回一个元组 `(id, content, sim)`,表是空的就返回 `None`。
+- `if row and row[2] >= DUP_THRESHOLD`:找到了,而且相似度 ≥ 0.9,就当作同一件事,用 UPDATE 覆盖成新的说法;否则就 INSERT 一条新的。
+
+**第一次运行**:表是空的。
+
+| m | 最像的已有记忆 | sim | 动作 |
+| --- | --- | --- | --- |
+| 年付专业版 | 无(表空,row 是 None) | — | 新增 |
+| 使用招商银行 | 年付专业版 | 约 0.5 | 新增 |
+| E1043 已解决 | 使用招商银行 | 约 0.6 | 新增 |
+| 希望邮件联系 | 年付专业版 | 约 0.4 | 新增 |
+
+第 2 条查重时已经能查到第 1 条,因为 `connect()` 开了 `autocommit=True`(Day 17),每条 INSERT 执行完就生效。
+
+**第二次运行**:同样的对话,模型这次可能写成「用户是年付专业版客户」。它和表里的「年付专业版」相似度约 0.93,≥ 0.9,所以走 UPDATE:内容换成新说法,`updated_at` 刷新,表里还是 4 条。日志打印的是 `更新: 年付专业版 → 用户是年付专业版客户`。上面那些相似度数字是示意,实际值取决于你用的 embedding 模型,这也是 0.9 要自己校准的原因。
+
+**`recall`:分两路取回记忆。**
+
+- 第一路:profile 类不看相关性,按 `updated_at` 从新到旧取最多 5 条,得到 `["年付专业版", "使用招商银行"]`。套餐、银行这些事实不管用户问什么都可能用得上,而且一般就几条。
+- 第二路:把当前问题「导入又报错了」算成向量,在**非 profile**(`kind <> 'profile'`,`<>` 就是 SQL 的不等于)的记忆里按距离从近到远取 k=3 条。表里非 profile 的只有 2 条:「E1043 已解决」距离近,排第一;「希望邮件联系」排第二。
+- `profile + related` 是列表拼接,最后返回:
+
+  ```python
+  ["年付专业版", "使用招商银行",
+   "2026-10 导入招商银行流水报 E1043,另存为 CSV UTF-8 后已解决",
+   "希望邮件联系,不要打电话"]
+  ```
+
+  把这 4 条放进 system prompt,用户再说「导入又报错了」,Agent 就知道他是招商银行用户、以前碰到过 E1043,可以先问一句「还是 E1043 吗」。注意「希望邮件联系」其实和这个问题无关,但它也被取回来了:`LIMIT k` 只限制条数,不管相关度。记忆多了以后,可以加一个距离阈值,把不相关的过滤掉。
+
+**`forget`**:删除这个用户的全部记忆,`rowcount` 是被删掉的行数,演示数据会返回 4。
+
 市面上有专门做 Agent 记忆的开源项目:[mem0](https://github.com/mem0ai/mem0) 主打即插即用的记忆层;[Letta](https://github.com/letta-ai/letta-code)(前身是论文 [MemGPT](https://arxiv.org/abs/2310.08560))的思路是让 Agent 像操作系统管理内存一样,自己决定把什么换进换出上下文。我的建议是先像今天这样手写一遍,搞清楚写入、去重、召回、删除四个环节,再去评估这些库,你会知道它们帮你省掉了什么、又藏起了什么。
 
 ## Agentic RAG:让 Agent 自己决定查不查
