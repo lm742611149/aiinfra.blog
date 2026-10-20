@@ -173,7 +173,7 @@ if __name__ == "__main__":
 - `if used + cost > budget and kept: break`:装下这一轮就超了,就停。`and kept` 的意思是 `kept` 还空着时超了也要装,最新一轮无论多大都必须留,否则连用户刚问的问题都没了。
 - `[m for turn in reversed(kept) for m in turn]`:`kept` 是倒着装的,`reversed` 翻回时间顺序;双层推导式把「轮的列表」摊平成「消息的列表」,相当于 TS 的 `kept.slice().reverse().flat()`。
 
-拿下面的演示走一遍:system 约 45 token,每轮约 168 token,预算 600。装第 7 轮 → 213,第 6 轮 → 381,第 5 轮 → 549,第 4 轮 → 717 超了,停。剩 system + 3 轮共 7 条,就是输出里的 `17 → 7`。
+拿上面的演示走一遍:system 约 45 token,每轮约 168 token,预算 600。装第 7 轮 → 213,第 6 轮 → 381,第 5 轮 → 549,第 4 轮 → 717 超了,停。剩 system + 3 轮共 7 条,就是输出里的 `17 → 7`。
 
 ## 压缩:别直接丢,先总结
 
