@@ -168,6 +168,20 @@ if __name__ == "__main__":
 - `system = [...]` / `rest = [...]`:按「是不是 system」分成两堆,相当于 TS 的 `filter`。system 里是人设和规则,无论如何都留着。
 - `turns: list[list[dict]]`:列表的列表,每个元素是一轮,比如 `[user1, assistant1(调工具), tool1, assistant1(回答)]`。
 - `if m["role"] == "user" or not turns`:遇到 user 就开新的一轮,其他消息塞进最后一轮(`turns[-1]`,相当于 TS 的 `turns.at(-1)`)。`or not turns` 是兜底:历史开头不是 user 时也先建一轮,否则空列表上取 `turns[-1]` 会报 `IndexError`。
+
+  分组拿数据走一遍更清楚。假设去掉 system 后 `rest` 是这 6 条:①user「E1043 是什么错」→ ②assistant(调工具)→ ③tool(查到的结果)→ ④assistant(回答)→ ⑤user「那年付能退吗」→ ⑥assistant(回答)。规则只有一条:遇到 user 就换个新袋子,其他消息都装进最后一个袋子。
+
+  | 处理 | role | 动作 | 执行后的 turns |
+  | --- | --- | --- | --- |
+  | ① | user | 开新的一轮 | `[[①]]` |
+  | ② | assistant | 装进最后一轮 | `[[①,②]]` |
+  | ③ | tool | 装进最后一轮 | `[[①,②,③]]` |
+  | ④ | assistant | 装进最后一轮 | `[[①,②,③,④]]` |
+  | ⑤ | user | 开新的一轮 | `[[①,②,③,④],[⑤]]` |
+  | ⑥ | assistant | 装进最后一轮 | `[[①,②,③,④],[⑤,⑥]]` |
+
+  预算不够时,第 0 轮的 4 条整袋扔掉,剩 `[⑤,⑥]`。工具调用要么整组都在,要么整组都不在,不会出现只删了 ② 却留下 ③ 的情况。
+
 - `used = sum(...)`:先扣掉 system 占的预算。
 - `for turn in reversed(turns)`:从最新的一轮往回装,最近的对话最重要。
 - `if used + cost > budget and kept: break`:装下这一轮就超了,就停。`and kept` 的意思是 `kept` 还空着时超了也要装,最新一轮无论多大都必须留,否则连用户刚问的问题都没了。
