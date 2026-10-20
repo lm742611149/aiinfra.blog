@@ -163,6 +163,18 @@ if __name__ == "__main__":
 
 注意那个「按轮丢弃」的设计,这是我被坑过才加上的。如果只按条数从前往后删,很可能删掉了 assistant 发起工具调用的那条消息,却留下了后面的 tool 结果消息。OpenAI 兼容的接口看到一条 `role: tool` 的消息前面没有对应的 `tool_calls`,会直接返回 400 错误。报错信息通常是类似「messages with role 'tool' must be a response to a preceding message with 'tool_calls'」这样的话。第一次碰到时我盯着这个报错看了很久才想明白。
 
+**`trim_history` 逐段在干什么?** 一句话:超预算时从最早的对话开始扔,但 system 消息和最新一轮一定保留。
+
+- `system = [...]` / `rest = [...]`:按「是不是 system」分成两堆,相当于 TS 的 `filter`。system 里是人设和规则,无论如何都留着。
+- `turns: list[list[dict]]`:列表的列表,每个元素是一轮,比如 `[user1, assistant1(调工具), tool1, assistant1(回答)]`。
+- `if m["role"] == "user" or not turns`:遇到 user 就开新的一轮,其他消息塞进最后一轮(`turns[-1]`,相当于 TS 的 `turns.at(-1)`)。`or not turns` 是兜底:历史开头不是 user 时也先建一轮,否则空列表上取 `turns[-1]` 会报 `IndexError`。
+- `used = sum(...)`:先扣掉 system 占的预算。
+- `for turn in reversed(turns)`:从最新的一轮往回装,最近的对话最重要。
+- `if used + cost > budget and kept: break`:装下这一轮就超了,就停。`and kept` 的意思是 `kept` 还空着时超了也要装,最新一轮无论多大都必须留,否则连用户刚问的问题都没了。
+- `[m for turn in reversed(kept) for m in turn]`:`kept` 是倒着装的,`reversed` 翻回时间顺序;双层推导式把「轮的列表」摊平成「消息的列表」,相当于 TS 的 `kept.slice().reverse().flat()`。
+
+拿下面的演示走一遍:system 约 45 token,每轮约 168 token,预算 600。装第 7 轮 → 213,第 6 轮 → 381,第 5 轮 → 549,第 4 轮 → 717 超了,停。剩 system + 3 轮共 7 条,就是输出里的 `17 → 7`。
+
 ## 压缩:别直接丢,先总结
 
 直接丢掉旧对话有个明显的问题:用户第 1 轮说过「我们是年付的企业版」,第 10 轮问「那我能退吗」,这时候第 1 轮已经被裁掉了,Agent 不知道他是什么套餐。
