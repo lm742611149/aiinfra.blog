@@ -522,69 +522,350 @@ if __name__ == "__main__":
 
 跑一下 `uv run python w3/memory_store.py`,你大致会看到抽出来三四条记忆:年付专业版、使用招商银行、E1043 导入问题已解决、偏好邮件联系。再跑一次,应该大部分是「更新」而不是「新增」,这就是去重在起作用。如果你发现同一件事被存了两条,说明 0.9 的阈值对你的 embedding 模型偏高,这正好是一个校准的机会。
 
-**`memory_store.py` 逐段在干什么?** 拿 `__main__` 里的三句对话走一遍。整体是四个函数:`remember` 写入(抽取 → 去重 → 新增或更新),`recall` 读取,`forget` 删除,`init` 建表。
+**`memory_store.py` 逐行讲解。** 全程用 `__main__` 里那三句对话当数据,用户是 `u-1024`。表里的相似度数字是示意,实际值取决于你的 embedding 模型。
 
-**建表 `SCHEMA`。** `f"""..."""` 是 f-string,`{DIM}` 会被替换成 1024(`pg_store.py` 里 `EMB_DIM` 的默认值),得到 `vector(1024)`,维数必须和 embedding 模型输出的一致。`bigserial` 是自增 id;`kind` 只存三种值:profile(稳定事实)、preference(偏好)、event(事件);`timestamptz ... DEFAULT now()` 表示插入时自动填当前时间。最后在 `user_id` 上建普通索引,因为每条查询都先按用户过滤。注意 `EXTRACT_PROMPT` 没有加 `f`,因为它里面有 JSON 的花括号 `{"memories": ...}`,加了 `f` 会被当成占位符,直接报错。
+**文件头和导入**
 
-**`extract`:让模型从对话里挑出值得记的事。**
+```python
+"""长期记忆:从对话里抽取值得记住的用户事实,存进 pgvector;下次对话按相关性取回。"""
+```
+模块的 docstring,只是说明,不执行。
 
-- `transcript = "\n".join(f"{m['role']}: {m['content']}" for m in conversation if ...)`:只保留 user 和 assistant(system、tool 消息不要),每条拼成「角色: 内容」,再用换行连起来。演示数据拼出来是:
+```python
+import json
+```
+标准库,用来把模型返回的 JSON 字符串解析成 dict,相当于 TS 的 `JSON.parse`。
 
-  ```text
-  user: 我们是年付的专业版,导入招商银行流水一直报 E1043
-  assistant: E1043 是编码问题,请另存为 CSV UTF-8 ……
-  user: 好了,解决了。以后有事发邮件给我就行,别打电话
-  ```
+```python
+from embed import embed, embed_one
+```
+Day 15 写的:`embed(list[str])` 批量算向量,返回向量列表;`embed_one(str)` 算一条,返回一个向量。
 
-- `chat(..., temperature=0, response_format={"type": "json_object"})`:`temperature=0` 让抽取结果尽量稳定;`json_object` 是 JSON 模式,保证返回的是一个合法的 JSON 对象(提示词里也必须出现「JSON」这个词,否则 OpenAI 兼容接口会报错)。模型大概返回:
+```python
+from llm import chat
+```
+Day 16 的 `chat()`,发消息、返回模型回复的字符串。
 
-  ```json
-  {"memories": [
-    {"kind": "profile",    "content": "年付专业版"},
-    {"kind": "profile",    "content": "使用招商银行"},
-    {"kind": "event",      "content": "2026-10 导入招商银行流水报 E1043,另存为 CSV UTF-8 后已解决"},
-    {"kind": "preference", "content": "希望邮件联系,不要打电话"}
-  ]}
-  ```
+```python
+from pg_store import DIM, connect
+```
+Day 17 的:`DIM` 是向量维数(默认 1024);`connect()` 返回一个 `autocommit=True` 并注册了 pgvector 类型的连接。
 
-- `json.loads(raw).get("memories", [])`:解析后取 `memories`,没有这个键就返回空列表。万一返回的不是 JSON,`except json.JSONDecodeError: return []`,宁可这次什么都不记,也不让整个对话崩掉。
-- 最后的列表推导式是一道过滤:`content` 不能为空,`kind` 必须是三种之一。模型偶尔会自己发明一个 `"kind": "note"`,在这里就被扔掉了,不会写进数据库。
+**建表 SQL**
 
-**`remember`:去重以后写入。**
+```python
+SCHEMA = f"""
+```
+`f"""` 是三引号的 f-string,可以跨多行,里面的 `{DIM}` 会被替换成变量值。
 
-- `vectors = embed([m["content"] for m in items])`:把 4 条内容一次性批量算 embedding,得到 4 个 1024 维的向量,比逐条调用省 3 次网络请求。
-- `for m, v in zip(items, vectors)`:`zip` 把两个列表一一配对,相当于 TS 的 `items.map((m, i) => [m, vectors[i]])`。
-- 查重的 SQL:在**同一个用户**的记忆里找和 `v` 最像的那一条。`<=>` 是 pgvector 的余弦距离(0 表示方向完全一样),`1 - 距离` 就是相似度。`v` 传了两次,因为 SELECT 里算 sim 要用一次,ORDER BY 排序又要用一次,每个 `%s` 各占一个参数。`fetchone()` 返回一个元组 `(id, content, sim)`,表是空的就返回 `None`。
-- `if row and row[2] >= DUP_THRESHOLD`:找到了,而且相似度 ≥ 0.9,就当作同一件事,用 UPDATE 覆盖成新的说法;否则就 INSERT 一条新的。
+```sql
+CREATE TABLE IF NOT EXISTS user_memories (
+```
+表不存在才建。重复运行不报错,这就是 Day 17 讲的幂等。
 
-**第一次运行**:表是空的。
+```sql
+    id          bigserial PRIMARY KEY,
+```
+自增主键,第一条是 1,第二条是 2……`bigserial` 是 64 位的,不用担心用完。
 
-| m | 最像的已有记忆 | sim | 动作 |
-| --- | --- | --- | --- |
-| 年付专业版 | 无(表空,row 是 None) | — | 新增 |
-| 使用招商银行 | 年付专业版 | 约 0.5 | 新增 |
-| E1043 已解决 | 使用招商银行 | 约 0.6 | 新增 |
-| 希望邮件联系 | 年付专业版 | 约 0.4 | 新增 |
+```sql
+    user_id     text NOT NULL,
+```
+这条记忆属于哪个用户,比如 `'u-1024'`。不能为空。
 
-第 2 条查重时已经能查到第 1 条,因为 `connect()` 开了 `autocommit=True`(Day 17),每条 INSERT 执行完就生效。
+```sql
+    kind        text NOT NULL,              -- profile / preference / event
+```
+记忆的类型。`--` 是 SQL 的注释。
 
-**第二次运行**:同样的对话,模型这次可能写成「用户是年付专业版客户」。它和表里的「年付专业版」相似度约 0.93,≥ 0.9,所以走 UPDATE:内容换成新说法,`updated_at` 刷新,表里还是 4 条。日志打印的是 `更新: 年付专业版 → 用户是年付专业版客户`。上面那些相似度数字是示意,实际值取决于你用的 embedding 模型,这也是 0.9 要自己校准的原因。
+```sql
+    content     text NOT NULL,
+```
+记忆的正文,比如 `'年付专业版'`。
 
-**`recall`:分两路取回记忆。**
+```sql
+    embedding   vector({DIM}) NOT NULL,
+```
+f-string 替换后变成 `vector(1024)`,存 content 的向量,用来查相似。维数必须和 embedding 模型的输出一致,否则插入时报错。
 
-- 第一路:profile 类不看相关性,按 `updated_at` 从新到旧取最多 5 条,得到 `["年付专业版", "使用招商银行"]`。套餐、银行这些事实不管用户问什么都可能用得上,而且一般就几条。
-- 第二路:把当前问题「导入又报错了」算成向量,在**非 profile**(`kind <> 'profile'`,`<>` 就是 SQL 的不等于)的记忆里按距离从近到远取 k=3 条。表里非 profile 的只有 2 条:「E1043 已解决」距离近,排第一;「希望邮件联系」排第二。
-- `profile + related` 是列表拼接,最后返回:
+```sql
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now()
+```
+带时区的时间戳。INSERT 时不传这两列,数据库自动填当前时间。UPDATE 时 `updated_at` 不会自动变,所以后面的 UPDATE 语句里手动写了 `updated_at = now()`。
 
-  ```python
-  ["年付专业版", "使用招商银行",
-   "2026-10 导入招商银行流水报 E1043,另存为 CSV UTF-8 后已解决",
-   "希望邮件联系,不要打电话"]
-  ```
+```sql
+);
+CREATE INDEX IF NOT EXISTS user_memories_user_idx ON user_memories (user_id);
+"""
+```
+在 `user_id` 上建普通索引。后面每条查询都先 `WHERE user_id = ...`,有索引就不用全表扫。
 
-  把这 4 条放进 system prompt,用户再说「导入又报错了」,Agent 就知道他是招商银行用户、以前碰到过 E1043,可以先问一句「还是 E1043 吗」。注意「希望邮件联系」其实和这个问题无关,但它也被取回来了:`LIMIT k` 只限制条数,不管相关度。记忆多了以后,可以加一个距离阈值,把不相关的过滤掉。
+**抽取提示词**
 
-**`forget`**:删除这个用户的全部记忆,`rowcount` 是被删掉的行数,演示数据会返回 4。
+```python
+EXTRACT_PROMPT = """你在为 CloudLedger 客服系统整理关于这位用户的长期记忆。
+...
+没有值得记的就返回空列表。只输出 JSON:{"memories": [{"kind": "...", "content": "..."}]}"""
+```
+告诉模型记什么(三类)、不记什么(寒暄和敏感信息)、输出什么格式。注意这里**没有 `f`**:字符串里有 JSON 的 `{}`,加了 `f` 会被当成占位符,一运行就报错。另外,下面用 JSON 模式时,提示词里必须出现「JSON」这个词,OpenAI 兼容接口会检查。
+
+```python
+DUP_THRESHOLD = 0.9  # 和已有记忆相似度超过这个值,就当作同一条,更新而不是新增
+```
+去重阈值。全大写是 Python 里「常量」的约定写法,语言层面并不禁止修改。
+
+**`init`**
+
+```python
+def init(conn) -> None:
+    conn.execute(SCHEMA)
+```
+执行上面的建表 SQL。psycopg 3 允许一次 `execute` 执行用分号隔开的多条语句(前提是没有传参数),所以建表和建索引一次就执行完了。
+
+**`extract`:从对话里抽记忆**
+
+```python
+def extract(conversation: list[dict]) -> list[dict]:
+```
+输入是消息列表,输出是 `[{"kind": ..., "content": ...}, ...]`。
+
+```python
+    transcript = "\n".join(
+        f"{m['role']}: {m['content']}"
+        for m in conversation
+        if m["role"] in ("user", "assistant")
+    )
+```
+括号里是生成器表达式,读法是「对 conversation 里每个 m,只要 role 是 user 或 assistant,就生成一个 `"角色: 内容"` 字符串」,然后 `"\n".join(...)` 用换行把它们连起来。相当于 TS 的 `conversation.filter(...).map(m => \`${m.role}: ${m.content}\`).join("\n")`。`in ("user", "assistant")` 是判断在不在这个元组里,相当于 `["user", "assistant"].includes(m.role)`。f-string 里用单引号 `m['role']`,是因为外层已经用了双引号(Python 3.12 起也可以用同种引号,但这样写更好认)。演示数据执行完是:
+
+```text
+user: 我们是年付的专业版,导入招商银行流水一直报 E1043
+assistant: E1043 是编码问题,请另存为 CSV UTF-8 ……
+user: 好了,解决了。以后有事发邮件给我就行,别打电话
+```
+
+```python
+    raw = chat(
+        [
+            {"role": "system", "content": EXTRACT_PROMPT},
+            {"role": "user", "content": transcript},
+        ],
+        temperature=0,
+        response_format={"type": "json_object"},
+    )
+```
+system 放规则,user 放整段对话。`temperature=0` 让每次抽取结果尽量一样;`response_format` 打开 JSON 模式,保证返回的是一个合法的 JSON 对象。`raw` 是字符串,大概是:
+
+```json
+{"memories": [
+  {"kind": "profile",    "content": "年付专业版"},
+  {"kind": "profile",    "content": "使用招商银行"},
+  {"kind": "event",      "content": "2026-10 导入招商银行流水报 E1043,另存为 CSV UTF-8 后已解决"},
+  {"kind": "preference", "content": "希望邮件联系,不要打电话"}
+]}
+```
+
+```python
+    try:
+        items = json.loads(raw).get("memories", [])
+```
+`json.loads` 把字符串变成 dict;`.get("memories", [])` 取这个键,没有就返回 `[]`,不会抛 `KeyError`。这里 `items` 是上面那 4 个 dict 组成的列表。
+
+```python
+    except json.JSONDecodeError:
+        return []
+```
+万一返回的不是合法 JSON,这次就什么都不记。记忆是锦上添花的功能,不能因为它让整个对话报错。
+
+```python
+    return [
+        m
+        for m in items
+        if m.get("content") and m.get("kind") in ("profile", "preference", "event")
+    ]
+```
+再过滤一遍:`m.get("content")` 为空字符串或 None 都是假值,会被扔掉;kind 必须是三种之一。比如模型多返回了一条 `{"kind": "note", "content": "用户很客气"}`,在这里就被丢掉了。演示数据 4 条全部通过。
+
+**`remember`:去重后写入**
+
+```python
+def remember(conn, user_id: str, conversation: list[dict]) -> list[str]:
+    items = extract(conversation)
+```
+`items` 就是上面那 4 条。
+
+```python
+    if not items:
+        return []
+```
+空列表是假值,`not []` 为 True。没东西可记,就直接返回,连 embedding 都不用调。
+
+```python
+    vectors = embed([m["content"] for m in items])
+```
+先用推导式取出 4 条 content:`["年付专业版", "使用招商银行", "2026-10 导入…", "希望邮件联系…"]`,一次性算 embedding,得到 4 个 1024 维的向量(numpy 数组)。批量算比逐条调用少 3 次网络请求。
+
+```python
+    log = []
+```
+用来收集「新增了什么、更新了什么」,最后返回给调用方打印。
+
+```python
+    for m, v in zip(items, vectors):
+```
+`zip` 把两个列表按位置配对:第 1 圈 `m = {"kind": "profile", "content": "年付专业版"}`,`v` 是它的向量;第 2 圈是「使用招商银行」和它的向量,以此类推。相当于 TS 的 `items.forEach((m, i) => { const v = vectors[i]; ... })`。
+
+```python
+        row = conn.execute(
+            """SELECT id, content, 1 - (embedding <=> %s) AS sim FROM user_memories
+               WHERE user_id = %s ORDER BY embedding <=> %s LIMIT 1""",
+            (v, user_id, v),
+        ).fetchone()
+```
+在**这个用户**的记忆里找和 `v` 最像的一条。`<=>` 是 pgvector 的余弦距离,0 表示方向完全一样;`1 - 距离` 就是相似度,起名叫 `sim`。SQL 里有 3 个 `%s`,所以参数元组也是 3 个,按顺序对应:`v`(算 sim)、`user_id`(过滤)、`v`(排序)。值由驱动安全地填进去,不是拼字符串,所以没有 SQL 注入。`ORDER BY 距离 LIMIT 1` 取最近的一条;`fetchone()` 返回一个元组 `(id, content, sim)`,没有任何行就返回 `None`。
+
+```python
+        if row and row[2] >= DUP_THRESHOLD:
+```
+`row` 不是 None,并且 `row[2]`(sim)≥ 0.9,就认为是同一件事。`and` 是短路的:`row` 是 None 时后半句不会执行,所以不会出现 `None[2]` 报错。
+
+```python
+            conn.execute(
+                "UPDATE user_memories SET content = %s, embedding = %s, kind = %s, updated_at = now() WHERE id = %s",
+                (m["content"], v, m["kind"], row[0]),
+            )
+```
+覆盖旧记忆:内容、向量、类型都换成新的,`updated_at` 刷成现在。`WHERE id = row[0]` 只改那一行。
+
+```python
+            log.append(f"更新: {row[1]} → {m['content']}")
+```
+`row[1]` 是旧内容,写进日志,方便看到「谁被改成了谁」。
+
+```python
+        else:
+            conn.execute(
+                "INSERT INTO user_memories (user_id, kind, content, embedding) VALUES (%s, %s, %s, %s)",
+                (user_id, m["kind"], m["content"], v),
+            )
+            log.append(f"新增[{m['kind']}]: {m['content']}")
+```
+不是重复的,就插入一条新的。id、created_at、updated_at 都不用传,由数据库自动填。
+
+**第一次运行**,表是空的:
+
+| 圈 | m["content"] | row(最像的已有记忆) | sim | 走哪个分支 | log 追加 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 年付专业版 | None | — | else | `新增[profile]: 年付专业版` |
+| 2 | 使用招商银行 | (1, 年付专业版, …) | 约 0.5 | else | `新增[profile]: 使用招商银行` |
+| 3 | 2026-10 导入…已解决 | (2, 使用招商银行, …) | 约 0.6 | else | `新增[event]: 2026-10 导入…` |
+| 4 | 希望邮件联系… | (1, 年付专业版, …) | 约 0.4 | else | `新增[preference]: 希望邮件联系…` |
+
+第 2 圈就能查到第 1 圈刚插入的那条,因为连接开了 `autocommit=True`,每条 INSERT 执行完立刻生效。
+
+**第二次运行**,模型把第 1 条写成了「用户是年付专业版客户」:查到 `(1, 年付专业版, 0.93)`,0.93 ≥ 0.9,走 UPDATE,日志是 `更新: 年付专业版 → 用户是年付专业版客户`,表里仍然是 4 条。
+
+```python
+    return log
+```
+返回日志列表。
+
+**`recall`:取回记忆**
+
+```python
+def recall(conn, user_id: str, query: str, k: int = 3) -> list[str]:
+    """profile 类全部带上(通常就几条),其余按和当前问题的相关性取 k 条。"""
+```
+`query` 是用户当前的问题,演示里是「导入又报错了」;`k` 默认 3。
+
+```python
+    profile = [
+        r[0]
+        for r in conn.execute(
+            "SELECT content FROM user_memories WHERE user_id = %s AND kind = 'profile' ORDER BY updated_at DESC LIMIT 5",
+            (user_id,),
+        ).fetchall()
+    ]
+```
+先看里面:SQL 取这个用户所有 profile 类的 content,按更新时间从新到旧,最多 5 条。`(user_id,)` 末尾的逗号不能省:`(x)` 只是加了括号的 x,`(x,)` 才是只有一个元素的元组。`fetchall()` 返回元组列表 `[("使用招商银行",), ("年付专业版",)]`,每行只有一列,所以外层推导式用 `r[0]` 拆出字符串:`profile = ["使用招商银行", "年付专业版"]`(两条都是同一次插入的,谁先谁后看具体时间戳)。profile 不按相关性取,因为套餐、银行这类事实问什么都可能用得上。
+
+```python
+    q = embed_one(query)
+```
+把「导入又报错了」算成一个向量。
+
+```python
+    related = [
+        r[0]
+        for r in conn.execute(
+            """SELECT content FROM user_memories WHERE user_id = %s AND kind <> 'profile'
+           ORDER BY embedding <=> %s LIMIT %s""",
+            (user_id, q, k),
+        ).fetchall()
+    ]
+```
+`<>` 是 SQL 的「不等于」,也就是只看 preference 和 event。按和 `q` 的距离从近到远取 `k` 条。数据:
+
+| content | 和「导入又报错了」的距离 | 名次 |
+| --- | --- | --- |
+| 2026-10 导入招商银行流水报 E1043…已解决 | 约 0.35 | 1 |
+| 希望邮件联系,不要打电话 | 约 0.8 | 2 |
+
+非 profile 的只有 2 条,`LIMIT 3` 也只能取到 2 条。`related = ["2026-10 导入…已解决", "希望邮件联系,不要打电话"]`。
+
+```python
+    return profile + related
+```
+两个列表拼接,返回 4 条:
+
+```python
+["使用招商银行", "年付专业版",
+ "2026-10 导入招商银行流水报 E1043,另存为 CSV UTF-8 后已解决",
+ "希望邮件联系,不要打电话"]
+```
+
+调用方把它们放进 system prompt,Agent 就知道这位用户以前碰到过 E1043,可以先问一句「还是 E1043 吗」。有一个坑:「希望邮件联系」和这个问题无关,但也被取回来了,因为 `LIMIT k` 只限制条数,不判断相关度。记忆多了以后,可以在 SQL 里加一个距离上限(比如 `AND embedding <=> %s < 0.5`)把不相关的过滤掉。
+
+**`forget`:删除**
+
+```python
+def forget(conn, user_id: str) -> int:
+    """用户要求删除记忆时调用。能删,是做记忆功能的前提。"""
+    return conn.execute(
+        "DELETE FROM user_memories WHERE user_id = %s", (user_id,)
+    ).rowcount
+```
+删掉这个用户的所有记忆。`execute` 返回游标,`.rowcount` 是受影响的行数,演示数据返回 4。
+
+**入口**
+
+```python
+if __name__ == "__main__":
+```
+直接运行这个文件时才执行下面的代码,被别的文件 import 时不执行,相当于 Node 的 `if (require.main === module)`。
+
+```python
+    conn = connect()
+    init(conn)
+```
+连上数据库,确保表存在。
+
+```python
+    demo = [ ... ]
+```
+就是上面一直在用的三句对话。
+
+```python
+    for line in remember(conn, "u-1024", demo):
+        print(line)
+```
+写入记忆,逐行打印日志。第一次运行打印 4 行「新增[...]」,第二次运行多半是几行「更新: …」。
+
+```python
+    print(recall(conn, "u-1024", "导入又报错了"))
+```
+模拟下一次对话:用户说「导入又报错了」,取回相关记忆并打印上面那 4 条组成的列表。
 
 市面上有专门做 Agent 记忆的开源项目:[mem0](https://github.com/mem0ai/mem0) 主打即插即用的记忆层;[Letta](https://github.com/letta-ai/letta-code)(前身是论文 [MemGPT](https://arxiv.org/abs/2310.08560))的思路是让 Agent 像操作系统管理内存一样,自己决定把什么换进换出上下文。我的建议是先像今天这样手写一遍,搞清楚写入、去重、召回、删除四个环节,再去评估这些库,你会知道它们帮你省掉了什么、又藏起了什么。
 
