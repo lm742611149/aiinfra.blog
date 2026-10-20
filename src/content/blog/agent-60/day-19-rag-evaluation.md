@@ -385,6 +385,33 @@ if __name__ == "__main__":
     main()
 ```
 
+**`eval_retrieval.py` 逐段在干什么?** 一句话:拿评估集里每个有答案的问题去检索,看标准答案的文档排在第几,按问题类型求平均。它只评检索,不评生成。
+
+- `EVAL = Path(__file__).resolve().parent.parent / ...`:`resolve()` 先转成绝对路径,两次 `.parent` 从 `w3/eval_retrieval.py` 退到仓库根目录,`/` 是 `Path` 重载的拼路径运算符。这样从哪个目录运行都能找到文件。
+- `load_eval()`:列表推导式从右往左读:读整个文件 → `splitlines()` 切成行 → `if line.strip()` 跳过空行 → `json.loads` 每行解析成 dict。相当于 TS 的 `text.split('\n').filter(l => l.trim()).map(l => JSON.parse(l))`。
+- `per_type = defaultdict(list)`:访问不存在的 key 时自动建一个空 list,所以后面能直接 `per_type["新类型"].append(...)`。普通 dict 这样写会抛 `KeyError`。
+- `expected = set(...)`:转成集合有两个好处,判断「在不在」是 O(1),后面 metrics 里还要用 `&` 求交集。`if not expected: continue` 跳过的是无答案问题(空集合为假),它们没有正确文档可找,留给生成评估。
+- `k=max(k, 10)`:这是最容易忽略的一行。检索返回的是**切块**,打分按**文档**算。同一篇文档的几块会挤在前面,去重后文档数比块数少。只取 4 块,去重后可能只剩 2 篇,`recall@4` 就被冤枉地算低了,所以至少多取 10 块。
+- `dedup_docs([c.doc_id for c in chunks])`:块 → 文档,**保持顺序**去重(不能用 `set()`,会丢排名)。
+- `m = {..., f"recall@{k}": ...}`:f-string 相当于 TS 模板字符串,k=4 时 key 就是 `"recall@4"`。
+- `per_type[row["type"]].append(m)` 和 `per_type["ALL"].append(m)`:同一份分数记两处,一处按类型,一处算总体。
+- `if m[f"recall@{k}"] < 1`:漏了任何一篇期望文档就进失败清单。存的是元组(不可变的小记录),`sorted(expected)` 让打印顺序稳定。
+- `summary = {...}`:这行最绕,拆成普通循环就是:
+
+```python
+summary = {}
+for t, ms in per_type.items():      # t=类型, ms=该类型下每题的分数字典
+    avg = {}
+    for name in ms[0]:               # 指标名:hit@1 / recall@4 / mrr
+        avg[name] = round(sum(x[name] for x in ms) / len(ms), 3)
+    summary[t] = avg | {"n": len(ms)}   # 3.9+ 的字典合并,相当于 {...avg, n}
+```
+
+- `main()`:`argparse` 相当于 Node 的 commander,`type=int` 把命令行字符串转成整数。`MemRetriever` 只建一次,四种模式共用,embedding 也只算一次。`f"{t:<11}"` 是左对齐占 11 格,让几行对齐。`for qid, q, exp, got in ...` 是元组解包,相当于 TS 的 `for (const [qid, q, exp, got] of failures)`。
+- `if __name__ == "__main__"`:直接运行才执行 `main()`,被别的文件 `import` 时不执行,这样 `evaluate` 可以复用。
+
+注意:这个脚本读的是 `data/eval/rag_eval.jsonl`,要先跑上一节的 `make_eval_set.py` 生成它,否则会报 `FileNotFoundError`。
+
 先只跑 BM25,因为它不需要任何 API key,结果完全确定。下面是我在本机实际跑出来的输出:
 
 ```text

@@ -210,6 +210,8 @@ assistant 的 tool_calls 和对应的 tool 消息都保留(消息结构完整,�
 只是把旧 tool 消息的 content 换短。模型仍然知道「当时调过什么工具、传了什么参数」。
 """
 
+from typing import Any
+
 PLACEHOLDER = "(早先的工具结果已清理以节省上下文。需要的话可以重新调用该工具。)"
 
 
@@ -225,7 +227,7 @@ def clear_old_tool_results(messages: list[dict], keep_recent: int = 2, min_chars
 
 
 if __name__ == "__main__":
-    msgs = [{"role": "system", "content": "你是客服"}, {"role": "user", "content": "问题"}]
+    msgs: list[dict[str, Any]] = [{"role": "system", "content": "你是客服"}, {"role": "user", "content": "问题"}]
     for n in range(4):
         msgs.append({"role": "assistant", "content": None,
                      "tool_calls": [{"id": f"call_{n}", "type": "function",
@@ -439,11 +441,15 @@ Agentic RAG 的思路是:把检索变成一个工具,交给 W2 学的 Agent 循�
 
 ```python
 # agent-60-lab/w3/llm.py  (在原有内容后面追加)
-def chat_raw(messages: list[dict], **kwargs):
+def chat_raw(messages: list[Any], **kwargs: Any):
     """返回完整的 message 对象(包括 tool_calls),Agent 循环用。"""
-    resp = _client.chat.completions.create(model=MODEL, messages=messages, **kwargs)
+    resp = _client.chat.completions.create(
+        model=MODEL, messages=messages, extra_body=EXTRA_BODY, **kwargs
+    )
     return resp.choices[0].message
 ```
+
+两个细节和上面的 `chat()` 保持一致:`messages` 标成 `list[Any]`(写 `list[dict]` 编辑器会报红,和 Day 8 同一个原因,openai 要的是它自己的消息类型);`extra_body=EXTRA_BODY` 别漏,否则 DeepSeek 会用思考模式跑工具调用,慢很多,某些参数组合还会直接 400。
 
 然后是 Agent 本身。循环结构和 Day 9 一模一样,如果你 Day 9 写了自己的 Agent 循环,把这两个工具注册进去就行:
 
@@ -569,6 +575,7 @@ if __name__ == "__main__":
 主 Agent 的上下文里只多了这段结论,而不是子 Agent 读过的几千字原文。
 """
 import json
+from typing import Any
 
 from agentic_rag import FUNCS, TOOLS
 from llm import chat_raw
@@ -579,7 +586,7 @@ SUB_SYSTEM = """你是一个资料调研助手,只负责查 CloudLedger 帮助�
 
 
 def run_subagent(task: str, max_steps: int = 8) -> str:
-    messages = [{"role": "system", "content": SUB_SYSTEM}, {"role": "user", "content": task}]
+    messages: list[Any] = [{"role": "system", "content": SUB_SYSTEM}, {"role": "user", "content": task}]
     for _ in range(max_steps):
         msg = chat_raw(messages, tools=TOOLS, temperature=0)
         if not msg.tool_calls:
