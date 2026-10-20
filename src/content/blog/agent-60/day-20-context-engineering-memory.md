@@ -322,6 +322,29 @@ if __name__ == "__main__":
 ['(早先的工具结果', '(早先的工具结果', '第 2 次检索结', '第 3 次检索结']
 ```
 
+**`clear_old_tool_results` 逐行在干什么?** 拿上面的演示数据走一遍。`msgs` 共 10 条:下标 0 是 system,1 是 user,之后 assistant(调工具)和 tool(结果)交替出现,tool 在下标 3、5、7、9,每条约 808 字。参数是 `keep_recent=2`、`min_chars=200`。
+
+- `tool_idx = [i for i, m in enumerate(messages) if m["role"] == "tool"]`:`enumerate` 同时给出下标和元素(相当于 TS 的 `messages.entries()`),这里挑出所有 tool 消息的下标 → `[3, 5, 7, 9]`。
+- `old = set(tool_idx[:-keep_recent]) if keep_recent else set(tool_idx)`:`[:-2]` 是去掉最后两个 → `[3, 5]`;`set` 让后面的 `i in old` 查找是 O(1),相当于 TS 的 `new Set()`;`A if 条件 else B` 是三元表达式。结果 `old = {3, 5}`。为什么要写 `if keep_recent`?因为 `keep_recent=0` 时 `[:-0]` 等于 `[:0]`,是空列表,一条都不清,和本意正好相反,所以 0 要单独处理成「全部清理」。
+- `m.get("content") or ""`:content 是 None(assistant 调工具时就是 None)时换成空串,`len` 才不会报错。
+- `m = {**m, "content": PLACEHOLDER}`:字典展开,相当于 TS 的 `{...m, content: PLACEHOLDER}`。它新建一个字典,`role`、`tool_call_id` 原样保留,只换 content,**原来的 `messages` 不会被改**。
+- `out.append(m)`:换没换都追加,所以消息条数不变。
+
+| i | role | `i in old` | 长度 > 200 | 动作 |
+| --- | --- | --- | --- | --- |
+| 0–2 | system/user/assistant | 否 | — | 原样 |
+| 3 | tool | **是** | 是(808) | **换成占位** |
+| 4 | assistant | 否 | — | 原样 |
+| 5 | tool | **是** | 是(808) | **换成占位** |
+| 6 | assistant | 否 | — | 原样 |
+| 7 | tool | 否 | — | 原样 |
+| 8 | assistant | 否 | — | 原样 |
+| 9 | tool | 否 | — | 原样 |
+
+两个旧结果各从约 808 字变成一行占位,总字符数 3242 → 1690,就是上面那行输出。
+
+两个边界:如果第 3 条的结果只是「没找到」三个字,它虽然在 `old` 里,但长度不超过 200,会原样保留,因为清了也省不了多少。为什么不直接把旧的 tool 消息删掉?因为下标 2 的 assistant 里有 `tool_calls: call_0`,接口要求后面必须跟一条 `tool_call_id` 为 `call_0` 的 tool 消息,删了会报 400。只换 content,结构完整,模型也还能看到「当时用 q0 搜过」,需要的话可以自己再调一次。
+
 到这里,管理会增长的上下文有了三档手段,按代价从低到高用:
 
 | 手段 | 代价 | 丢什么 | 什么时候用 |
