@@ -302,6 +302,20 @@ class MemRetriever:
 
 两个小设计:embedding 是懒加载的,只跑 BM25 模式时完全不调接口;问题向量有缓存,同一个检索器跑多种模式时,每个问题只 embed 一次。评估脚本会被反复运行,这种省钱省时间的小处理值得做。
 
+**`MemRetriever` 逐段在干什么?** 一句话:给它一个问题和一种模式,它返回最相关的 k 个切块。评估脚本拿这个结果去和标准答案比,算分。
+
+- `__init__`:按 `max_chars`/`overlap` 把文档切成块(`self.chunks`);`by_id` 是「切块 id → 切块」的字典,相当于 TS 的 `new Map(chunks.map(c => [c.id, c]))`,后面拿 id 换回原文要用;BM25 索引在本地计算,很便宜,所以创建时直接建好;向量 `_vecs` 先放 `None`,问题向量缓存 `_qcache` 先放空字典。
+- `_vectors()`:第一次调用时才把所有切块送去 embedding 接口,结果存进 `self._vecs`,以后直接返回。相当于前端带缓存的 getter。返回的是一个 N×D 的矩阵:N 个切块,每个是 D 维向量。
+- `_qvec(q)`:同理,把问题变成一个 D 维向量,按问题文本缓存。注意返回的是 `self._qcache[q]`(这一条向量),不是整个字典。
+- `vector_ids(q, n)`:`矩阵 @ 向量` 是矩阵乘法,一次算出每个切块和问题的点积,得到长度 N 的分数数组(向量已归一化,点积就是余弦相似度)。`np.argsort(-scores)` 按分数从高到低给出下标(取负号是因为 `argsort` 默认从小到大),取前 n 个,再换成切块 id。
+- `bm25_ids(q, n)`:按关键词打分取前 n 个,只要 id,丢掉分数。
+- `search(q, mode, k, pool)`:四种模式分别是:
+  - `vector` / `bm25`:各自直接取前 k 个。
+  - `hybrid`:两路各取前 `pool`(20)个,用 RRF 按排名合并(Day 17),取前 k 个。
+  - `hybrid+rerank`:合并后的 20 个候选交给 rerank 模型重新打分(Day 18),取前 k 个。`rerank` 返回的是 `(候选下标, 分数)`,所以要用 `fused[i]` 换回 id。
+
+为什么 `pool` 比 `k` 大?融合和重排都需要候选。每路只取 4 个的话,排在第 6 名的正确答案就没机会被救上来。最后一行把 id 换回 `Chunk` 对象,评估脚本拿到的就是带原文和来源的切块。
+
 ```python
 # agent-60-lab/w3/eval_retrieval.py
 """检索评估:对评估集里有答案的问题,算 hit@1、recall@k、MRR,并按问题类型拆开看。
