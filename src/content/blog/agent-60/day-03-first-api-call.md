@@ -171,7 +171,21 @@ print(resp.stop_reason)           # 对应 finish_reason，取值是 end_turn / 
 print(resp.usage.input_tokens, resp.usage.output_tokens)
 ```
 
-差别集中在四处：`system` 单独放、`max_tokens` 必填、返回的 `content` 是一个由多个块组成的列表（文字块、工具调用块、思考块）、字段名不同（`stop_reason`、`input_tokens`）。有意思的是，DeepSeek 也提供了 Anthropic 格式的端点 `https://api.deepseek.com/anthropic`，用 anthropic SDK 指过去也能调。两种协议现在是行业里并存的两大格式。
+<div class="line-notes">
+
+- `import anthropic` Anthropic 官方 SDK,和 `openai` 是两个包,要另外 `uv add anthropic`。下面的「实测」是我 2026-10 用这段代码指向 DeepSeek 的 Anthropic 兼容端点跑的(`anthropic.Anthropic(base_url="https://api.deepseek.com/anthropic", api_key=你的 DeepSeek key)`,模型名换成 `deepseek-flash`),没有用 Claude 的 key。
+- `client = anthropic.Anthropic()` 不传参数时,SDK 自己去环境变量里找 `ANTHROPIC_API_KEY`。和 OpenAI SDK 找 `OPENAI_API_KEY` 是一个思路。
+- `resp = client.messages.create(` OpenAI 格式是 `chat.completions.create`,这里是 `messages.create`,名字不一样,作用相同:发一次请求,拿一次回答。
+- `max_tokens=300,` 这里是必填,不写直接报错。实测有个坑:DeepSeek 的这个端点默认开思考,300 个 token 被思考吃掉一大半,正文写到「请告诉我：**」就断了,`stop_reason` 是 `max_tokens`。用思考模型时 max_tokens 要留足。
+- `system="你是云簿 CloudLedger 的客服助手` system 提示词是顶层参数,不放进 messages 列表。OpenAI 格式里它是 messages 的第一条 `{"role": "system", ...}`。
+- `messages=[{"role": "user"` messages 里只放 user 和 assistant 两种角色。
+- `print("".join(b.text for b in resp.content if b.type == "text"))` `resp.content` 是一个块列表。实测返回了两块,类型是 `['thinking', 'text']`:第一块是思考,第二块才是正文。所以不能写 `resp.content[0].text`,要按 `type == "text"` 挑出来再拼。`"".join(生成器)` 把所有文字块首尾相接拼成一个字符串。
+- `print(resp.stop_reason)` 实测是 `max_tokens`(正常写完是 `end_turn`)。对应 OpenAI 格式的 `finish_reason`,`max_tokens` 相当于那边的 `length`。
+- `print(resp.usage.input_tokens, resp.usage.output_tokens)` 实测打出 `52 300`:输入 52 个 token,输出正好顶到 300 的上限。字段名是 `input_tokens/output_tokens`,OpenAI 那边叫 `prompt_tokens/completion_tokens`。
+
+</div>
+
+差别集中在四处：`system` 单独放、`max_tokens` 必填、返回的 `content` 是一个由多个块组成的列表（文字块、工具调用块、思考块）、字段名不同（`stop_reason`、`input_tokens`）。有意思的是，DeepSeek 也提供了 Anthropic 格式的端点 `https://api.deepseek.com/anthropic`，用 anthropic SDK 指过去也能调。不过要注意，这个端点默认开思考，上面示例里的 `max_tokens=300` 会先被思考用掉一大半，正文写到一半就断了（`stop_reason` 是 `max_tokens`）。拿 DeepSeek 试这段代码时，把 `max_tokens` 调到 2000 左右再看。两种协议现在是行业里并存的两大格式。
 
 还有一个名字你会在 OpenAI 的文档里看到：Responses API。这是 OpenAI 2025 年推出的新接口，把多轮状态、内置工具这些能力放到了服务端。DeepSeek 文档显示它也支持了 Responses API。这门课统一用 chat completions，因为它是所有厂商都支持的最大公约数，你学会了它，换到哪一家都没障碍。
 
@@ -379,6 +393,53 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 ```
+
+<div class="line-notes">
+
+- `"""命令行问答` 下面的「实测」都是 2026-10 用这份 `ask.py` 加课程统一的 `.env` 跑出来的:`LLM_MODEL=deepseek-flash`、`LLM_EXTRA_BODY={"thinking": {"type": "disabled"}}`、`LLM_PRICE=0.04,2,8`(高峰价)。
+- `import argparse` 标准库的命令行参数解析,相当于 Node 的 yargs/commander。
+- `import json` 用来把 `.env` 里的 `LLM_EXTRA_BODY` 字符串解析成 dict。
+- `import openai` 导入整个包,是为了后面写 `except openai.AuthenticationError`。下一行 `from openai import OpenAI` 只取客户端类,两种写法同时存在不冲突。
+- `def parse_price(raw: str) -> tuple[float, float, float]:` 把 `"0.04,2,8"` 这种字符串变成三个数。`-> tuple[float, float, float]` 是返回类型标注,不影响运行。
+- `hit, miss, out = (float(x) for x in raw.split(","))` `raw.split(",")` → `["0.04", "2", "8"]`;括号里是生成器表达式,把每一项转成 float;左边三个变量一次接住(解包)。实测 `parse_price("0.04,2,8")` 返回 `(0.04, 2.0, 8.0)`。如果写成 4 个数,解包时就会报 `too many values to unpack`。
+- `def cost_yuan(usage, price` 根据这次调用的 token 用量算花了多少钱。
+- `hit_price, miss_price, out_price = price` 元组解包:`hit_price=0.04`、`miss_price=2.0`、`out_price=8.0`(元/百万 token)。
+- `hit = getattr(usage, "prompt_cache_hit_tokens", None) or 0` `getattr(对象, 属性名, 默认值)`:有这个属性就取它,没有就返回 None,不会报错。DeepSeek 的 usage 有这个字段,别家可能没有。`or 0` 把 None 变成 0。实测 usage 是 `{'prompt_tokens': 24, 'completion_tokens': 61, 'prompt_cache_hit_tokens': 0, 'prompt_cache_miss_tokens': 24, ...}`,所以 `hit = 0`。
+- `miss = getattr(usage, "prompt_cache_miss_tokens", None)` 实测 `miss = 24`。这里**没加** `or 0`,因为要区分「厂商给了 0」和「厂商根本没给」。
+- `if miss is None:` 厂商没给未命中数时,用总输入减去命中数来推算。比如某家只返回 `prompt_tokens=24`,那就是 `miss = 24 - 0 = 24`,全部按未命中价算,宁可算贵一点。
+- `return (hit * hit_price + miss * miss_price` 代入第一次实跑的数据:`(0 × 0.04 + 24 × 2 + 64 × 8) ÷ 1,000,000 = (0 + 48 + 512) ÷ 1,000,000 = 0.00056` 元。`1_000_000` 里的下划线只是为了好读,Python 允许这样写数字。
+- `parser = argparse.ArgumentParser()` 建一个参数解析器。
+- `parser.add_argument("question")` 没有 `--` 开头的是位置参数,必须给。`uv run w1/ask.py "用三句话解释什么是 HTTP 幂等"` 运行后,`args.question` 就是那句话。
+- `parser.add_argument("--env", default=".env")` 可选参数,不传就用 `.env`。传 `--env .env.deepseek` 就切到另一个配置文件,换厂商就靠它。
+- `parser.add_argument("--max-tokens", type=int, default=500)` `type=int` 会把命令行里的字符串 `"50"` 转成整数 50。参数名里的 `-` 会变成属性名里的 `_`,所以后面写的是 `args.max_tokens`。
+- `args = parser.parse_args()` 真正去读 `sys.argv`。实跑第二条命令时,得到的是 `Namespace(question='写一篇 2000 字的文章介绍 Python', env='.env', max_tokens=50)`。
+- `load_dotenv(args.env, override=True)` 把指定的 `.env` 文件读进环境变量。`override=True` 表示文件里的值覆盖 shell 里已有的同名变量,不然你在终端 export 过一个旧 key,切换文件就不起作用了。
+- `client = OpenAI(` 建客户端。base_url 和 key 都从环境变量来,代码里不写死任何厂商。
+- `base_url=os.environ["LLM_BASE_URL"],` 用 `[]` 取值,变量不存在会直接 KeyError 报错,配置漏了能马上发现。实测是 `https://api.deepseek.com`。
+- `max_retries=3,` SDK 遇到 429 和 5xx 自动重试 3 次,带退避等待。默认是 2 次。
+- `timeout=60.0,` 单次请求最多等 60 秒。默认是 10 分钟,太长了。
+- `extra_body = json.loads(os.environ.get("LLM_EXTRA_BODY", "{}"))` `.get` 取不到时用默认值 `"{}"`。`json.loads` 把字符串转成 dict,实测得到 `{'thinking': {'type': 'disabled'}}`,也就是关掉 DeepSeek 的思考模式。
+- `price = parse_price(os.environ.get("LLM_PRICE", "0,0,0"))` 没配价格时按 0 算,程序照样能跑,只是花费显示 ¥0.00000。
+- `resp = client.chat.completions.create(` 真正发请求。`try` 包住它,下面的 except 按错误类型分别给出提示。
+- `{"role": "system", "content": "你是一个简洁的技术助手` messages 一共两条:system 定规矩,user 是命令行传进来的问题。
+- `max_tokens=args.max_tokens,` 用 `--max-tokens 50` 跑「写 2000 字」那条,实测在第 50 个 token 处被截断,正文停在「一个用于」。
+- `temperature=0.3,` 偏稳定的输出,技术问答不需要太多发挥。
+- `extra_body=extra_body,` SDK 不认识的厂商扩展参数(比如 `thinking`)放在这里,原样塞进请求体。
+- `except openai.AuthenticationError:` 401。实测:把 key 换成错的再跑,打印 `401：API key 不对。检查 .env.bad 里的 LLM_API_KEY。`,退出码 1。`file=sys.stderr` 让错误信息走标准错误输出,不和正常回答混在一起。
+- `except openai.RateLimitError as e:` 429。到这一步时,SDK 已经自己重试过 3 次了。`as e` 把异常对象接住,`e.message` 是厂商返回的错误说明。
+- `except openai.BadRequestError as e:` 400。实测:把 `LLM_MODEL` 改成 `deepseek-nonexistent`,DeepSeek 返回 400,`e.message` 里写着 `The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-nonexistent.` 连正确的名字都告诉你了。
+- `except openai.APIConnectionError:` 根本没连上服务器(断网、代理没开、base_url 写错)。这时没有 HTTP 状态码。
+- `except openai.APIStatusError as e:` 其他所有 HTTP 错误的父类。**放在最后**是因为 except 按顺序匹配,上面几个都是它的子类,它要是放在前面,就会把 401、429 全吞掉。
+- `choice = resp.choices[0]` 一次请求可以要多个候选回答(参数 `n`),默认只有一个,取第 0 个。
+- `print(choice.message.content)` 实测第一条问题的回答是三句话:「1. HTTP 幂等指同一个请求执行一次和执行多次对服务器资源产生的最终效果相同。……」
+- `print("-" * 40)` 字符串乘数字就是重复,打出 40 个 `-` 当分隔线。
+- `print("模型:", resp.model, "| finish_reason:", choice.finish_reason)` 实测:正常问题打印 `模型: deepseek-flash | finish_reason: stop`;max_tokens=50 那条是 `length`。
+- `if choice.finish_reason == "length":` 实测第二条命令触发了这个分支,打印出 ⚠ 那行提示。被截断的回答看着像说完了,其实没有,不检查很容易把半截内容当成完整结果用掉。
+- `assert u is not None` SDK 的类型标注里 usage 可能是 None,assert 一下,类型检查器就不会在下一行画红线。真遇到 None 时会抛 AssertionError。
+- `print(f"tokens: 输入 {u.prompt_tokens}` `:.5f` 保留 5 位小数。实测第一条输出 `tokens: 输入 24 / 输出 64，花费约 ¥0.00056`;截断那条是 `输入 25 / 输出 50,花费约 ¥0.00045`(25×2 + 50×8 = 450,除以一百万)。
+- `sys.exit(main())` `main()` 返回 0 或 1,作为进程退出码交给 shell。实测成功时 `echo $?` 是 0,401 和 400 时是 1。脚本被别的程序调用时,就靠这个判断成功还是失败。
+
+</div>
 
 **第 3 步：跑几种情况。**
 

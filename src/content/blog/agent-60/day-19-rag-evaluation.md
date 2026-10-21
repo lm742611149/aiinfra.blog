@@ -120,6 +120,27 @@ if __name__ == "__main__":
     print(reciprocal_rank(r, {"kb-010"}))             # 0.5
 ```
 
+<div class="line-notes">
+
+- `# agent-60-lab/w3/metrics.py` 下面四个函数都是纯 Python,不调接口,直接 `uv run python w3/metrics.py` 就能跑,输出就是 `__main__` 里注释写的那几行(我实跑过,一致)。
+- `"""检索指标。` 约定写在模块 docstring 里:`retrieved` 是**已去重、按排名排好**的文档 id 列表,`expected` 是**集合**。后面三个指标函数都依赖这个约定,传块级 id(`kb-011#1`)进来就全错。
+- `def dedup_docs(` 块级结果转文档级排名。输入是每个块所属的文档 id,按检索排名排好,比如 `["kb-011", "kb-011", "kb-010", "kb-009"]`(前两个块都来自 kb-011)。
+- `seen: list[str] = []` 用 list 不用 set,因为要**保持顺序**:排名就是顺序,`set()` 会把顺序打乱。`: list[str]` 是类型标注,只给编辑器看,运行时不检查。
+- `for d in chunk_doc_ids:` 拿上面的例子逐个走:<br>第 1 个 `kb-011`:不在 seen 里 → 加入,seen = `['kb-011']`<br>第 2 个 `kb-011`:已经在了 → 跳过,seen 不变<br>第 3 个 `kb-010`:不在 → 加入,seen = `['kb-011', 'kb-010']`<br>第 4 个 `kb-009`:不在 → 加入,seen = `['kb-011', 'kb-010', 'kb-009']`
+- `if d not in seen:` `not in` 在 list 上是逐个比较,O(n)。这里每次最多十几个元素,无所谓。数据大时可以用 `list(dict.fromkeys(ids))`,dict 从 3.7 起保持插入顺序,一行就能保序去重。
+- `return seen` 实测返回 `['kb-011', 'kb-010', 'kb-009']`:4 个块变成 3 篇文档,kb-010 从「第 3 块」变成「第 2 名」。
+- `def hit_at_k(` 前 k 个里有没有命中任何一篇正确文档。逐行讲解和走表在代码块下面的正文里。
+- `def recall_at_k(` 正确文档里有几成出现在前 k 个。它和 hit@k 的区别只在多文档问题上:需要两篇,只找到一篇,hit 是 1,recall 是 0.5。
+- `return len(expected & set(retrieved[:k])) / len(expected)` 代入 `__main__` 的例子:`retrieved[:3]` = `['kb-011', 'kb-010', 'kb-009']`,转集合后和 `{"kb-010", "kb-003"}` 求交集 → `{'kb-010'}`,`len` 是 1;除以 `len(expected)` = 2 → `0.5`。`/` 在 Python 3 里永远是浮点除法,`1 / 2` 就是 `0.5`(整除要写 `//`)。注意 `expected` 为空会除以 0,所以 `eval_retrieval.py` 先用 `if not expected: continue` 跳过了无答案的问题。
+- `def reciprocal_rank(` 第一个正确文档排第几,取倒数。逐行讲解在正文里。
+- `if __name__ == "__main__":` 直接运行这个文件才执行下面的自测,被 `eval_retrieval.py` import 时不执行。
+- `r = dedup_docs(["kb-011", "kb-011", "kb-010", "kb-009"])` 模拟一次检索:前两块都是 kb-011 的。实测 `r = ['kb-011', 'kb-010', 'kb-009']`。
+- `print(hit_at_k(r, {"kb-010"}, 1), hit_at_k(r, {"kb-010"}, 3))` `{"kb-010"}` 是集合字面量(注意空集合要写 `set()`,`{}` 是空字典)。k=1 只看 kb-011,没中 → `0.0`;k=3 包含 kb-010 → `1.0`。实测打印 `0.0 1.0`。
+- `print(recall_at_k(r, {"kb-010", "kb-003"}, 3))` 假装这是个需要两篇文档的问题,只找到了 kb-010 → `0.5`。
+- `print(reciprocal_rank(r, {"kb-010"}))` kb-010 排第 2 → `1/2 = 0.5`。
+
+</div>
+
 **`hit_at_k` 那一行怎么读?** `retrieved[:k]` 取前 k 个,`set(...)` 转成集合,`expected & set(...)` 是集合求交集(两边都有的元素,相当于 TS 的 `expected.filter(x => top.has(x))`)。`1.0 if 交集 else 0.0` 是 Python 的三元表达式,相当于 TS 的 `交集.size > 0 ? 1.0 : 0.0`。空集合在 `if` 里算假,所以不用写 `len(...) > 0`。返回 `float` 而不是 `bool`,是为了方便对整份评估集求平均。拿上面 `__main__` 的例子走一遍:
 
 | k | 前 k 个 | 和 `{kb-010}` 的交集 | 结果 |
@@ -503,6 +524,21 @@ def build_messages(question: str, chunks: list) -> list[dict]:
     ]
 ```
 
+<div class="line-notes">
+
+- `"""RAG 回答用的 prompt。` 之前 prompt 写在 `rag_numpy.py` 里,`eval_generation.py` 要用它就得 `import rag_numpy`,而 import 会执行那个文件的顶层代码,顺带去读索引文件。单独放进一个只有字符串和函数的模块,谁 import 都没副作用。
+- `SYSTEM = """你是云簿` 三引号字符串可以跨多行,换行原样保留。这里**不是** f-string,因为里面没有要替换的变量。
+- `只根据 <资料> 里的内容回答` 第一条规则管「忠实」:模型自己的常识可能和 CloudLedger 的规则不一样(比如它以为退款按天算),必须以资料为准。生成评估里的 faithful 裁判查的就是这一条有没有做到。
+- `每一个事实性的句子后面` 要求标出处 `[kb-002#1]`。实跑 q02「月付的能退钱吗」,回答是 `不能。月付套餐不支持中途退款；取消订阅后，当期结束时停止服务、不再续费，当期费用不退。[kb-002#2]`,出处正好是讲月付的那块。
+- `如果资料里没有足够的信息回答` 拒答规则,还给了固定话术。固定话术的好处是好检查:实跑 q27「你们支持微信支付吗」,检索回来 4 块都不相关(多币种、两步验证、月付退款、免费版),回答一字不差就是 `帮助中心里没有找到这个问题的说明,建议转人工客服。`
+- `回答用简洁的中文` 格式要求:结论在前。q17「买错了能把钱要回来吗」答成了「怎么退」,就是没先回答「能不能」(见下面实测结果)。
+- `def build_messages(` 把问题和检索到的块拼成 OpenAI 格式的消息列表。`chunks: list` 没写元素类型,只要求有 `id`、`title`、`text` 三个属性,这是 Python 的「鸭子类型」,TS 里会写成一个 interface。
+- `docs = "\n\n".join(` 生成器表达式:对每个块生成一段 `<doc id=".." title="..">原文</doc>`,块之间空一行。f-string 外层用单引号,是因为里面要写双引号 `id="{c.id}"`。q02 实跑,检索回 `kb-002#2, kb-002#1, kb-003#1, kb-002#3` 四块,拼出来的开头是:<br>`<资料>`<br>`<doc id="kb-002#2" title="退款政策">`<br>`退款政策 > 月付套餐`<br>`月付套餐不支持中途退款。取消订阅后,当期结束时停止服务,不再续费,当期费用不退。`<br>`</doc>`<br>整段 user 内容 518 个字符。用 XML 标签包资料,模型更容易分清「哪里是资料、哪里是问题」,id 属性让它能照抄出处。
+- `return [` 两条消息:system 放规则,user 放资料加问题。
+- `{"role": "user", "content": f"<资料>` 资料在前、问题在后。问题放最后,模型读完资料再看到问题,比反过来更不容易漏读。
+
+</div>
+
 Day 17 留的那个小重构顺手做了:prompt 单独放进 `prompts.py`,以后 W4 的工单 Agent 也从这里导入。
 
 ```python
@@ -553,32 +589,99 @@ def main() -> None:
     args = ap.parse_args()
 
     retriever = MemRetriever()
+    OUT.write_text("", encoding="utf-8")  # 先清空上一次的结果,下面每跑完一道追加一行
     results = []
     for row in load_eval():
         chunks = retriever.search(row["question"], args.mode, k=args.k)
         answer = chat(build_messages(row["question"], chunks), temperature=0)
         context = "\n\n".join(c.text for c in chunks)
-        r = {"id": row["id"], "type": row["type"], "question": row["question"], "answer": answer}
-        if row["expected_docs"]:
+        r = {"id": row["id"], "type": row["type"], "question": row["question"],
+             "answerable": bool(row["expected_docs"]), "answer": answer}
+        if r["answerable"]:
             r |= judge(JUDGE_FAITHFUL, f"【资料】\n{context}\n\n【回答】\n{answer}")
             r |= judge(JUDGE_COMPLETE, f"【问题】{row['question']}\n【必须包含的要点】{row['answer_points']}\n\n【回答】\n{answer}")
         else:
             r |= judge(JUDGE_REFUSED, f"【问题】{row['question']}\n\n【回答】\n{answer}")
+        with OUT.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
         results.append(r)
         flags = " ".join(f"{k}={r[k]}" for k in ("faithful", "complete", "refused") if k in r)
+        if "error" in r:
+            flags += " 裁判出错"
         print(f"{r['id']} {flags}  {row['question']}")
 
-    OUT.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in results), encoding="utf-8")
-    answerable = [r for r in results if "faithful" in r]
-    unanswerable = [r for r in results if "refused" in r]
+    errors = [r for r in results if "error" in r]
+    judged = [r for r in results if "error" not in r]
+    answerable = [r for r in judged if r["answerable"]]
+    unanswerable = [r for r in judged if not r["answerable"]]
     rate = lambda rs, key: sum(bool(r.get(key)) for r in rs) / max(len(rs), 1)  # noqa: E731
     print(f"\n忠实率 {rate(answerable, 'faithful'):.0%}  完整率 {rate(answerable, 'complete'):.0%}  "
           f"拒答正确率 {rate(unanswerable, 'refused'):.0%}  明细见 {OUT}")
+    if errors:
+        print(f"裁判出错 {len(errors)} 题,没算进上面的比率,去明细里看 error 字段:"
+              + " ".join(r["id"] for r in errors))
 
 
 if __name__ == "__main__":
     main()
 ```
+
+<div class="line-notes">
+
+- `"""生成评估:` 和 `eval_retrieval.py` 分工:那个只看「资料找对没有」,这个看「回答好不好」。下面拿两道题实跑走一遍:q02「月付的能退钱吗」(有答案)和 q27「你们支持微信支付吗」(无答案)。
+- `import argparse` 解析命令行参数,相当于 Node 的 commander/yargs。
+- `from eval_retrieval import load_eval` 复用检索评估里读 JSONL 的函数。能这样 import,是因为 `eval_retrieval.py` 把 `main()` 放在了 `if __name__ == "__main__"` 下面,import 时不会把检索评估也跑一遍。实测 `load_eval()` 返回 30 条,第 2 条是 `{'id': 'q02', 'question': '月付的能退钱吗', 'expected_docs': ['kb-002'], 'type': 'policy', 'answer_points': ['月付不支持退款', '当前周期结束后停止服务']}`。
+- `from llm import chat` 生成回答和当裁判用的是同一个 `chat()`、同一个模型(这里是 deepseek-flash)。正式项目里裁判最好用比被评的模型更强、或者至少不同的模型,自己判自己容易手软。
+- `from mem_retriever import MemRetriever` 上面写的内存检索器,不依赖 pgvector。
+- `from prompts import build_messages` 和线上 RAG 用同一份 prompt。评估用的 prompt 和线上的不一样,分数就没有意义了,这也是要把 prompt 单独抽出来的原因。
+- `OUT = Path(__file__)` 结果写到 `data/eval/generation_results.jsonl`,和评估集放在一起。这个目录是 `make_eval_set.py` 建的,没先跑它的话,循环前那句 `OUT.write_text("")` 就会报 `FileNotFoundError`,一道题都还没花钱就停下来,这样反而好。
+- `JUDGE_FAITHFUL = """` 忠实裁判。注意它只拿到资料和回答,**不给问题**:它只管「说的每句话有没有依据」,不管「答没答到点子上」,后者交给完整裁判。
+- `礼貌用语和「建议转人工」` 这一行是踩坑后加的(正文「几点说明」里讲了):不写的话,裁判会把「建议转人工客服」也当成没依据的事实陈述。
+- `只输出 JSON:{"faithful"` 规定输出格式,除了 true/false 还要列出哪些话没依据。`unsupported` 是给人看的:判否时打开明细一眼就知道是哪句编的。
+- `JUDGE_COMPLETE = """` 完整裁判,拿问题、要点和回答。「意思一致即可,不要求字面相同」很重要,否则回答写「月付套餐不支持中途退款」、要点写「月付不支持退款」,字面不同就会被判漏答。
+- `JUDGE_REFUSED = """` 拒答裁判,只用在无答案的 4 道题上。它判两件事:说了不知道,**并且**没编具体的规则、数字、联系方式。
+- `def judge(system: str, user: str) -> dict:` 三个裁判共用一个函数,区别只在 system prompt。
+- `raw = chat([{"role": "system"` 裁判 prompt 放 system,待判材料放 user。
+- `temperature=0, response_format=` `temperature=0` 让同一份材料每次判得尽量一样;`response_format={"type": "json_object"}` 是 JSON 模式(Day 6),接口保证返回合法 JSON。前提是 prompt 里出现「JSON」这个词,否则有的厂商会报 400,上面三个 prompt 都写了。
+- `return json.loads(raw)` JSON 字符串转 dict。q02 的忠实裁判实测返回 `{'faithful': True, 'unsupported': []}`。
+- `except json.JSONDecodeError:` 万一不是合法 JSON(JSON 模式下极少见,但模型输出被截断时会发生),不抛异常,让 30 道题能跑完。
+- `return {"error": raw[:200]}` 只留前 200 个字符,方便排查。合并进 r 之后,这道题就多了一个 `error` 键、少了这个裁判的结论。第一版代码是靠「r 里有没有 `faithful` 键」来认有答案题的,裁判一出错,这道题就从分母里**悄悄消失**,打印出来的忠实率看着还挺高。现在的写法是把出错的题单独数出来,见下面 `errors = ` 那几行。
+- `def main() -> None:` 主流程:每道题「检索 → 生成 → 裁判」,最后汇总三个比率。
+- `ap = argparse.ArgumentParser()` 建解析器。不带参数运行时,`args` 实测是 `Namespace(mode='hybrid+rerank', k=4)`。
+- `ap.add_argument("--mode"` 默认用 Day 19 检索评估里最好的组合之一。想对比可以 `--mode vector`。
+- `ap.add_argument("--k"` `type=int` 把命令行的字符串 `"8"` 转成整数 8,不写的话 `args.k` 是字符串,传给 `search` 切片会报错。
+- `args = ap.parse_args()` 读取 `sys.argv` 并按上面的规则解析,参数名里的 `--` 去掉后就是属性名:`args.mode`、`args.k`。
+- `retriever = MemRetriever()` 建内存索引,实测切出 42 块,只用了 0.02 秒(BM25 是本地算的;向量是第一次检索时才去调 embedding)。
+- `OUT.write_text("", encoding="utf-8")` 先把上一次的结果文件清空。下面是每道题追加一行,不清空的话,跑第二次文件里就有 60 行。
+- `results = []` 每道题的 dict 在内存里也留一份,最后算比率用。
+- `for row in load_eval():` 30 道题逐个跑。下面以 q02 为例。
+- `chunks = retriever.search(` q02 实测取回 `kb-002#2, kb-002#1, kb-003#1, kb-002#3`:正确文档 kb-002 的三块都在,排第一的就是讲月付的那块。
+- `answer = chat(build_messages(` 生成回答,`temperature=0`。q02 这次实跑返回:`不能。月付套餐不支持中途退款；取消订阅后，当期结束时停止服务、不再续费，当期费用不退。[kb-002#2]`
+- `context = ` 把 4 块的原文拼起来给忠实裁判。只要原文,不要 `<doc>` 标签,q02 实测 331 个字符。
+- `r = {"id": row["id"]` 先放基本信息,裁判结果后面合并进来。
+- `"answerable": bool(row["expected_docs"])` 有没有标准答案,直接记成一个字段:q02 的 `expected_docs` 是 `['kb-002']`,非空列表 `bool` 后是 True;q27 是 `[]`,是 False。后面分组靠它,不再靠「r 里有没有某个裁判的键」去猜。
+- `if r["answerable"]:` 有答案就判忠实和完整,没答案走 else 判拒答。
+- `r |= judge(JUDGE_FAITHFUL` `|=` 是 3.9 起的字典原地合并,相当于 TS 的 `Object.assign(r, judgeResult)`。q02 合并后多了 `faithful: True` 和 `unsupported: []`。
+- `r |= judge(JUDGE_COMPLETE` user 消息开头实测是 `【问题】月付的能退钱吗` 换行 `【必须包含的要点】['月付不支持退款', '当前周期结束后停止服务']`。要点列表直接用 Python 的 list 转字符串塞进去,带方括号和引号,模型照样看得懂。q02 判 `{'complete': True, 'missing': []}`。此时 r 的键依次是 `id, type, question, answerable, answer, faithful, unsupported, complete, missing`。
+- `else:` q27「你们支持微信支付吗」走这里。它检索回来的 4 块是 `kb-020#1`(多币种)、`kb-016#1`(两步验证)、`kb-002#2`、`kb-001#2`,没有一块讲支付方式。
+- `r |= judge(JUDGE_REFUSED` q27 的回答是那句固定话术,裁判实测返回 `{'refused': True, 'reason': '回答明确表示未找到相关信息并建议转人工，未编造具体规则或联系方式。'}`。
+- `with OUT.open("a", encoding="utf-8") as f:` 每道题判完立刻追加一行。`"a"` 是 append 模式,写在文件末尾,不覆盖前面的内容(`"w"` 才会清空)。`with` 块结束文件就关闭,内容落到磁盘上。我模拟过跑到第 4 道时网络断掉:脚本直接崩了,文件里已经有 q01、q02、q27 三行,前面的钱没白花。第一版是 30 道全跑完才一次性 `write_text`,同样的情况文件里一行都没有。
+- `f.write(json.dumps(r, ensure_ascii=False) + "\n")` 一道题一行 JSON,也就是 JSONL 格式。`ensure_ascii=False` 让中文原样写进去,不会变成 `\u6708` 这种转义。
+- `results.append(r)` 内存里也收集一份。
+- `flags = " ".join(` 只挑 r 里实际存在的那几个指标拼成一行。q02 是 `faithful=True complete=True`,q27 只有 `refused=True`。
+- `if "error" in r:` 有裁判出错,行尾加个提示,跑的时候就能看到,不用等最后。模拟 q02 的忠实裁判返回非法 JSON 时,这一行打印成 `q02 complete=True 裁判出错  月付的能退钱吗`。
+- `print(f"{r['id']} {flags}` 实测打印 `q02 faithful=True complete=True  月付的能退钱吗` 和 `q27 refused=True  你们支持微信支付吗`。f-string 里取字典值用单引号 `r['id']`,因为外层是双引号。
+- `errors = [r for r in results if "error" in r]` 只要有一个裁判出错,这道题就记进 errors。
+- `judged = [r for r in results if "error" not in r]` 剩下裁判都正常给了结论的题,只用它们算比率。q02 的完整裁判其实是正常的,但忠实那一项缺了,只算一半反而容易误导,所以整道题都先拿出来,等人去看。
+- `answerable = [r for r in judged if r["answerable"]]` 正常判完的有答案题。拿 q02 和 q27 两道来算(都正常):answerable = `[q02]`。
+- `unanswerable = ` 正常判完的无答案题,也就是 `[q27]`。
+- `rate = lambda rs, key:` 匿名函数,相当于 TS 的 `const rate = (rs, key) => ...`。`bool(r.get(key))` 把 True/False/None 变成布尔值,`sum` 一堆布尔值时 True 当 1、False 当 0。`max(len(rs), 1)` 防止列表为空时除以 0。`# noqa: E731` 是告诉 lint 工具「我知道 PEP 8 不推荐把 lambda 赋值给变量,这里是故意的」。代入两道题:`rate([q02], 'faithful')` = 1/1 = 1.0。
+- `忠实率 {rate(` `:.0%` 是百分比格式,乘 100、不留小数、加 % 号:`1.0` 打印成 `100%`,`0.923` 打印成 `92%`。全量 30 道的实测结果见下面的 details。
+- `if errors:` 有出错的题才多打一行。模拟 q01、q02、q27、q03 四道题、其中 q02 的忠实裁判出错时,实测汇总是:<br>`忠实率 100%  完整率 50%  拒答正确率 100%  明细见 .../generation_results.jsonl`<br>`裁判出错 1 题,没算进上面的比率,去明细里看 error 字段:q02`<br>有答案的只剩 q01、q03 两道(q03 判了不完整),所以完整率是 1/2。第一版代码在这种情况下打印的比率一模一样,只是没有第二行,你不会知道 q02 被丢掉了。
+- `" ".join(r["id"] for r in errors)` 把出错的题号用空格连起来,方便去明细里搜。`join` 里直接写生成器表达式,不用先套一层列表。
+- `if __name__ == "__main__":` 直接运行才执行 `main()`。
+
+</div>
 
 几点说明。
 

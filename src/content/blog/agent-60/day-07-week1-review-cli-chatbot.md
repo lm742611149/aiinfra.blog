@@ -101,6 +101,15 @@ lang: 'zh'
         return conv
 ```
 
+<div class="line-notes">
+
+- `def to_dict(self)` 把对话转成一个只含基本类型（字符串、数字、列表、字典）的 dict，这样 `json.dumps` 才能直接序列化。system 只存文字内容，不存整条消息。实测问了一句「用一句话说说 Python 的 GIL 是什么」再 `/save s1`，得到的 dict 是 `{"system": "你是一个简洁、靠谱的技术助手。……", "max_turns": 10, "turns": [[{"role": "user", "content": "用一句话说说 Python 的 GIL 是什么"}, {"role": "assistant", "content": "GIL（全局解释器锁）是 CPython 中的一把互斥锁……"}]]}`。`turns` 是「列表的列表」，每一轮一个小列表。
+- `@classmethod` 类方法：第一个参数 `cls` 是类本身，不是实例。调用时写 `Conversation.from_dict(data)`，不需要先有一个对话对象。
+- `conv = cls(data["system"], data.get("max_turns", 20))` `cls(...)` 就是 `Conversation(...)`。`data.get("max_turns", 20)` 取不到这个 key 时用 20，这样老版本存的、没有 max_turns 字段的文件也能加载。上面的 s1.json 里是 10，所以 `conv.max_turns = 10`。
+- `conv.turns = data["turns"]` 构造函数只会建一个空历史，这里把存下来的轮次整个放回去。加载 s1.json 后 `len(conv.turns)` 是 1，`chatbot` 打印的「已加载 sessions/s1.json，共 1 轮」就是这个值。
+
+</div>
+
 返回类型直接写 `Conversation` 就行，不用加引号：`llm.py` 开头有 `from __future__ import annotations`，类在自己的方法里引用自己不会报错。网上老代码常写成 `-> "Conversation"`，在我们的项目里 Ruff 会提示 `UP037` 让你去掉引号。`@classmethod` 是类方法，第一个参数 `cls` 是类本身，`cls(...)` 就是 `Conversation(...)`，作用和 Day 6 的 `model_validate_json` 一样，是个「造实例」的工厂方法。
 
 然后是主程序：
@@ -245,6 +254,72 @@ if __name__ == "__main__":
     main()
 ```
 
+<div class="line-notes">
+
+- `"""W1 小项目` 下面的数据来自真实运行：用管道把一串输入喂给 `python -m w1.chatbot`，模型是 `deepseek-flash`。依次输入了一个问题、空行、`/cost`、`/save s1`、`/clear`、`/load s1`、`/think on`、`/system`、`/env .env.claude`（不存在）、`/foo`、`/quit`；另外一次测了切换配置和一个 key 错误的配置。
+- `import argparse` 标准库的命令行参数解析，`main()` 里用。
+- `import openai` 只为了下面 `except openai.APIStatusError` 这些异常类型。
+- `from common.llm import Conversation, LLMClient` 这周写的两个类：一个发请求、记账，一个管理历史。
+- `DEFAULT_SYSTEM =` 默认的 system prompt。`/system` 不带参数时打印的就是它。
+- `SESSIONS = Path("sessions")` 相对路径，相对的是**运行时的当前目录**。在项目根目录跑，会话就存在根目录的 `sessions/` 下。
+- `HELP = """命令：` 三引号字符串可以跨行，换行和缩进原样保留，`print(HELP)` 打出来就是这个样子。
+- `class ChatBot:` 把状态（客户端、对话、累计花费）和行为（处理命令、问答、主循环）放在一个对象里。
+- `self.env_file = env_file` 不传 `--env` 时是 `None`。
+- `self.client = LLMClient(env_file)` 启动时连上的模型，实测打印 `已连接 deepseek-flash。输入 /help 查看命令。`
+- `self.conv = Conversation(DEFAULT_SYSTEM, max_turns=10)` 只保留最近 10 轮，太早的轮次不再发给模型。
+- `self.total_cost = 0.0` 换厂商会新建 `LLMClient`，它的 ledger 从 0 开始，所以旧的花费要先攒到这里。
+- `def handle_command(self, line: str) -> bool:` 返回 `True` 表示继续聊，`False` 表示退出，只有 `/quit` 会返回 False。
+- `cmd, _, arg = line.partition(" ")` 在第一个空格处切一刀。实测 `"/system 你是 严格的 审稿人".partition(" ")` 得到 `('/system', ' ', '你是 严格的 审稿人')`，后面的空格都保留在 arg 里。下文有详细讲解。
+- `if cmd == "/quit":` 直接 return，后面的分支都不看。
+- `elif cmd == "/env":` 切换厂商配置。
+- `if not arg or not Path(arg).exists():` 实测输入 `/env .env.claude`，但运行目录下没有这个文件，打印 `找不到配置文件： .env.claude`。没给参数时 `arg or "(空)"` 会显示 `(空)`。
+- `self.total_cost += self.client.ledger.cost` 切换前先把当前客户端的花费攒起来。实测：先用 `.env` 问「1+1 等于几」花了 ¥0.00007，`/env .env.deepseek` 时把这笔加进 total_cost，新客户端再问一题花 ¥0.00010。
+- `self.client = LLMClient(arg)` 用新的配置文件建客户端，实测打印 `已切换到 deepseek-flash（.env.deepseek）`。`LLMClient` 里用的是 `load_dotenv(env_file, override=True)`，新文件里的值会覆盖旧的环境变量。
+- `elif cmd == "/think":` 开关 DeepSeek 的思考模式。
+- `kind = "enabled" if arg == "on" else "disabled"` 三元表达式，`/think on` 得到 `"enabled"`。
+- `self.client.extra_body["thinking"] = {"type": kind}` 直接改客户端的 extra_body，之后每次请求都会带上。启动时它是 `{'thinking': {'type': 'disabled'}}`（从 .env 的 `LLM_EXTRA_BODY` 读的），`/think on` 之后变成 `{'thinking': {'type': 'enabled'}}`。实测打印 `思考模式： on （非 DeepSeek 厂商可能不认这个参数）`。
+- `elif cmd == "/system":` 不带参数是查看，带参数是修改。
+- `print("当前 system：", self.conv.system["content"])` 实测打印 `当前 system： 你是一个简洁、靠谱的技术助手。用中文回答，不确定的事情直说不确定。`
+- `self.conv.system = {"role": "system", "content": arg}` 只换 system，历史保留。代价是前缀缓存全部失效，下一轮会贵一点。
+- `self.conv.turns.clear()` `list.clear()` 原地清空列表。实测 `/clear` 后再 `/load s1`，又回到 1 轮。
+- `SESSIONS.mkdir(exist_ok=True)` 建 `sessions/` 目录，已经存在也不报错。
+- `path = SESSIONS / f"{arg or 'default'}.json"` `/save s1` → `sessions/s1.json`；只输 `/save` → `sessions/default.json`。
+- `path.write_text(json.dumps(self.conv.to_dict()` 实测打印 `已保存到 sessions/s1.json`，文件内容就是上面 `to_dict` 那段 JSON，中文原样保存。
+- `elif cmd == "/load":` 反向操作：读文件 → `json.loads` → `Conversation.from_dict`。
+- `self.conv = Conversation.from_dict(` 整个替换掉当前对话对象。实测打印 `已加载 sessions/s1.json，共 1 轮`。
+- `elif cmd == "/cost":` 实测问完一题后 `/cost` 打印两行：`当前厂商： 1 次调用 | 输入 33 / 输出 50 tokens | 约 ¥0.0005` 和 `本次运行累计约 ¥0.0005`。切换过厂商的那次，`当前厂商` 只算新客户端的 ¥0.0001，累计是 ¥0.0002。
+- `print("未知命令，输入 /help 查看")` 实测输入 `/foo` 走到这里。
+- `return True` 除了 `/quit`，所有命令处理完都继续。
+- `def ask(self, text: str) -> None:` 处理一轮对话。下面用实测数据走一遍：问「用一句话说说 Python 的 GIL 是什么」。
+- `self.conv.add_user(text)` 先把问题作为新的一轮加进去，`turns` 从 `[]` 变成 `[[{"role": "user", "content": "用一句话说说……"}]]`。
+- `print("助手：", end="", flush=True)` `end=""` 不换行，`flush=True` 立刻刷到屏幕上，不等缓冲区满。流式输出每一段都要这样，否则字会一坨一坨地出来。
+- `for piece in self.client.stream(` `stream` 是生成器，模型吐一段就 yield 一段，这里拿到一段就打印一段。`self.conv.messages()` 实测是 2 条消息：system 和这条 user。
+- `print(piece, end="", flush=True)` 一段一段打印，最后屏幕上拼出完整回答：「GIL（全局解释器锁）是 CPython 中的一把互斥锁，它保证同一时刻只有一个线程执行 Python 字节码……」
+- `except openai.APIStatusError as e:` 服务器回了错误码。实测把 key 改错后 `/env .env.bad` 再提问，打印 `[出错 HTTP 401] Error code: 401 - {'error': {'message': 'Authentication Fails, Your api key: ****rong is invalid', ...}}`。
+- `self.conv.turns.pop()` 删掉刚才 `add_user` 加的那一轮。实测 401 之后 `/save s2`，文件里只有 2 轮，每轮都是完整的 `['user', 'assistant']`，出错那一问没有留下。
+- `return` 出错就结束这一轮，不走到下面的记账。
+- `except openai.APIConnectionError:` 连不上服务器（断网、代理没开），处理方式一样。
+- `except KeyboardInterrupt:` 回答到一半按 Ctrl+C，只中断这一轮，程序不退出。
+- `r = self.client.last` stream 结束时 `LLMClient` 把完整结果存在 `self.last` 上，包括 token 数和花费。
+- `self.conv.add_assistant(r.message)` 把完整的 assistant 消息补进这一轮，这一轮就变成完整的「问 + 答」。
+- `ttft = f"{r.ttft:.2f}s" if r.ttft is not None else "-"` TTFT 是首个 token 的延迟，实测 `0.81s`。保留两位小数。
+- `warn = "  ⚠ 被截断" if r.finish_reason == "length" else ""` 这次 finish_reason 是 `stop`，所以 warn 是空字符串。
+- `print(f"\n  [{self.client.model} | TTFT {ttft}` 实测打印 `[deepseek-flash | TTFT 0.81s | 输入 33（缓存 0） | 输出 50 | ¥0.00047]`。两个相邻的 f-string 会自动拼成一个。
+- `def run(self) -> None:` 主循环。
+- `line = input("\n你：").strip()` `input` 打印提示，然后卡住等输入。管道喂进来的空行 strip 后是 `""`。
+- `except (EOFError, KeyboardInterrupt):` 用一个元组同时接住两种异常。管道输入读完时也是 `EOFError`。
+- `if not line:` 空行跳过。实测输入空行时屏幕上连着出现两个「你：」提示。
+- `if line.startswith("/"):` 斜杠开头的是命令。
+- `if not self.handle_command(line):` 只有 `/quit` 返回 False，跳出循环。
+- `self.ask(line)` 其余的都当问题发给模型。
+- `print(f"\n再见。本次运行累计约` 实测切换过厂商那次打印 `再见。本次运行累计约 ¥0.0002`，也就是 total_cost 里攒的 ¥0.00007 加上当前客户端的 ¥0.00010（第三个客户端 401 没花钱），格式化到 4 位小数。
+- `def main() -> None:` 程序入口。
+- `parser.add_argument("--env", default=None` 声明一个可选参数。`python -m w1.chatbot --env .env.deepseek` 时 `parse_args().env` 是 `".env.deepseek"`，不传是 `None`。
+- `ChatBot(parser.parse_args().env).run()` 建对象、进主循环，一行搞定。
+- `if __name__ == "__main__":` 直接运行时才进入 main；测试文件 `from w1 import chatbot` 时不会启动循环。
+
+</div>
+
 先看 `handle_command` 开头这两行，后面所有命令都靠它拆参数：
 
 ```python
@@ -367,6 +442,30 @@ def test_conversation_dict_roundtrip():
     c.add_assistant({"role": "assistant", "content": "a"})
     assert Conversation.from_dict(c.to_dict()).messages() == c.messages()
 ```
+
+<div class="line-notes">
+
+- `from w1 import chatbot` 导入整个模块而不是 `ChatBot` 类，因为下面要用 `monkeypatch.setattr(chatbot, "SESSIONS", ...)` 改模块里的全局变量。实测这 4 个测试和 Day 6 的 4 个一起跑，`8 passed in 0.83s`，全程不联网。
+- `@pytest.fixture` fixture 是 pytest 的「测试前准备」：哪个测试函数的参数里写了 `bot`，pytest 就先调用这个函数，把返回值传进去。每个测试拿到的都是一个新的 bot。
+- `def bot(monkeypatch, tmp_path):` 这两个参数是 pytest 内置的 fixture。`monkeypatch` 可以临时改环境变量和属性，测试结束自动还原；`tmp_path` 是 pytest 给每个测试新建的一个空临时目录，测试之间互不干扰。
+- `monkeypatch.setenv("LLM_BASE_URL", "http://localhost:1")` 设成一个根本连不上的地址，就算哪里误发了请求也只会报连接错误，不会花钱。
+- `monkeypatch.setenv("LLM_EXTRA_BODY", "{}")` 空的 extra_body，所以 bot 建好时 `client.extra_body` 是 `{}`，还没有 `thinking` 这个 key。
+- `monkeypatch.setattr(chatbot, "SESSIONS", tmp_path)` 把模块里的 `SESSIONS` 从 `Path("sessions")` 换成临时目录，`/save` 就不会往你的项目里写文件。
+- `return chatbot.ChatBot(env_file=None)` `env_file=None` 时 `LLMClient` 调 `load_dotenv()`，它**不覆盖已经存在的环境变量**，所以就算项目里有真的 `.env`，用的也是上面这些假值。
+- `def test_save_and_load_roundtrip(bot, tmp_path):` 测「存 → 清空 → 读回来」整条路径，数据要原样回来。
+- `bot.conv.add_assistant({"role": "assistant", "content": "你好！"` 故意带一个 `reasoning_content`，确认思考内容也会被保存。
+- `assert bot.handle_command("/save s1")` `/save` 返回 True（继续运行），assert 顺便检查了返回值。
+- `saved = json.loads((tmp_path / "s1.json").read_text(` 直接读文件内容检查。`saved["turns"]` 是 `[[{"role": "user", "content": "你好"}, {"role": "assistant", "content": "你好！", "reasoning_content": "打招呼"}]]`。
+- `assert saved["turns"][0][1]["reasoning_content"] == "打招呼"` `[0]` 是第一轮，`[1]` 是这一轮里的第二条消息（assistant）。
+- `bot.handle_command("/clear")` 清空后 `turns` 是 `[]`，下一行断言它。
+- `assert bot.conv.messages()[-1]["content"] == "你好！"` 加载回来后，`messages()` 是 `[system, user, assistant]`，`[-1]` 取最后一条，是那句「你好！」。
+- `def test_think_toggle(bot):` 开关两次，每次检查 extra_body。`/think on` 之后是 `{"thinking": {"type": "enabled"}}`，`/think off` 之后是 `{"thinking": {"type": "disabled"}}`。
+- `def test_quit_returns_false(bot):` 用 `is False` 而不是 `== False` 或 `not ...`：要求返回值就是 `False` 本身，返回 `None` 或 `0` 都不算。
+- `def test_conversation_dict_roundtrip():` 不需要 bot，直接测 `Conversation`。
+- `c = Conversation("SYS", max_turns=3)` 加一轮问答后，`c.to_dict()` 是 `{"system": "SYS", "max_turns": 3, "turns": [[{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]]}`。
+- `assert Conversation.from_dict(c.to_dict()).messages() == c.messages()` 转成 dict 再转回来，`messages()` 应该完全一样：`[{"role": "system", "content": "SYS"}, {"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]`。这种「来回一趟不丢东西」的测试叫 roundtrip 测试，序列化代码都应该有一个。
+
+</div>
 
 测试里设置了假的环境变量，`LLMClient` 构造时只是建一个客户端对象，不会真的发请求，所以这些测试不需要网络和 key。`load_dotenv()` 默认不会覆盖已经存在的环境变量，所以就算你本地有 `.env` 文件，测试用的也是假值，不会误花钱。
 

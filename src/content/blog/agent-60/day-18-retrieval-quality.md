@@ -123,6 +123,26 @@ if __name__ == "__main__":
             print(f"   {s:6.2f}  {cid}")
 ```
 
+<div class="line-notes">
+
+- `import jieba` 中文分词库。BM25 按「词」打分,中文没有空格,得先切词。
+- `from rank_bm25 import BM25Okapi` BM25 的现成实现,Okapi 是最常用的那个变体。
+- `jieba.setLogLevel(logging.WARNING)` jieba 第一次加载词典时会打印 `Building prefix dict…` 一堆 INFO 日志,调到 WARNING 就不打印了。
+- `for word in ["免费版", "专业版", "企业版"` 往 jieba 的词典里加业务词。实测去掉这几行再切「企业版年付中途取消能退多少」,结果是 `['企业', '版年付', '中途', '取消', '能', '退', '多少']`,「版年付」这种词在文档里根本不存在,BM25 就匹配不上了。
+- `STOPWORDS = {` 停用词:出现得到处都是、对区分文档没帮助的词。花括号里只有值没有 key,是集合(set),判断 `t not in STOPWORDS` 比列表快。
+- `"有", "没有", "一个", "时候", "报",` 最后这两个是实测踩坑后加的,原因见下面正文。
+- `WORD = re.compile(r"\w+")` 预编译正则,`\w` 在 Python 3 里包括汉字、字母、数字和下划线。实测 `WORD.fullmatch(' ')` 是 None、`WORD.fullmatch('?')` 是 None,`'E1042'` 和 `'流水'` 都能匹配。`fullmatch` 要求整个字符串都匹配,不是只匹配开头。
+- `return [t.lower() for t in jieba.lcut(text) if WORD.fullmatch(t) and t not in STOPWORDS]` 代入「导入流水提示 E1042 怎么办」:`jieba.lcut` 得到 `['导入', '流水', '提示', ' ', 'E1042', ' ', '怎么办']` → 去掉两个空格和停用词「怎么办」→ 转小写 → `['导入', '流水', '提示', 'e1042']`。
+- `self.chunks = chunks` 留着块列表,`search` 时要靠下标把分数换回块 id。
+- `self.bm25 = BM25Okapi([tokenize(c.text) for c in chunks])` 传进去的是 42 个词列表。比如 kb-010#2 切出来的开头是 `['错误码', 'e1042', '银行', '流水', '导入', '失败', '解决办法', …]`。建好后实测 `corpus_size = 42`、平均每块 27.07 个词;「e1042」只出现在 kb-010 的两块里,IDF 是 2.79,「导入」出现得多,IDF 只有 2.15。
+- `scores = self.bm25.get_scores(tokenize(query))` 返回一个长度 42 的 numpy 数组,第 i 个对应第 i 块。查「导入流水提示 E1042 怎么办」时,实测只有 7 块的分数大于 0,其余 35 块一个词都没对上。
+- `order = sorted(range(len(scores)), key=lambda i: -scores[i])[:k]` 排的是下标。实测前 3 个下标是 `[20, 19, 17]`,对应分数 8.26、7.00、4.03。
+- `return [(self.chunks[i].id, float(scores[i])) for i in order if scores[i] > 0]` 下标换回块 id,结果是 `[('kb-010#2', 8.255…), ('kb-010#1', 6.995…), ('kb-009#1', 4.028…)]`。查「买错了能把钱要回来吗」时,分词是 `['买错', '钱', '回来']`(「要」是停用词),42 块全是 0 分,这一步过滤完返回 `[]`。
+- `idx = BM25Index(load_chunks())` 建索引一瞬间就完成了,42 块不调任何接口。
+- `print(f"   {s:6.2f}  {cid}")` `:6.2f` 占 6 个字符宽、保留 2 位小数,分数右对齐。输出见下面的 text 块,和我实跑的一致。
+
+</div>
+
 ```bash
 uv run python w3/bm25_index.py
 ```
@@ -390,6 +410,8 @@ PROMPT = """你负责把用户发给 CloudLedger 客服的话,改写成适合在
 - 结合对话历史补全省略的信息(例如「那年付的呢」要补成完整问题)。
 - 如果一句话里有多个问题,拆开,每个问题一条查询。
 - 每条查询是简短的陈述或问题,使用帮助中心的说法(例如用「退款」而不是「把钱要回来」)。
+- 只改写用户最新这句话问的内容。历史只用来补全省略和指代,历史里已经问过的问题不要再加进来。
+- 最新的话如果是寒暄、致谢这类不需要查资料的,原样返回这句话。
 - 最多 3 条。只输出 JSON:{"queries": ["...", "..."]}"""
 
 
@@ -423,6 +445,7 @@ if __name__ == "__main__":
 - `history_text or '(无)'`:历史是空字符串时写「(无)」,相当于 TS 的 `||`。
 - `json.loads(raw).get("queries", [])`:`JSON.parse` 后取 `queries` 字段,取不到就是空列表。
 - 列表推导式只留「是字符串且不是空白」的项,防模型返回 `null` 或 `""`;`[:3]` 最多三条;`or [question]` 过滤完是空的就退回原问题。
+- PROMPT 里「只改写最新这句话」和「寒暄原样返回」两条是 Day 21 做多轮问答时补的。没有这两条时,我在聊完发票之后问「你们有学生优惠吗」,改写出来是 `['学生优惠', '发票抬头错误如何处理', '退款申请流程']`,把上一轮的话题又带了进来;说「好的谢谢」也会被改成两个发票问题。加上之后分别是 `['学生优惠']` 和 `['好的谢谢']`,上面两个例子的输出不受影响。
 - 小漏洞:模型如果返回 JSON 数组而不是对象,`.get` 会抛 `AttributeError`,`except json.JSONDecodeError` 接不住。要更稳就写 `except (json.JSONDecodeError, AttributeError):`。开了 JSON mode 后很少遇到。
 
 我用 deepseek-flash 实测的输出(每次措辞会略有不同):
@@ -483,11 +506,13 @@ def retrieve(question: str, k: int = 4, mode: str = "hybrid+rerank",
         return [(CHUNKS[c], s) for c, s in fused[:k]]
 
     candidates = [CHUNKS[c] for c, _ in fused]
-    ranked = rerank(question, [c.text for c in candidates], top_n=k)
+    # 单轮用原话打分;多轮的原话常是半句(「那退款前要做什么准备吗」),改用补全后的问法
+    rerank_q = "；".join(queries[1:]) if history and len(queries) > 1 else question
+    ranked = rerank(rerank_q, [c.text for c in candidates], top_n=k)
     return [(candidates[i], s) for i, s in ranked]
 ```
 
-注意 rerank 用的是原问题而不是改写后的查询。改写是为了召回得更全,但判断「这块资料能不能回答用户」时,应该对照用户的原话。
+rerank 拿什么去打分,分两种情况。单轮问题用用户的原话:改写是为了召回得更全,但判断「这块资料能不能回答用户」时应该对照原话,况且改写偶尔会把 E1043 这样的关键信息改丢。多轮追问就不行了。Day 21 实测,上一轮问完「年付专业版买了十天能退吗」,接着问「那退款前要做什么准备吗」,拿这半句原话去 rerank,第一名只有 0.037,被拒答阈值拦了下来;换成改写补全后的「年付专业版退款前需要准备什么」,第一名是 0.075,正常回答。所以有历史、而且改写出了新问法时,把这几条问法用「；」拼起来交给 rerank。多问题的情况也照顾到了:「发票抬头也写错了,一起处理」改写成发票和退款三条,拼起来打分,发票和退款两篇的块都排进了前两名(0.994、0.919)。
 
 **`retrieve.py` 逐段在干什么?** 打个比方:两个图书管理员同时去找资料,一个懂意思(向量),一个只认字(BM25),各拿回 20 页;把两人的名单合并,两人都排得靠前的页往前放(RRF);最后请专家把这 20 页逐页和问题对照,挑出最好的 4 页(rerank)。
 
@@ -497,6 +522,7 @@ def retrieve(question: str, k: int = 4, mode: str = "hybrid+rerank",
 - `queries`:默认只有原问题。开了 `use_rewrite`,LLM 会再给几种问法(和原问题一样的去掉)。`history` 只给改写用,处理「它的价格呢」这类指代。
 - `rankings`:每种问法 × 两路各一份名单,1 个问法得到 2 份,改写成 3 个问法就是 6 份。`rrf(...)[:pool]` 合并后留前 20 个。
 - `pool=20` 和 `k=4`:先多捞一些保证召回率,再精挑保证精度,这就是「召回 → 精排」漏斗。
+- `rerank_q`:没有历史(单轮)、或者改写没给出新问法时,`queries[1:]` 为空,用原问题;多轮且有改写时,用 `"；".join(queries[1:])`,比如 `'发票抬头填写错误如何修改；已开发票如何申请发票红冲；退款前发票红冲流程'`。`queries[0]` 是原问题,所以从 1 开始取。
 - `rerank` 只认文字,所以传 `c.text`。它返回的是 `(下标, 分数)`,比如 `[(7, 0.92), (2, 0.85)]`,再用 `candidates[7]` 把块取回来。
 
 几个容易忽略的地方:
@@ -543,6 +569,23 @@ if __name__ == "__main__":
     print("top-1 命中:", hits)
 ```
 
+<div class="line-notes">
+
+- `from retrieve import retrieve` import 这一行就会执行 `retrieve.py` 顶部的代码:读 42 块、建 BM25 索引、连 Postgres。数据库没开的话,这一行就报错。
+- `CASES = [` 每条是 `(问题, 期望命中的文章 id)` 元组。期望写的是文章级 `kb-011`,不是块级 `kb-011#1`,只要命中这篇的任意一块都算对。
+- `("买错了能把钱要回来吗", "kb-002"),` 故意放的口语问题,文档里一个字都对不上,用来考 BM25。
+- `MODES = ["vector", "bm25", "hybrid", "hybrid+rerank"]` 对应 `retrieve()` 的四个 mode。
+- `hits = {m: 0 for m in MODES}` 字典推导式,每种模式的命中数从 0 开始:`{'vector': 0, 'bm25': 0, 'hybrid': 0, 'hybrid+rerank': 0}`。
+- `for q, expect in CASES:` 元组解包,第一轮 `q = "导入的时候报 E1043"`、`expect = "kb-011"`。
+- `top = retrieve(q, k=1, mode=m)` 只取第一名。实测第一题四种模式返回的都是 kb-011#1,但第二个值含义各不相同:vector 是占位的 `0.0`,bm25 是 BM25 分 4.03,hybrid 是 RRF 分 0.0328,hybrid+rerank 是 rerank 分 0.955。
+- `got = top[0][0].doc_id if top else "-"` `top[0]` 是 `(Chunk, 分数)`,`top[0][0]` 是 Chunk,取它的文章 id。BM25 对「买错了能把钱要回来吗」返回空列表,`top` 为假,`got = "-"`。
+- `hits[m] += got == expect` 先算 `got == expect` 得到 True/False,在 Python 里 True 当 1、False 当 0 参与加法。命中就加 1。
+- `row.append(f"{m}:{got}{'✓' if got == expect else '✗'}")` f-string 里套了一个三元表达式 `A if 条件 else B`,相当于 TS 的 `条件 ? A : B`。
+- `print(f"{q:<16} 期望 {expect}  " + "  ".join(row))` `:<16` 左对齐占 16 格。中文一个字在终端里占两格,所以实际输出里的列会有点歪,不影响看结果。
+- `print("top-1 命中:", hits)` 这次实跑是 `{'vector': 6, 'bm25': 5, 'hybrid': 6, 'hybrid+rerank': 5}`,和下面折叠里的结果一模一样。rerank 栽在「买错了」那题,给 kb-003#1 打的分只有 0.043,说明 rerank 自己也觉得这题哪篇都不太对得上。整个脚本实测用时约 9 秒。
+
+</div>
+
 跑出来后把结果填进这张表(我不替你填,因为结果取决于你用的 embedding 模型):
 
 | 问题 | 期望 | 纯向量 | 纯 BM25 | 混合 | 混合+rerank |
@@ -574,7 +617,7 @@ top-1 命中: {'vector': 6, 'bm25': 5, 'hybrid': 6, 'hybrid+rerank': 5}
 
 纯向量 6 题全对。 我们的帮助中心只有 20 篇、42 块,每篇主题差别很大,bge-m3 在这么小的库上几乎不会错。E1042/E1043 这种「近亲」它也分开了,因为块里除了错误码还有「编码」「日期格式」这些区别明显的词。向量检索的短板要在几千篇、主题互相重叠的库上才会明显暴露。
 
-纯 BM25 栽在「把钱要回来」上,返回 `-`。 分词后是「买错」「钱」「要回来」,没有一个词出现在任何文档里,所有块得分都是 0,一个结果都没有。这正是上面说的 BM25 短板。另外如果你的停用词表里没加「时候」,第一题 BM25 也会错(见 BM25 那一节)。
+纯 BM25 栽在「把钱要回来」上,返回 `-`。分词后是 `['买错', '钱', '回来']`(「要」在停用词表里被去掉了),没有一个词出现在任何文档里,所有块得分都是 0,一个结果都没有。这正是上面说的 BM25 短板。另外如果你的停用词表里没加「时候」,第一题 BM25 也会错(见 BM25 那一节)。
 
 rerank 把「买错了能把钱要回来吗」排成了 kb-003《如何申请退款》,标成了 ✗。 但你读一下这个问题,用户想把钱要回来,《如何申请退款》其实也是对的答案,甚至比《退款政策》更直接。这不是 rerank 错了,是我的标注只写了一个「正确答案」。真实的评估集里,一个问题经常有多篇相关文档,标注要允许多个答案。这也是明天建评估集时要处理的问题。
 
@@ -689,6 +732,39 @@ def table_rows_to_chunks(table_title: str, rows: list[list[str | None]]) -> list
 if __name__ == "__main__":
     print(parse_pdf(Path(sys.argv[1])))
 ```
+
+<div class="line-notes">
+
+- `import pdfplumber` 读 PDF 的库,能拿到每个字符的坐标,还能找表格。下面的数据都来自我用 reportlab 生成的那份两页测试 PDF(`price.pdf`)。
+- `def table_to_markdown(rows: list[list[str | None]]) -> str:` 把表格的二维列表转成 Markdown 表格,逐行讲解在代码块下面。代入测试 PDF 第 1 页的表:`[['Plan', 'Monthly', 'Annual', 'Ledgers'], ['Free', '0', '0', '1'], ['Pro', '49', '468', '5'], ['Enterprise', '199', '1908', 'unlimited']]`。
+- `_ocr_engine = None` 模块级变量。OCR 模型加载要好几秒,第一次用时才建,之后一直复用。
+- `def ocr_page(page) -> str:` 只有遇到「没文字也没表格」的页才会被调用。
+- `global _ocr_engine` 函数里要给模块级变量**重新赋值**,就必须先声明 `global`,否则 Python 会当成一个新的局部变量。只是读取的话不用声明。
+- `from rapidocr import RapidOCR` import 写在函数里面:没装 rapidocr 的人照样能用这个文件解析文字型 PDF,只有真遇到扫描页时才需要它。
+- `return "(这一页是扫描图片,没有文字层;安装 rapidocr 后可 OCR)"` 我的环境没装 rapidocr,对一页直接调 `ocr_page` 返回的就是这句话。解析不中断,只是这一页留了个提示。
+- `img = page.to_image(resolution=200).original` 把这一页渲染成 200 DPI 的图片,`.original` 拿到 PIL 图片对象。分辨率太低,小字识别不出来。
+- `result = _ocr_engine(np.array(img))` RapidOCR 吃 numpy 数组,所以先把 PIL 图片转一下。
+- `return "\n".join(result.txts or [])` `txts` 是识别出的一行行文字;一个字都没识别出来时是 None,`or []` 兜底。
+- `parts = [f"# {title or path.stem}"]` `path.stem` 是去掉扩展名的文件名,`price.pdf` → `price`,所以输出第一行是 `# price`。
+- `with pdfplumber.open(path) as pdf:` with 结束时自动关闭文件。
+- `for i, page in enumerate(pdf.pages, start=1):` 页码从 1 开始。测试 PDF 共 2 页。
+- `tables = page.find_tables()` 按画出来的线条找表格。第 1 页实测找到 1 张,第 2 页 0 张。
+- `boxes = [t.bbox for t in tables]` bbox 是 `(x0, top, x1, bottom)`:左、上、右、下边的坐标,单位是点,原点在左上角。实测这张表是 `(197.8, 90.0, 397.5, 162.0)`。
+- `def outside_tables(obj, boxes=boxes) -> bool:` 在循环里定义函数。`boxes=boxes` 这个默认参数是故意的:把当前这一页的 boxes「拍个快照」绑定到函数上。不这么写,函数里引用的就是外面那个每轮都会变的变量,函数要是被存起来以后再调用,拿到的就是最后一页的 boxes。实测去掉这个默认参数,Ruff 会报 B023(函数用到了循环里的变量)。这里 `page.filter` 是当场调用,不写也不会出错,写上是为了让 linter 安静、意图也更清楚。
+- `if "x0" not in obj:` pdfplumber 的对象有字符、线条等好几类,没有坐标的就直接保留。
+- `x, y = (obj["x0"] + obj["x1"]) / 2, (obj["top"] + obj["bottom"]) / 2` 取字符的中心点。实测正文第一个字符 `C` 的中心是 (81.6, 85.1),不在表格框里;表头 `Plan` 里的 `P` 中心是 (207.1, 100.1),落在 (197.8–397.5, 90.0–162.0) 之内。
+- `return not any(x0 <= x <= x1 and top <= y <= bottom for x0, top, x1, bottom in boxes)` `x0 <= x <= x1` 是 Python 的链式比较,等于 `x0 <= x and x <= x1`。中心落在任何一张表里就返回 False,这个字符就被滤掉。
+- `text = (page.filter(outside_tables).extract_text() or "").strip()` 不过滤时,实测第 1 页抽出来是 `'CloudLedger plans. Annual plans can be refunded within 14 days.\nPlan Monthly Annual Ledgers\nFree 0 0 1\nPro 49 468 5\n…'`,表格又被当成散乱文字抽了一遍。过滤后只剩第一句。换成正文里说的 `outside_bbox` 实测只剩 `'CloudLedger plans. Annua'`,后半句被截掉了。
+- `if not text and not tables:` 没文字也没表格,才判定为扫描页,走 OCR。
+- `parts.append(f"## 第 {i} 页\n{text}")` 每页一个二级标题,后面切块时可以按页定位出处。
+- `for n, t in enumerate(tables, start=1):` 一页可能有好几张表,编号也从 1 开始。
+- `md = table_to_markdown(t.extract())` `t.extract()` 返回上面那个四行四列的二维列表。
+- `parts.append(f"### 第 {i} 页 表 {n}\n{md}")` 表格放在三级标题下,得到 `### 第 1 页 表 1`。
+- `return "\n\n".join(parts)` 各部分之间空一行,拼成一整篇 Markdown,结果就是下面 text 块里的样子,和我实跑的输出一致。
+- `def table_rows_to_chunks(table_title: str, rows: list[list[str | None]]) -> list[str]:` 大表格按行切块,下面正文单独讲。
+- `print(parse_pdf(Path(sys.argv[1])))` 用法:`uv run python w3/doc_parse.py price.pdf`。
+
+</div>
 
 我用 reportlab 生成了一个带表格的两页测试 PDF,跑出来是这样的(英文内容是因为生成 PDF 时没配中文字体,解析逻辑和中文一样):
 

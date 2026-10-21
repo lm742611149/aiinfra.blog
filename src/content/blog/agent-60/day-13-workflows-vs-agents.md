@@ -113,6 +113,28 @@ TICKET = """客户:陈先生(customer_id 10086,专业版年付)
 你们系统是不是有 bug?我要求退回多扣的那笔,而且要一个解释。三天内没处理我就投诉。"""
 ```
 
+<div class="line-notes">
+
+- `from openai import AsyncOpenAI, OpenAI` 同步客户端和异步客户端各一个。模式三、四要并发发请求,只能用异步版。
+- `load_dotenv()  # 和 Day 8 起一样` 从仓库根目录的 `.env` 读配置。放在模块顶层,所以谁 import 了 `wf_common`,配置就都加载好了。
+- `client = OpenAI(base_url=os.environ.get("LLM_BASE_URL"), api_key=os.environ.get("LLM_API_KEY", "missing"))` 用 `.get` 加默认值 `"missing"`,而不是 `os.environ["..."]`:没配 key 时 import 不会直接崩,真调用时才报 401,方便先跑不调模型的部分。
+- `aclient = AsyncOpenAI(` 异步版客户端。它是模块级的,连接池会绑定在第一次用它的事件循环上,这就是模式三最后那条「一个脚本只调一次 `asyncio.run`」的原因。
+- `MODEL = os.environ.get("LLM_MODEL", "")` 实测是 `deepseek-flash`。
+- `SMALL_MODEL = os.environ.get("LLM_SMALL_MODEL", MODEL)` 实测我的 `.env` 没配 `LLM_SMALL_MODEL`,所以 `SMALL_MODEL` 也是 `deepseek-flash`,路由时分类和回答用的是同一个模型。
+- `EXTRA_BODY = json.loads(os.environ.get("LLM_EXTRA_BODY", "{}"))` 环境变量只能是字符串,`json.loads` 把它变成 dict。实测 `.env` 里是 `{"thinking": {"type": "disabled"}}`,关掉 DeepSeek 的思考模式。
+- `def _params(prompt: str, system: str, as_json: bool, model: str | None) -> dict[str, Any]:` 四个函数共用的「拼请求参数」。函数名前面的下划线表示内部用,别的文件不该直接调它。
+- `messages: list[Any] = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]` 条件表达式 `A if 条件 else B`,再用 `+` 拼接两个列表。有 system 时是两条消息,没有就只有一条 user。实测 `_params("你好", "", False, "small-x")` 的 messages 只有 `[{"role": "user", "content": "你好"}]`。
+- `params: dict[str, Any] = {"model": model or MODEL, "messages": messages, "extra_body": EXTRA_BODY}` `model or MODEL`:传了模型名就用传的,传 None 就用默认的。
+- `params["response_format"] = {"type": "json_object"}` JSON 模式,保证模型返回的是合法 JSON。实测 `_params("你好", "你是客服", True, None)` 得到:<br>`{"model": "deepseek-flash", "messages": [{"role": "system", "content": "你是客服"}, {"role": "user", "content": "你好"}], "extra_body": {"thinking": {"type": "disabled"}}, "response_format": {"type": "json_object"}}`
+- `resp = client.chat.completions.create(**_params(prompt, system, False, model))` `**dict` 把字典展开成关键字参数,等价于 `create(model=..., messages=..., extra_body=...)`。
+- `return resp.choices[0].message.content or ""` 返回类型是 `str`,content 为 None 时兜成空串。
+- `return json.loads(resp.choices[0].message.content or "{}")` 返回类型是 dict。模型偶尔回空内容时 `or "{}"` 兜成空字典,后面 `facts.get(...)` 不会崩。
+- `async def allm(prompt: str, system: str = "") -> str:` `async def` 定义协程函数,调用它不会马上执行,要 `await` 或交给 `asyncio.gather`。
+- `resp = await aclient.chat.completions.create(**_params(prompt, system, False, None))` `await` 的意思是「这里要等网络,先去干别的」。几个请求同时在等的时候,事件循环在它们之间切换,这就是并发。
+- `TICKET = """客户:陈先生` 三引号字符串可以跨行。五种模式都处理这张工单:两个订单号 CL-20931、CL-20932,金额 1188,三天时限。
+
+</div>
+
 `LLM_SMALL_MODEL` 是一个新的环境变量,指向一个更便宜的模型。路由模式里会用到。如果你的厂商只有一个模型,不配就行,代码会退回到同一个模型。
 
 几个和前几天保持一致的细节:开头 `load_dotenv()` 从 `.env` 读配置;`extra_body` 带上 `LLM_EXTRA_BODY`(比如 DeepSeek 关掉思考模式,又快又省);返回文本和返回 JSON 拆成 `llm` / `llm_json` 两个函数(异步版 `allm` / `allm_json`),这样 `llm_json(...)` 的返回类型就是 `dict`,后面写 `facts.get(...)`、`plan["sections"]` 编辑器不会飘红,`llm(...)` 的返回类型就是 `str`。如果合成一个函数、用 `as_json=True` 切换,返回类型只能写成 `str | dict`,每个用到的地方都要先判断类型。
@@ -151,6 +173,20 @@ if __name__ == "__main__":
     print(chain(TICKET))
 ```
 
+<div class="line-notes">
+
+- `from w2.wf_common import TICKET, llm, llm_json` 只拿要用的三样。
+- `facts = llm_json(` 第 1 步:让模型把工单抽成结构化 JSON。
+- `f"从工单里抽取信息,输出 JSON:{{\"customer_id\"` f-string 里要输出字面的 `{` `}`,得写成 `{{` `}}`;单个 `{ticket}` 才是变量。`\"` 是在双引号字符串里写双引号。这次实跑 1.2 秒返回:<br>`{"customer_id": 10086, "order_ids": ["CL-20931", "CL-20932"], "amount": 1188, "issue": "专业版续费被重复扣费两次1188元，要求退回多扣的一笔并解释", "deadline": "三天内"}`
+- `if not facts.get("order_ids"):` 关卡,纯代码判断,不花 token。`.get` 拿不到返回 None,空列表 `[]` 也是假,两种情况都会进 if。上面那次有两个订单号,通过。<br>我另外拿一张没订单号的工单(「我好像被多扣钱了,你们查一下。」)实测:抽出来 `"order_ids": []`,`not []` 为 True,直接返回转人工,后面两步都没调。顺带一提,那次模型把「王女士」填进了 `customer_id`,这也说明抽取结果要靠代码检查,不能全信。
+- `return "【转人工】工单里没有订单号,无法自动处理。"` 关卡不过就提前结束,第 2、3 步一次都不调。
+- `draft = llm(` 第 2 步:按事实写初稿。`{facts}` 把 dict 直接塞进提示词,打印出来是 Python 的 dict 格式,模型读得懂。这次实跑 1.2 秒返回:「您好，非常抱歉给您带来困扰。已确认您的专业版续费订单 CL-20931、CL-20932 因重复扣费，多扣了 1188 元。我们已提交退款核查……」
+- `"要求:先道歉并确认问题;` 和上一行是相邻的两个字符串,Python 自动拼成一个。限制「不要承诺具体到账日期」,初稿写的是「具体到账时间以核查结果为准」,守住了。
+- `return llm(f"把下面的客服回复改得更自然` 第 3 步:只管润色。这次实跑 0.9 秒,改动很小:「已确认您的……订单因重复扣费」改成「经确认,您的……订单存在重复扣费」,订单号和金额都保留着。三步一共 3.3 秒。
+- `print(chain(TICKET))` 在仓库根目录用 `uv run python -m w2.wf1_chaining` 运行。
+
+</div>
+
 这里最值得体会的是那个关卡。第一步要求输出 JSON,这样第二步之前,代码就能确定性地检查「有没有订单号」。如果把三步合成一个大提示词,你就失去了这个检查点,模型可能在没有订单号的情况下编一个出来。**拆分的价值不只是让每步更简单,更是在步骤之间获得了用代码控制流程的机会。**
 
 另一个好处是可测试。第一步的抽取结果可以和人工标注比对,第二步可以单独评估回复质量,出问题时你知道是哪一步坏了。毕业项目的主流程本质上就是一条加了分支的提示链。
@@ -188,6 +224,21 @@ def route(ticket: str) -> str:
 if __name__ == "__main__":
     print(route(TICKET))
 ```
+
+<div class="line-notes">
+
+- `HANDLERS = {` 每个类别对应一段专门的 system 提示词。加一个分支就是加一行。
+- `def route(ticket: str) -> str:` 两步:先分类,再按类别处理。
+- `c = llm_json(` 分类这一步要 JSON,因为后面要用代码读 `category` 和 `confidence`。
+- `"把工单分到一个类别,输出 JSON` 字符串用 `+ ticket` 拼接,不是 f-string,所以里面的 `{` `}` 不用写两遍。
+- `model=SMALL_MODEL,` 分类用便宜模型。实测我没配 `LLM_SMALL_MODEL`,这里还是 `deepseek-flash`。这次分类只用了 0.5 秒,返回 `{"category": "billing", "confidence": 0.98}`。
+- `category = c.get("category")` 实测 `"billing"`。
+- `if category not in HANDLERS or c.get("confidence", 0) < 0.6:` 两个出口:类别不在三个分支里(比如 `other`),或者置信度低于 0.6。`c.get("confidence", 0)` 在模型没给置信度时按 0 算,一定转人工。<br>我拿「你们周末上班吗?」实测:返回 `{'category': 'other', 'confidence': 0.6}`。置信度刚好 0.6 不小于 0.6,但 `other` 不在 `HANDLERS` 里,照样转人工。
+- `return f"【转人工】无法可靠分类:{c}"` 把分类结果一起带上,人工一看就知道为什么没自动处理。
+- `print("路由到:", category)` 实测打印 `路由到: billing`。
+- `return llm(ticket, system=HANDLERS[category])` 用计费专员的 system 提示词回答。这次实跑 3.3 秒,返回的是一份「# 重复扣费处理方案」,分「核实信息」「处理动作」几节,写的是内部该怎么查流水、怎么退款,不像直接发给客户的回复。原因是 system 里写了「回答要给出具体的下一步操作」,模型就理解成给同事写处理步骤。分支提示词写什么,输出就长什么样,这也是路由的好处:每个分支可以单独调。
+
+</div>
 
 路由的关键是分类要准,而且要有出口。我让分类器同时输出置信度,低于 0.6 或者分到 other 就转人工,而不是硬塞进某个分支。一个被错误路由的工单,比一个转人工的工单糟糕得多:计费问题被当成技术问题处理,客户会觉得你们答非所问。
 
@@ -235,6 +286,24 @@ if __name__ == "__main__":
     asyncio.run(main())  # 两个放进同一个 asyncio.run,分两次跑会报 Event loop is closed
 ```
 
+<div class="line-notes">
+
+- `from collections import Counter` 计数器,喂一串值进去,它数每个值出现几次。投票就靠它。
+- `async def sectioning(ticket: str) -> str:` 分段:回答和安全检查是两件独立的事,同时跑。
+- `answer, guard = await asyncio.gather(` `gather` 同时启动括号里的几个协程,全部完成后按**传入的顺序**返回结果列表,再解包给 `answer`、`guard`。这次实跑安全检查用了 0.6 秒,回答用了 0.8 秒,两个同时跑,总共约 0.8 秒,不是 1.4 秒。
+- `allm(ticket, system="你是云簿客服,简洁地回复这张工单。"),` 这次实跑返回:「陈先生您好,非常抱歉给您带来困扰。已核实订单 CL-20931 与 CL-20932 为重复扣款,多扣的 1188 元将在 1-3 个工作日内原路退回……」。注意它**承诺了 1-3 个工作日到账**,还说「已核实」,可它根本没查过系统。护栏只查威胁和越权,查不出这种乱承诺,这正是模式五用评审标准去抓的东西。
+- `allm_json(f"这张工单里有没有人身威胁` 这次实跑返回 `{"risky": false, "reason": "工单内容为重复扣费投诉与退款诉求，并提及投诉维权，属于正常客户服务沟通；……"}`。「三天内没处理我就投诉」没有被误判成威胁。
+- `return "【转人工】" + guard["reason"] if guard.get("risky") else answer` 条件表达式:有风险就丢掉回答、转人工;没风险就用回答。实测 `risky` 是 false,返回的是 answer。
+- `async def voting(ticket: str, n: int = 3) -> dict[str, Any]:` 投票:同一个问题问 n 次。
+- `votes = await asyncio.gather(*[allm_json(q) for _ in range(n)])` 列表推导式造出 3 个协程,`*` 把列表拆开传给 `gather`,等价于 `gather(allm_json(q), allm_json(q), allm_json(q))`。`_` 表示这个循环变量用不上。实测 3 次分别用了 0.4、0.5、0.5 秒,并发跑,结果都是 `{"refund_review": true}`。
+- `tally = Counter(bool(v.get("refund_review")) for v in votes)` `bool(...)` 把缺字段的 None 也统一成 False。实测 `tally` 是 `Counter({True: 3})`。
+- `decision, count = tally.most_common(1)[0]` `most_common(1)` 返回出现最多的那 1 个,形如 `[(True, 3)]`,`[0]` 取出元组再解包。实测 `decision=True, count=3`。
+- `return {"refund_review": decision, "agreement": f"{count}/{n}", "unanimous": count == n}` 实测返回 `{'refund_review': True, 'agreement': '3/3', 'unanimous': True}`。三票一致,说明这张工单该不该走退款核查没有歧义。
+- `async def main() -> None:` 把两个异步函数放进同一个协程里依次 `await`。
+- `asyncio.run(main())  # 两个放进同一个 asyncio.run` `asyncio.run` 建一个事件循环、跑完 `main`、再关掉循环。整个脚本只调这一次。这次实跑两段加起来 1.3 秒。
+
+</div>
+
 `main()` 把两个函数放进同一次 `asyncio.run`。如果写成两行 `asyncio.run(sectioning(...))`、`asyncio.run(voting(...))`,第二次会报 `RuntimeError: Event loop is closed`,我实测过:`aclient` 是模块级的,它的连接池在第一次 `asyncio.run` 的事件循环里建立,第一次跑完那个循环就关了,第二次再复用旧连接就炸。规则是**一个脚本只调一次 `asyncio.run`,所有异步的事都在它里面做**。
 
 分段的例子里,回答和安全检查同时发出,总耗时约等于两者中较慢的那个,而不是两者之和。安全检查发现风险时直接丢弃回答、转人工。把护栏和主任务分开,护栏的提示词可以专注、可以单独评测、可以单独迭代,这是文中特别推荐的做法。
@@ -278,6 +347,23 @@ def orchestrate(topic: str) -> str:
 if __name__ == "__main__":
     print(orchestrate("被重复扣费怎么办"))
 ```
+
+<div class="line-notes">
+
+- `from w2.wf_common import allm, llm, llm_json` 编排和综合用同步的 `llm_json`/`llm`,工作者并发写各节用异步的 `allm`。
+- `plan = llm_json(` 编排者:根据主题决定拆成几节、每节讲什么。这一步决定了后面有几个工作者。
+- `f"你要为云簿 CloudLedger 帮助中心写一篇关于「{topic}」的文章。` 这次实跑 `topic` 是「被重复扣费怎么办」,用了 2.5 秒。
+- `sections: list[dict[str, Any]] = plan["sections"]` 这里用 `[]` 而不是 `.get`:编排者没给 sections 就该直接报错,后面没法继续。这次实跑拆成了 5 节,每节是 `{"title": ..., "brief": ...}`。
+- `print("编排者决定写:", [s["title"] for s in sections])` 这次实跑打印:<br>`['先确认是否真的被重复扣费', '在云簿内自助排查与处理', '提交申诉后会发生什么', '联系支付渠道与客服协同', '预防重复扣费的日常建议']`<br>五节是编排者看了主题以后自己定的,代码里没有写死。
+- `async def worker(s: dict[str, Any]) -> str:` 函数里面定义函数,叫嵌套函数。`worker` 只在 `orchestrate` 内部用,放在里面不会污染模块。
+- `return await allm(f"写帮助中心文章的一个小节。` 每个工作者只看得到自己那一节的标题和要点,看不到别的节。这次实跑五个工作者用时 1.0 到 1.3 秒,并发跑完。
+- `async def run_all() -> list[str]:` 把五个 worker 一起交给 `gather`。
+- `return await asyncio.gather(*[worker(s) for s in sections])` 返回顺序和 `sections` 顺序一致,不管谁先写完。这次实跑打印出来的完成顺序是「预防」「自助排查」「联系渠道」「先确认」「提交申诉」,和小节顺序完全不同,但 `parts` 还是按 1 到 5 节排好的。
+- `parts = asyncio.run(run_all())` 在同步函数里跑一段异步代码。`orchestrate` 本身是普通函数,所以这里用 `asyncio.run` 包一下。
+- `draft = "\n\n".join(f"## {s['title']}\n{p}" for s, p in zip(sections, parts))` `zip` 把标题列表和正文列表一对一配起来;每对拼成「## 标题\n正文」,再用空行连成一个大字符串。f-string 里用单引号 `s['title']`,因为外层是双引号。
+- `return llm(f"下面是几位同事分别写的小节` 综合者,这次实跑 2.6 秒。它加了一个总标题「# 如何处理重复扣费：完整操作指南」,并把各节的「你」「您」统一成了「您」(工作者写「提交申诉后会发生什么」那节用的是「你」)。五节标题都保留了。整个流程 6.3 秒。
+
+</div>
 
 同样是「写一篇帮助文章」,主题是「重复扣费」时编排者可能拆成「确认扣费、申请退款、到账时间」三节,主题是「导出数据」时可能拆成完全不同的四节。这种「拆法取决于输入」就是这个模式存在的理由。
 
@@ -324,6 +410,24 @@ if __name__ == "__main__":
     print(log)
     print(final)
 ```
+
+<div class="line-notes">
+
+- `RUBRIC = """评审标准` 四条能逐条核对的标准。评估者的严不严、准不准,几乎全看这段写得好不好。
+- `def evaluate_optimize(ticket: str, max_rounds: int = 3) -> tuple[str, list[dict[str, Any]]]:` 返回两样东西:最终回复,和每一轮的评审记录。`tuple[A, B]` 表示返回一个二元组。
+- `history: list[dict[str, Any]] = []` 每轮评审结果存一条,方便事后看它是怎么改过来的。
+- `reply = llm(f"你是云簿客服,回复这张工单:\n{ticket}")` 第一稿,只给了身份,没给任何要求。这次实跑 2.3 秒,写了 400 多字,还承诺「24 小时内先向您反馈初步核查结果」「通常 1-7 个工作日」到账。
+- `for i in range(max_rounds):` 最多评 3 轮,`i` 是 0、1、2。
+- `review = llm_json(` 评估者:拿标准、工单、待评回复,逐条检查。
+- `"逐条检查,输出 JSON {\"verdict\": \"PASS\" 或 \"FAIL\", \"problems\": [\"...\"]}"` 要求给 verdict 和问题清单,代码才能判断要不要继续。
+- `history.append({"round": i + 1, "verdict": review.get("verdict"), "problems": review.get("problems", [])})` `i + 1` 让轮次从 1 开始数。这次实跑三轮的记录:<br>第 1 轮 `FAIL`:字数约 400 超了 200;承诺 24 小时反馈;给了 1-7 个工作日的到账范围。<br>第 2 轮 `FAIL`:约 230 字还是超;「提供卡尾号」和「仅凭订单号也会先查」并存,客户不知道要不要动手。<br>第 3 轮 `PASS`,problems 是 `[]`。
+- `if review.get("verdict") == "PASS":` 达标就停,不再改。第 3 轮在这里 break。
+- `reply = llm(f"根据评审意见修改回复。` 优化者:带着原稿和问题清单重写。`{review.get('problems')}` 直接把问题列表塞进提示词。第 1 轮后改到约 230 字,删掉了 24 小时承诺和到账天数;第 2 轮后再删掉「提供卡尾号」那段,改成「请您暂无需其他操作」。
+- `return reply, history` 返回二元组,调用方用 `final, log = ...` 解包。
+- `final, log = evaluate_optimize(TICKET)` 这次实跑三轮一共 6 次调用,7.6 秒。最终稿:「陈先生您好，非常抱歉给您带来困扰。您反馈的9月28日续费专业版被扣款两次、每笔1188元（订单号CL-20931、CL-20932）……到账时间以银行处理为准。……请您暂无需其他操作，也无需重复提交工单，我会全程跟进此单。感谢您的耐心。」
+- `print(log)` 打印每轮的 verdict 和 problems,就是上面那三条记录。看它就知道每一轮改了什么、为什么改。
+
+</div>
 
 这个模式的效果几乎完全取决于 `RUBRIC` 写得好不好。「回复要好」这种标准等于没有标准,评估者会随便给 PASS。我把标准写成四条可以逐一核对的规则,而且每条都是客服主管真的会在意的点。Day 32 讲 LLM-as-judge 时,你会系统地学怎么写这种评分标准,以及怎么验证评估者本身靠不靠谱。
 

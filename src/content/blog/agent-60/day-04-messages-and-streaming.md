@@ -105,7 +105,7 @@ S 是 system prompt 的 token 数，T 是平均每轮（一问一答）新增的
 总输入 ≈ 40 × 500 + 300 × 40 × 41 / 2 = 20,000 + 246,000 = 266,000 token
 ```
 
-如果每轮都不重发历史，40 轮的输入只有 40 × (500 + 150) ≈ 26,000。差了十倍。按 deepseek-flash 高峰未命中价 2 元 / 百万 token，26.6 万 token 约 0.53 元。一次聊天五毛钱看着不多，一天十万次对话就是五万块。好在 DeepSeek 的前缀缓存在这里很有效：每轮的历史都是上一轮请求的前缀，大部分会命中缓存，实际费用低得多。这也是为什么回放历史要**原样**放回去，你改动了历史里的任何一个字，那之后的缓存就全部失效了。
+如果每轮都不重发历史，40 轮的输入只有 40 × (500 + 150) ≈ 26,000。差了十倍。按 deepseek-flash 高峰未命中价 2 元 / 百万 token，26.6 万 token 约 0.53 元。一次聊天五毛钱看着不多，一天十万次对话就是五万块。好在 DeepSeek 的前缀缓存在这里很有效：每轮的历史都是上一轮请求的前缀，聊到一定长度之后，前面那一大段都会命中缓存，命中部分按 0.04 元 / 百万计，实际费用低得多。注意开头几轮不会命中：缓存按块存，前缀不够一块就是 0。我实测一个短 system 的客服对话，前 3 轮命中都是 0，第 4 轮输入 274 token 命中 128，第 7 轮 415 命中 256，命中数都是 128 的整数倍，涨一截停一截。这也是为什么回放历史要**原样**放回去，你改动了历史里的任何一个字，那之后的缓存就全部失效了。
 
 <figure>
 <svg viewBox="0 0 640 250" role="img" aria-label="每一轮的输入 token 随轮数线性增长，累计总量平方增长">
@@ -254,7 +254,7 @@ import json
 import os
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from dotenv import load_dotenv
@@ -440,6 +440,79 @@ class Conversation:
         return [self.system] + [m for turn in kept for m in turn]
 ```
 
+<div class="line-notes">
+
+- `"""全课复用的大模型客户端` 下面的「实测」是 2026-10 用课程统一的 `.env` 跑的:`deepseek-flash`、思考关闭、`LLM_PRICE=0.04,2,8`。例子用的是本课开头那段对话:system「你是一个简洁的助手。」+ user「我叫小林，在云簿做后端开发」。
+- `from __future__ import annotations` 让类型标注延迟求值。有了它,`Price` 类里面的 `parse` 方法才能写 `-> Price`(这时 Price 还没定义完)。
+- `from collections.abc import Iterator` `stream()` 的返回类型 `Iterator[str]` 要用,意思是「能一段段吐出字符串的东西」。
+- `from dataclasses import dataclass` `@dataclass` 根据字段声明自动生成 `__init__`、`__repr__`、`__eq__`。
+- `@dataclass` 加在类上面。下面 `class Price` 只写了三个字段,就能直接 `Price(0.04, 2, 8)` 构造,打印出来是 `Price(hit=0.04, miss=2.0, out=8.0)`。
+- `hit: float = 0.0` 字段带默认值,所以 `Price()` 不传参数也行,三个都是 0。
+- `@classmethod` 类方法的第一个参数是类本身(`cls`),不是实例。用法是 `Price.parse("...")`,用来做「另一种构造方式」。
+- `if not raw:` `None` 和空字符串 `""` 都算假值。实测 `Price.parse(None)` 和 `Price.parse("")` 都返回 `Price(hit=0.0, miss=0.0, out=0.0)`。
+- `hit, miss, out = (float(x) for x in raw.split(","))` 和 Day 3 的 `parse_price` 一样,`"0.04,2,8"` → `0.04, 2.0, 8.0`。
+- `return cls(hit, miss, out)` `cls(...)` 就是 `Price(...)`。实测 `Price.parse("0.04,2,8")` 得到 `Price(hit=0.04, miss=2.0, out=8.0)`。
+- `class ChatResult:` 一次调用的全部结果装在这里。前四个字段没有默认值,必须传;后面的有默认值。dataclass 规定**有默认值的字段必须排在没有默认值的后面**,顺序反了会报错。
+- `message: dict[str, Any]` 原样存回历史的 assistant 消息。实测非流式那次是 `{'content': '你好，小林！很高兴认识你。……', 'role': 'assistant'}`。
+- `ttft: float | None = None` 首字延迟(time to first token),只有流式调用才有意义,非流式就是 None。
+- `class Ledger:` 账本,累计这个客户端发出的所有调用。
+- `def add(self, r: ChatResult) -> None:` 每次调用结束后加一笔。实测:先非流式一次(输入 20 / 输出 29),再流式一次(输入 60 / 输出 11),账本变成 `calls=2`、`prompt_tokens=80`、`completion_tokens=40`。
+- `def __str__(self) -> str:` `print(ledger)` 或 f-string 里显示时调用它。实测打印 `2 次调用 | 输入 80 / 输出 40 tokens | 约 ¥0.0005`。两个 f-string 挨着写会自动拼成一个。
+- `def __init__(self, env_file: str | None = None, **overrides: Any) -> None:` `**overrides` 收集所有额外的关键字参数,放进一个 dict。`LLMClient(model="deepseek-v4-pro")` 里的 `overrides` 就是 `{"model": "deepseek-v4-pro"}`。
+- `if env_file:` 传了文件名就读那个文件并覆盖已有变量;没传就 `load_dotenv()`,默认从当前目录往上找 `.env`。
+- `self.model: str = overrides.get("model") or os.environ["LLM_MODEL"]` `a or b`:a 是假值(None 或空串)时取 b。没传 model 就读环境变量,实测得到 `deepseek-flash`。
+- `self.price = Price.parse(` 实测 `Price(hit=0.04, miss=2.0, out=8.0)`。
+- `self.extra_body: dict[str, Any] = json.loads(` 实测 `{'thinking': {'type': 'disabled'}}`。
+- `self.client = OpenAI(` 和 Day 3 一样,只是每个参数都能被 overrides 覆盖。
+- `max_retries=overrides.get("max_retries", 3),` 这里用 `.get(键, 默认值)` 而不是 `or`,因为有人可能真想传 `max_retries=0`,0 是假值,用 `or` 就被吞成 3 了。
+- `self.ledger = Ledger()` 每个客户端一本账,从 0 开始。
+- `def _kwargs(self, messages` 下划线开头表示「内部用,外面别调」(只是约定,Python 不拦)。作用是拼出要传给 SDK 的全部参数。
+- `extra = {**self.extra_body, **kw.pop("extra_body", {})}` 两个 dict 合并,后面的覆盖前面的。`kw.pop` 取出并**删掉**调用方传的 extra_body,避免下一行 `**kw` 再带进去一份。实测默认时 `extra = {'thinking': {'type': 'disabled'}}`;调用时传 `extra_body={"thinking": {"type": "enabled"}}`,合并后就是 enabled。
+- `args: dict[str, Any] = {"model": kw.pop("model", self.model), "messages": messages, **kw}` 实测 `_kwargs(msgs, temperature=0.3, max_tokens=500)` 返回:<br>`{"model": "deepseek-flash", "messages": [...两条...], "temperature": 0.3, "max_tokens": 500, "extra_body": {"thinking": {"type": "disabled"}}}`
+- `if extra:` extra 为空 dict 时就不加 `extra_body` 键,发给 OpenAI 这类不认识扩展参数的厂商也干干净净。
+- `def _cost(self, prompt: int, completion: int, hit: int) -> float:` 用文章「算钱」那节的例子代入:`_cost(3500, 400, 3000)` → `miss = 500` → `(3000×0.04 + 500×2 + 400×8) ÷ 1,000,000 = 0.00432`,实测一致。
+- `@staticmethod` 静态方法,不需要 self,也不需要 cls,就是一个挂在类上的普通函数。
+- `hit = getattr(usage, "prompt_cache_hit_tokens", None)` 先按 DeepSeek 的字段名找。实测 DeepSeek 的 usage 里**两种字段都有**:`prompt_cache_hit_tokens: 0`,还有 `prompt_tokens_details: {'cached_tokens': 0}`。
+- `if hit is None:` 找不到 DeepSeek 的字段,再去找 OpenAI 的 `prompt_tokens_details.cached_tokens`。
+- `return hit or 0` 两种都没有就返回 0。
+- `start = time.perf_counter()` 高精度计时器,只用来算时间差,数值本身没意义。
+- `resp = self.client.chat.completions.create(**self._kwargs(messages, **kw))` `**dict` 把字典展开成关键字参数,等于把上面 `_kwargs` 拼出来的那一包原样传给 SDK。
+- `latency = time.perf_counter() - start` 实测非流式这次是 0.99 秒。
+- `msg = choice.message.model_dump(exclude_none=True)` 把 SDK 的 pydantic 对象转成普通 dict,`exclude_none=True` 去掉值为 None 的字段(比如没有工具调用时的 `tool_calls: None`)。实测得到 `{'content': '你好，小林！很高兴认识你。作为云簿的后端开发，你平时主要用哪些技术栈？最近在忙什么项目？', 'role': 'assistant'}`。开思考时这里还会有 `reasoning_content`。
+- `hit = self._cache_hit(u)` 实测 0。这么短的请求够不上 DeepSeek 的缓存粒度,前缀不够一块时命中就是 0。我另外实测一个多轮对话,输入 274 token 时命中 128、415 token 时命中 256,命中数是 128 的整数倍。system prompt 长了才会更早命中。
+- `content=choice.message.content or "",` content 可能是 None(比如模型只返回了工具调用),`or ""` 保证一定是字符串。
+- `reasoning=msg.get("reasoning_content"),` dict 的 `.get` 取不到时返回 None。思考关闭,实测是 None。
+- `prompt_tokens=u.prompt_tokens if u else 0,` 三元表达式:`A if 条件 else B`。实测 20。
+- `cost=self._cost(u.prompt_tokens, u.completion_tokens, hit) if u else 0.0,` 实测输入 20、输出 29、命中 0:`20×2 + 29×8 = 272`,`cost = 0.000272` 元。
+- `self.ledger.add(result)` 记一笔账再返回。
+- `def stream(self, messages` 函数体里有 `yield`,它就是**生成器函数**:调用时不会立刻执行,而是返回一个迭代器,`for` 每要一次,函数就往下跑到下一个 `yield`。
+- `args = self._kwargs(messages, stream=True, **kw)` 多加一个 `stream=True`。实测参数键依次是 `['model', 'messages', 'stream', 'temperature', 'max_tokens', 'extra_body', 'stream_options']`。
+- `args.setdefault("stream_options", {"include_usage": True})` `setdefault`:键不存在才设置。`include_usage` 让服务端在流的最后附上 token 用量,不开的话流式拿不到 usage,也就算不了钱。
+- `content: list[str] = []` 先把一段段文字收进列表,最后一次性 `"".join`,比一路用 `+=` 拼字符串快。
+- `for chunk in self.client.chat.completions.create(**args):` 这里用的是第二轮「我叫什么名字？在哪工作？」(带着第一轮历史)。实测一共收到 13 个 chunk:<br>chunk1:`content=''`(空的开场块)<br>chunk2–12:`'你' '叫' '小林' '，' '在' '云' '簿' '做' '后端' '开发' '。'`<br>chunk13:`content=''`、`finish_reason='stop'`,并且带着 usage。
+- `if chunk.usage:` DeepSeek 把 usage 附在最后一块上(上面的 chunk13);OpenAI 会在最后单独多发一块。两种情况都能接住。
+- `if not chunk.choices:` OpenAI 那个单独的 usage 块里 choices 是空列表,跳过,不然下一行 `[0]` 会越界。
+- `r = getattr(delta, "reasoning_content", None)` 思考内容。思考关闭时每块都是 None;打开时前面会先来一串思考块。实测问「1+1 等于几」,思考内容开头是 `We need answer in Chinese one character?...`。
+- `if delta.content:` 空字符串 `''` 是假值,所以 chunk1 和 chunk13 都不会进这个分支。
+- `if ttft is None:` 只在第一次拿到正文时记时间。实测 chunk2 的「你」到达时 `ttft = 0.45` 秒,整轮总耗时 0.53 秒。开思考再问一次,ttft 变成 0.60 秒,输出 token 变成 21(正文只有一个「2」,其余全是思考)。
+- `yield delta.content` 交出这一段文字,函数在这里暂停;调用方 print 完了再回来继续循环。实测依次 yield 出 11 段:`['你', '叫', '小林', '，', '在', '云', '簿', '做', '后端', '开发', '。']`。
+- `if choice.finish_reason:` 只有最后一块的 finish_reason 不为空,实测是 `'stop'`。
+- `text = "".join(content)` 实测拼回 `'你叫小林，在云簿做后端开发。'`,模型确实记住了第一轮。
+- `msg: dict[str, Any] = {"role": "assistant", "content": text}` 流式没有现成的 message 对象,自己拼一个,存回历史时用。
+- `if reasoning:` 有思考内容才加 `reasoning_content` 字段,和非流式的 message 形状保持一致。
+- `prompt = usage.prompt_tokens if usage else 0` 实测第二轮输入 60 个 token:system + 第一轮问答 + 新问题,全部重新发了一遍。第一轮只有 20 个,这就是「聊得越久越贵」。
+- `self.last = ChatResult(` 生成器没法 `return` 一个值给 `for` 循环,所以把结果挂在 `self.last` 上,调用方循环结束后自己去读。实测 `last.cost = 0.000208`(60×2 + 11×8 = 208)。
+- `self.ledger.add(self.last)` 流式调用也记账。
+- `class Conversation:` 下面用测试里的数据走一遍:`Conversation("SYS", max_turns=2)`,依次加 3 轮 `q0/a0`、`q1/a1`、`q2/a2`。
+- `self.system = {"role": "system", "content": system}` system 单独存放,不放进 turns,裁剪历史时就不会被裁掉。
+- `self.turns: list[list[dict[str, Any]]] = []` 列表的列表:每个元素是一轮,一轮里有多条消息。
+- `self.turns.append([{"role": "user", "content": text}])` 新开一轮,里面先放 user 这条。
+- `self.turns[-1].append(message)` `[-1]` 是最后一个元素,也就是当前这一轮,把 assistant 回复加进去。加完 3 轮后实测 `turns` 是:<br>`[[q0, a0], [q1, a1], [q2, a2]]`(每个都是 `{"role":..., "content":...}`)
+- `kept = self.turns[-self.max_turns:]` 切片 `[-2:]` 取最后 2 个元素,实测得到 `[[q1, a1], [q2, a2]]`,q0 那一轮被丢掉了。轮数不够 2 时切片不会报错,有几个取几个。
+- `return [self.system] + [m for turn in kept for m in turn]` 嵌套推导式拆开就是两层 for:`for turn in kept: for m in turn: 收集 m`,把「列表的列表」压平成一层。实测返回:<br>`[{'role': 'system', 'content': 'SYS'}, {'role': 'user', 'content': 'q1'}, {'role': 'assistant', 'content': 'a1'}, {'role': 'user', 'content': 'q2'}, {'role': 'assistant', 'content': 'a2'}]`
+
+</div>
+
 这段代码里有几处值得停下来看：
 
 `choice.message.model_dump(exclude_none=True)`：OpenAI SDK 的响应对象是 pydantic 模型，会保留厂商多返回的字段。dump 成 dict 之后，DeepSeek 的 `reasoning_content` 就自然在里面了，原样放回历史，Day 8 加工具调用时不会踩那个 400 的坑。
@@ -498,6 +571,28 @@ if __name__ == "__main__":
     main()
 ```
 
+<div class="line-notes">
+
+- `from common.llm import Conversation, LLMClient` 从上面的 `common/llm.py` 导入。要在仓库根目录用 `python -m w1.chat_stream` 跑,`common` 才找得到。下面的「实测」是 2026-10 用管道一次喂了三个问题跑出来的:「发票抬头开错了能改吗？」「那年付能退吗？」「我的订单号是 INV-2026-004417」,最后一行空行退出。
+- `SYSTEM = "你是云簿 CloudLedger 的在线客服助手` 写进「今天是 2026-10-12」,是因为模型自己不知道今天几号,问到「上个月的账单」时它需要这个信息。
+- `client = LLMClient()` 读 `.env`,建客户端和一本空账本。
+- `conv = Conversation(SYSTEM, max_turns=6)` 最多保留最近 6 轮。
+- `while True:` 一直循环,直到下面的某个 `break`。
+- `text = input("\n你：").strip()` `input` 先打印提示文字,再等用户输入一行。`.strip()` 去掉首尾空格和换行。
+- `except EOFError:` 输入流结束时(按 Ctrl+D,或者管道里的内容读完了)`input` 会抛这个异常,当成退出处理。
+- `if not text:` 直接回车,text 是空字符串,退出循环。实测第四行是空行,程序走到这里结束。
+- `conv.add_user(text)` 新开一轮。第一次进来后,`conv.turns` 是 `[[{"role": "user", "content": "发票抬头开错了能改吗？"}]]`。
+- `print("助手：", end="", flush=True)` 先打出「助手：」,不换行,后面流式的字接着打在同一行。
+- `for piece in client.stream(conv.messages(), temperature=0.3, max_tokens=500):` `conv.messages()` 每轮都把 system 加上全部保留的历史重新发一遍。`stream()` 是生成器,每来一小段文字,循环体就执行一次。
+- `print(piece, end="", flush=True)` 一段段接着打,看起来就像在打字。`end` 和 `flush` 的作用见下面正文。
+- `r = client.last` 循环结束后,完整结果在 `client.last` 里。
+- `conv.add_assistant(r.message)` 把整条 assistant 消息存回这一轮。存的是整个 `message` dict,不只是文字,开思考时 `reasoning_content` 也会跟着存回去。
+- `ttft = f"{r.ttft:.2f}s" if r.ttft is not None else "-"` 模型一个字都没输出时(比如被截断在思考里),ttft 是 None,这时显示 `-`,避免格式化 None 报错。
+- `print(f"\n  [TTFT {ttft} | 总 {r.latency:.2f}s` 实测三轮的统计行:<br>第 1 轮:`[TTFT 0.48s | 总 1.02s | 输入 44（缓存 0）| 输出 76 | ¥0.00070]`<br>第 2 轮:`[TTFT 0.67s | 总 1.25s | 输入 130（缓存 0）| 输出 64 | ¥0.00077]`<br>第 3 轮:`[TTFT 0.53s | 总 0.87s | 输入 209（缓存 0）| 输出 43 | ¥0.00076]`<br>输入 44 → 130 → 209,每一轮都把前面的问答带上,所以一直在涨。缓存这三轮都是 0,因为总长度才两百来个 token,还不够 DeepSeek 缓存一块。聊到七八轮、或者把 system 写长了,缓存数就会出来。
+- `print("\n本次会话：", client.ledger)` 实测:`本次会话： 3 次调用 | 输入 383 / 输出 183 tokens | 约 ¥0.0022`。383 = 44 + 130 + 209。
+
+</div>
+
 ```bash
 uv run python -m w1.chat_stream
 ```
@@ -511,7 +606,7 @@ uv run python -m w1.chat_stream
 
 **第 3 步：观察三件事。**
 
-聊 8 到 10 轮，每轮看底下那行统计。第一，输入 token 是不是在逐轮上涨，到第 7 轮之后因为 `max_turns=6` 不再明显上涨。第二，缓存命中数是不是随着轮数增加，第二轮之后大部分输入都命中了。第三，在第 1 轮告诉它「我的订单号是 INV-2026-004417」，第 8 轮问它「我的订单号是多少」，它会忘掉，因为第 1 轮已经被滑出窗口了。
+聊 8 到 10 轮，每轮看底下那行统计。第一，输入 token 是不是在逐轮上涨，到第 7 轮之后因为 `max_turns=6` 不再明显上涨。第二，缓存命中数是不是随着轮数增加。开头几轮多半是 0，因为对话太短，前缀还不够缓存的一块；聊到三四轮、输入过了两三百 token 后才开始命中，而且是一截一截地涨（我实测是 128 的整数倍）。system prompt 写得长，从第二轮起就能命中一大段。第三，在第 1 轮告诉它「我的订单号是 INV-2026-004417」，第 8 轮问它「我的订单号是多少」，它会忘掉，因为第 1 轮已经被滑出窗口了。
 
 **第 4 步：比较 TTFT。** 把 `.env` 里的 `LLM_EXTRA_BODY` 改成 `{"thinking": {"type": "enabled"}}` 再聊一轮同样的问题，看 TTFT 和输出 token 数的变化。思考模式下 TTFT 会明显变长，输出 token 也多了很多（思考内容计费）。记下两组数字，改回来。
 
@@ -536,6 +631,20 @@ def test_price_parse():
     assert Price.parse("0.04,2,8") == Price(0.04, 2.0, 8.0)
     assert Price.parse(None) == Price()
 ```
+
+<div class="line-notes">
+
+- `def test_window_keeps_system_and_last_turns():` pytest 会自动找 `test_` 开头的函数来跑,不需要写类,也不需要注册。实测 `pytest -q` 的结果是 `2 passed in 0.62s`。
+- `conv = Conversation("SYS", max_turns=2)` 只留 2 轮,好让 3 轮数据能把第一轮挤出去。
+- `for i in range(3):` `range(3)` 依次是 0、1、2。三圈之后 `turns` 依次变成:<br>i=0:`[[q0, a0]]`<br>i=1:`[[q0, a0], [q1, a1]]`<br>i=2:`[[q0, a0], [q1, a1], [q2, a2]]`
+- `conv.add_user(f"q{i}")` i=0 时就是 `"q0"`。
+- `msgs = conv.messages()` 实测是 5 条:`SYS, q1, a1, q2, a2`。turns 里其实还存着 q0,只是取的时候被切片切掉了。
+- `assert msgs[0] == {"role": "system", "content": "SYS"}` system 永远排在第一条。dict 用 `==` 比较的是内容,不是同一个对象。
+- `assert [m["content"] for m in msgs[1:]] == ["q1", "a1", "q2", "a2"]` `msgs[1:]` 跳过 system,把剩下每条的 content 取出来,和期望的列表比。q0、a0 不在里面,窗口裁剪生效了。
+- `assert Price.parse("0.04,2,8") == Price(0.04, 2.0, 8.0)` dataclass 自动生成的 `__eq__` 会逐个比较字段,所以两个 Price 对象能直接用 `==`。
+- `assert Price.parse(None) == Price()` 没配价格时三个价钱全是 0,程序不会因为少了 `LLM_PRICE` 就崩掉。
+
+</div>
 
 ```bash
 uv run pytest -q

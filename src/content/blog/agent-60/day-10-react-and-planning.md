@@ -67,10 +67,13 @@ import json
 import os
 import re
 
+from dotenv import load_dotenv
 from openai import OpenAI
 
-from calc import calculate
-from weather import get_weather
+from w2.calc import calculate
+from w2.weather import get_weather
+
+load_dotenv()
 
 client = OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"])
 MODEL = os.environ["LLM_MODEL"]
@@ -133,6 +136,46 @@ if __name__ == "__main__":
     print("\n答案:", react("哈尔滨和广州现在的温差是多少度?"))
 ```
 
+<div class="line-notes">
+
+- `import re` 纯文本协议靠正则从模型输出里把 `Action: 工具名[参数]` 抠出来。
+- `from dotenv import load_dotenv` 这个文件不 import day09_demo,拿不到它顺带加载的 `.env`,所以要自己加载。
+- `from w2.calc import calculate` 和 Day 9 一样带上 `w2.` 前缀,在仓库根目录用 `uv run python -m w2.react_prompt` 运行。`-m` 会把当前目录(仓库根)放进搜索路径,`w2.calc` 就能找到。如果写成裸的 `from calc import`,在根目录跑会报 `ModuleNotFoundError: No module named 'calc'`。
+- `load_dotenv()` 必须在下面读 `os.environ[...]` 之前执行。少了这行,实测报 `KeyError: 'LLM_BASE_URL'`。
+- `client = OpenAI(` 和 Day 9 一样,用 OpenAI 兼容协议连 DeepSeek。
+- `MODEL = os.environ["LLM_MODEL"]` 实测是 `deepseek-flash`。
+- `EXTRA = {"thinking"` 条件表达式 `A if 条件 else B`:base_url 里有 deepseek 就关掉思考模式,否则传 None(等于不传)。实测 `EXTRA = {'thinking': {'type': 'disabled'}}`。
+- `TOOLS = {` 名字 → 函数的映射。纯文本协议里模型只能给出一个字符串参数,所以这里用 lambda 包一层,把那个字符串传给真正的函数。
+- `"get_weather": lambda arg: get_weather(arg.strip()),` `lambda arg: ...` 是一行写完的匿名函数。`.strip()` 去掉首尾空格,因为模型可能写成 `get_weather[ 哈尔滨 ]`。实测 `TOOLS['calculate'](' 1+2 ')` 返回 `{'expression': '1+2', 'result': 3}`。
+- `PROMPT = """尽你所能` 三引号字符串可以跨多行。整段提示词就是 ReAct 论文里的格式,模型完全靠读这段文字学会「怎么调工具」。
+- `get_weather[城市名]` 工具「定义」就是一句自然语言,没有任何 JSON schema。参数格式全靠模型自觉遵守。
+- `Observation: 工具返回的结果` 「这一行由系统填写,你不要自己写」——光这么说是不够的,模型照样会写,所以下面还要用 stop 来强制。
+- `Question: {question}` `{question}` 是占位符,下面用 `.format` 填进去。实测填好后的提示词总共 319 个字符。
+- `ACTION_RE = re.compile(` 正则 `Action:\s*(\w+)\[(.*?)\]`:`\s*` 允许冒号后面有空格;`(\w+)` 捕获工具名;`\[(.*?)\]` 捕获方括号里的参数,`*?` 是非贪婪匹配,遇到第一个 `]` 就停;`re.S` 让 `.` 也能匹配换行。实测 `Action: get_weather[哈尔滨]` 匹配出 `('get_weather', '哈尔滨')`;全角冒号 `Action：` 和圆括号写法 `get_weather(哈尔滨)` 都返回 None,匹配不上。
+- `def react(question: str, max_steps: int = 8) -> str:` 和 Day 9 的 Agent 循环是同一个结构,只是「历史」变成了一整段越拼越长的文本。
+- `transcript = PROMPT.format(question=question)` 整个对话就是这一个字符串。实测每一轮的长度:319 → 527 → 711 → 872 个字符。
+- `for step in range(max_steps):` 最多 8 轮。实测 4 轮就结束了。
+- `out = client.chat.completions.create(` 每一轮都只发**一条** user 消息,内容是完整的 transcript。这里没有 assistant/tool 角色,模型就是在做「文本接龙」。
+- `messages=[{"role": "user", "content": transcript}],` 实测 4 次请求发的都是 1 条消息,只是内容越来越长。
+- `stop=["Observation:"],` 模型一要写 `Observation:` 就停下。实测第 1 轮输出是 `'Question: 哈尔滨和广州现在的温差是多少度?\nThought: 我需要先查询哈尔滨和广州的当前天气,才能计算温差。\nAction: get_weather[哈尔滨]\n'`,`finish_reason=stop`,刚好停在 Observation 前面。<br>我把 stop 去掉又跑了一次同样的请求,模型一口气往下写:`Observation: {"city": "哈尔滨", "temperature": -18, ...}`,接着编了广州 22 度,算出温差 40 度。而实际查到的哈尔滨是 **-0.1** 度。这就是正文说的「自己编一个结果」,不是假设,是真实跑出来的。
+- `temperature=0,` 尽量让输出稳定,格式更不容易跑偏。
+- `extra_body=EXTRA,` `extra_body` 用来传 SDK 参数列表里没有的厂商私有字段。实测 4 次请求带的都是 `{'thinking': {'type': 'disabled'}}`。
+- `).choices[0].message.content or ""` content 理论上可能是 None,`or ""` 保证下面拼字符串不出错。
+- `transcript += out` 把模型写的 Thought/Action 接到 transcript 后面,下一轮它就能看到自己刚才写了什么。
+- `print(out.strip(), flush=True)` `flush=True` 让输出马上显示,不在缓冲区里攒着。
+- `if "Final Answer:" in out:` 实测第 4 轮输出 `'Thought: 我已经知道最终答案了\nFinal Answer: 哈尔滨当前气温约为 -0.1°C,广州当前气温约为 21.6°C,两地温差约为 21.7°C。'`,命中。
+- `return out.split("Final Answer:", 1)[1].strip()` `split(分隔符, 1)` 最多只切一刀,得到 `[前半段, 后半段]`,`[1]` 取后半段,就是答案本身。
+- `m = ACTION_RE.search(out)` `search` 在整段文字里找第一个能匹配的位置。第 1 轮得到 `get_weather` 和 `哈尔滨`。
+- `if not m:` 模型格式写错时不报错,往 transcript 里写一条「格式错了,请这样写」的 Observation,让它下一轮自己改正。这次实跑 4 轮格式都对,没走到这里。
+- `name, arg = m.group(1), m.group(2)` `group(1)`、`group(2)` 是正则里两对括号捕获到的内容。
+- `result = TOOLS[name](arg) if name in TOOLS` 先查字典,工具名不存在就返回一个 error 字典,不抛 KeyError。
+- `obs = json.dumps(result, ensure_ascii=False)` 实测三次工具结果:<br>哈尔滨 `{"city": "哈尔滨", "country": "中国", "temperature": -0.1, ...}`<br>广州 `{"city": "广州", ..., "temperature": 21.6, ...}`<br>`calculate[21.6 - (-0.1)]` → `{"expression": "21.6 - (-0.1)", "result": 21.700000000000003}`<br>最后那个 `...0003` 是浮点误差,模型在最终回答里自己写成了 21.7。
+- `transcript += f"` 把真实结果以 `Observation: ...` 的格式接上,下一轮模型就基于真实数据继续推理。这一步就是「外部填空」。
+- `return "超过最大步数"` 8 轮还没写出 Final Answer 才会到这里。
+- `答案:", react(` 实测最终打印:`答案: 哈尔滨当前气温约为 -0.1°C,广州当前气温约为 21.6°C,两地温差约为 21.7°C。`
+
+</div>
+
 这段代码里最重要的一行是 `stop=["Observation:"]`。不加它会怎样?模型写完 `Action: get_weather[哈尔滨]` 以后,会顺手接着写 `Observation: {"temperature": 3.5}`,自己编一个结果出来,然后基于这个编出来的数继续推理,最后给你一个看上去很合理的错误答案。这个坑很多人第一次写都会踩:模型「查」到的温度和天气网站对不上,排查半天才发现工具根本没被调用过。
 
 stop 序列的作用是:模型一旦要生成 `Observation:` 这几个字,生成立刻停止,控制权回到你的程序。程序执行工具,把真实结果接上去,再让模型继续。这个机制和原生 function calling 里「模型输出 tool_calls 后请求就结束」是一回事,只是那边由服务端替你做了。
@@ -165,8 +208,8 @@ import os
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
-from agent_loop import Agent
-from day09_demo import reg  # 复用 Day 9 注册好的 get_weather / calculate / read_file
+from w2.agent_loop import Agent
+from w2.day09_demo import reg  # 复用 Day 9 注册好的 get_weather / calculate / read_file
 
 client = OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"])
 MODEL = os.environ["LLM_MODEL"]
@@ -210,12 +253,47 @@ def plan_and_execute(task: str) -> str:
         model=MODEL,
         messages=[{"role": "user", "content": f"任务:{task}\n\n执行记录:\n" + "\n".join(notes) + "\n\n请给出最终回答。"}],
     )
-    return final.choices[0].message.content
+    return final.choices[0].message.content or ""
 
 
 if __name__ == "__main__":
     print(plan_and_execute("读 cities.txt,查每个城市的气温,算出平均气温,并建议这周出差带什么衣服。"))
 ```
+
+<div class="line-notes">
+
+- `from pydantic import BaseModel, ValidationError` Day 6 的老朋友:用模型类定义「计划」的结构,校验失败会抛 ValidationError。
+- `from w2.agent_loop import Agent` 同样带 `w2.` 前缀,在仓库根目录用 `uv run python -m w2.plan_execute` 运行。别 `cd w2` 再跑:day09_demo 里写的也是 `from w2.xxx`,在 w2 目录里找不到 `w2` 这个包。
+- `from w2.day09_demo import reg` 复用 Day 9 已经注册好的三个工具。import 这个模块时会顺带执行它的 `load_dotenv()`,所以本文件自己没写 load_dotenv 也能拿到 key。
+- `client = OpenAI(` 规划器和最后的汇总直接用 client;执行器用 Agent,Agent 内部有自己的 client。
+- `class Plan(BaseModel):` 计划只有两个字段:总目标和步骤列表。
+- `steps: list[str]` 实测 `Plan.model_validate_json('{"goal": "x"}')` 会报 `1 validation error for Plan / steps / Field required`。模型漏写 steps 就会被这里拦下。
+- `PLANNER = """你是任务规划器` 规划器的 system 提示词:2-6 步、每步一句话。
+- `只输出 JSON,格式` 提示词里出现了「JSON」这个词,DeepSeek 的 json_object 模式要求这样。
+- `def make_plan(task: str, retries: int = 2) -> Plan:` 最多试 3 次(1 次正常 + 2 次重试)。
+- `messages = [{"role": "system", "content": PLANNER}` 规划器只看到 system 和任务,看不到任何工具。实测这次请求的 prompt 只有 146 个 token。
+- `for _ in range(retries + 1):` `retries=2`,循环 3 次。
+- `raw = client.chat.completions.create(` 实测返回的 raw(这次实跑的结果,每次可能不同):`{"goal":"读取 cities.txt 中的城市列表,查询每个城市的气温,计算平均气温,并给出本周出差穿衣建议。","steps":["读取 workspace 中的 cities.txt,提取并输出城市列表。","逐一查询……记录各城市气温数据。","将各城市气温整理成表格……","根据整理后的气温数据计算平均气温……","结合平均气温……给出……衣物建议。"]}`,一共 5 步。
+- `model=MODEL, messages=messages, response_format=` `{"type": "json_object"}` 让模型只输出合法的 JSON。
+- `return Plan.model_validate_json(raw)` 一步完成「解析 JSON + 校验字段」。这次第一次就通过了,没有重试。
+- `except ValidationError as e:` 校验失败就进这里,不直接崩。
+- `messages += [{"role": "assistant", "content": raw},` 把模型的错误输出和具体报错一起喂回去,让它照着报错改。`+=` 对列表来说就是在末尾追加多个元素。
+- `raise RuntimeError("规划失败")` 3 次都失败才放弃。
+- `def plan_and_execute(task: str) -> str:` 流程:先规划,再逐步执行,最后汇总。
+- `plan = make_plan(task)` 拿到上面那个 5 步的 Plan 对象。
+- `print("计划:", json.dumps(plan.model_dump()` `model_dump()` 把 pydantic 对象转回字典,`indent=2` 是为了打印好看。
+- `notes: list[str] = []` 每一步的结论都记在这里,传给后面的步骤。
+- `for i, step in enumerate(plan.steps, 1):` `enumerate(列表, 1)` 让编号从 1 开始,所以 i 依次是 1、2、3、4、5。
+- `executor = Agent(reg, system=` **每一步都新建一个 Agent**,历史是空的,上一步调工具的细节它一概看不到。实测每个执行器的日志都从 `[step 1]` 重新开始计数。
+- `or "(还没有)"` 第 1 步时 notes 是空列表,`"\n".join([])` 得到空串,空串为假,于是换成「(还没有)」。
+- `result = executor.run(` 实测第 1 步执行器收到的完整输入是:`'总目标:读取 cities.txt 中的城市列表……\n之前步骤的结果:\n(还没有)\n\n现在只做第 1 步:读取 workspace 中的 cities.txt,提取并输出城市列表。'`。它调了一次 read_file,第 2 轮就完成了。<br>第 2 步执行器收到的「之前步骤的结果」里已经有第 1 步的结论(杭州、成都、哈尔滨),于是在一轮里并行调了 3 个 get_weather:杭州 14.1、成都 15.2、哈尔滨 -0.1。<br>执行器第 1 次请求的 prompt_tokens 实测从第 1 步的 575 涨到第 2 步的 674,多出来的就是 notes 里前面步骤的结论。
+- `notes.append(f"第 {i} 步` 只记结论文字,不记工具调用的原始数据,这就是「上下文隔离」。
+- `final = client.chat.completions.create(` 最后一次请求不带 tools,只让模型根据执行记录写回答。实测这次汇总请求的 prompt 有 1437 个 token。
+- `messages=[{"role": "user", "content": f"任务:{task}` 字符串拼接:f-string 加上 `"\n".join(notes)` 再加结尾的一句话。
+- `return final.choices[0].message.content or ""` 实测最终回答给出了平均气温约 9.7℃,并按「哈尔滨防寒、成都防雨、杭州方便穿脱」分城市列了衣物清单。`content` 的类型是 `str | None`,函数却声明返回 `str`,不加 `or ""` 的话,开着类型检查的编辑器会画红线。加上以后,万一 content 真是 None,也只是返回空串。
+- `print(plan_and_execute(` 这次实跑一共是 1 次规划、5 个执行器(每个计划步骤一个)、1 次汇总。
+
+</div>
 
 规划器用了 Day 6 学的 JSON 输出加 pydantic 校验加失败重试,这套组合拳你以后会用无数次。DeepSeek 的 JSON 模式要求提示词里出现「json」这个词,PLANNER 里写了大写的 JSON,满足要求。
 
@@ -277,8 +355,8 @@ plan-and-execute 的代价也很明显:**计划是死的**。如果第 1 步发�
 # 像 Claude Code 那样:给 Agent 一个「待办清单」工具,让它自己维护计划
 from typing import Annotated
 
-from agent_loop import Agent
-from day09_demo import reg
+from w2.agent_loop import Agent
+from w2.day09_demo import reg
 
 TODOS: list[str] = []
 
@@ -300,6 +378,25 @@ if __name__ == "__main__":
     print(agent.run("读 cities.txt,查每个城市的气温,找出最冷和最热的城市,并算出它们的温差。"))
     print("最终清单:", TODOS)
 ```
+
+<div class="line-notes">
+
+- `from typing import Annotated` 给 todos 参数挂上说明,告诉模型清单该怎么写。
+- `from w2.day09_demo import reg` 拿到 Day 9 那个已经有三个工具的注册表,再往里加一个。实测加完以后 schemas 里的工具名是 `['get_weather', 'calculate', 'read_file', 'update_todos']`。
+- `TODOS: list[str] = []` 模块级的全局列表,用来存清单。
+- `@reg.tool` 注册成第 4 个工具,schema 自动生成。
+- `def update_todos(` 只有一个字符串参数:整张清单,每行一项。
+- `"""覆盖式更新你的待办清单` 「覆盖式」是关键:模型每次都要把**完整清单**重写一遍,而不是只告诉你改了哪一项。这样最新版的完整计划永远出现在最近一次工具调用里。
+- `TODOS[:] = [` `TODOS[:] = ...` 是切片赋值,意思是「把这个列表里的内容整个换掉」,列表对象还是原来那个。如果写成 `TODOS = [...]`,Python 会把 TODOS 当成函数里的局部变量,外面那个全局列表根本不会变。<br>列表推导式会去掉空行和首尾空格。实测输入 `"[ ] 读文件\n\n  [x] 查天气  \n[ ] 算温差"`,得到 `['[ ] 读文件', '[x] 查天气', '[ ] 算温差']`。
+- `left = [t for t in TODOS if t.startswith("[ ]")]` 还没勾掉的项。上面的例子得到 `['[ ] 读文件', '[ ] 算温差']`。
+- `return {"saved": len(TODOS)` 上面的例子返回 `{'saved': 3, 'remaining': 2, 'next': '[ ] 读文件'}`。`next` 字段是在告诉模型「下一步该做这个」。`left[0] if left else "全部完成"`:列表非空取第一项,空了就返回「全部完成」。
+- `SYSTEM = """你是一个做事有条理的助手。` 什么时候用清单、什么时候不用,都写在 system 里。
+- `遇到需要 3 步以上的任务` 简单任务不用清单,省得每次都多一轮工具调用。
+- `agent = Agent(reg, system=SYSTEM, max_steps=15)` 步数上限比 Day 9 的 10 调高了,因为更新清单本身也要占工具调用。实测这次用了 6 步。
+- `print(agent.run(` 实测完整过程(这次实跑的结果):<br>step 1:update_todos 写下 4 项 → `{"saved": 4, "remaining": 4, "next": "[ ] 读取 cities.txt,拿到城市列表"}`,同时调了 read_file<br>step 2:把第 1 项勾掉,同时并行调 3 个 get_weather。成都那次碰上了网络错误,返回 `{"error": "ConnectError: [SSL: UNEXPECTED_EOF_WHILE_READING] ..."}`,但程序没崩<br>step 3:模型看到成都的 error,自己**只重查了成都**,拿到 15.2<br>step 4:勾掉 3 项,调 `calculate("15.2 - (-0.1)")` → `15.299999999999999`<br>step 5:全部打勾 → `"next": "全部完成"`<br>step 6:给出回答:最热成都 15.2℃,最冷哈尔滨 -0.1℃,温差 15.3℃。还顺带解释了「成都第一次报了 SSL 错误,我重试后拿到了数据」。<br>这正好验证了 Day 9 说的「错误交还给模型,让它自己纠正」。prompt_tokens 从 step 2 起依次是 862、1282、1402、1646、1790。
+- `print("最终清单:", TODOS)` 实测:`['[x] 读取 cities.txt,拿到城市列表(杭州、成都、哈尔滨)', '[x] 查询每个城市的气温(杭州 14.1,成都 15.2,哈尔滨 -0.1)', '[x] 找出最热和最冷的城市(最热成都,最冷哈尔滨)', '[x] 计算温差(15.3 ℃)']`。模型会把中间结果顺手写进清单里,清单同时也成了一份进度记录。
+
+</div>
 
 `update_todos` 的实现简单到有点可笑:把清单存进一个列表,返回剩几项、下一项是什么。它真正的作用不在于存储,而在于**让模型把计划写出来**。写出来的计划会作为工具调用的参数留在对话历史里,每次更新都会再写一遍最新版本,于是模型在任何时候都能在最近的上下文里看到完整的进度。这是用最小的代价对抗「长任务迷路」。
 
@@ -326,7 +423,7 @@ if __name__ == "__main__":
 
 ## 动手练习
 
-**练习 1:纯文本 ReAct。** 运行 `react_prompt.py`。然后删掉 `stop=["Observation:"]` 再跑一次,把模型编造的 Observation 和真实天气对比,截图记下来。这是你亲手制造的一次「幻觉」,印象会很深。
+**练习 1:纯文本 ReAct。** 在仓库根目录运行 `uv run python -m w2.react_prompt`(今天三个文件都这样跑,`plan_execute`、`todo_agent` 同理,别 `cd w2`)。然后删掉 `stop=["Observation:"]` 再跑一次,把模型编造的 Observation 和真实天气对比,截图记下来。这是你亲手制造的一次「幻觉」,印象会很深。
 
 **练习 2:让 Thought 回来。** 在 Day 9 的 Agent 里,system prompt 加一句「每次调用工具前,先用一句话说明为什么」,并在日志里打印 `msg.content`。对比加之前和加之后的日志可读性。
 

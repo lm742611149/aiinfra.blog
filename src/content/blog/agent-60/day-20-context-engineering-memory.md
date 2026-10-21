@@ -259,7 +259,8 @@ def compact(messages: list[dict], keep_last_turns: int = 3, trigger_tokens: int 
     user_idx = [i for i, m in enumerate(rest) if m["role"] == "user"]
     if len(user_idx) <= keep_last_turns:
         return messages
-    cut = user_idx[-keep_last_turns]          # 从倒数第 keep_last_turns 个 user 消息开始保留原文
+    # 从倒数第 keep_last_turns 个 user 消息开始保留原文;0 表示全部压成摘要(user_idx[-0] 会取到第一个,所以单独处理)
+    cut = user_idx[-keep_last_turns] if keep_last_turns else len(rest)
     old, recent = rest[:cut], rest[cut:]
 
     # 旧摘要也放进去一起总结,否则多次压缩后会叠出好几段摘要
@@ -270,6 +271,38 @@ def compact(messages: list[dict], keep_last_turns: int = 3, trigger_tokens: int 
     note = {"role": "system", "content": f"{SUMMARY_TAG}\n{summary}"}
     return system + [note] + recent
 ```
+
+<div class="line-notes">
+
+- `"""对话压缩:` 下面用一段真实跑过的 12 条消息来走:1 条 system(「你是云簿 CloudLedger 的客服助手。」),然后 5 轮对话:①用户说「我们公司用的是年付企业版,10 个席位」;②问 E1043(中间有一次 `search_kb` 工具调用和 tool 结果);③说下个月想换专业版;④问降级后年付能不能退;⑤说「我上次说的导入问题还是没解决,换了 XLSX 也报错」。
+- `from context_budget import estimate_tokens` 复用上一节的粗估函数,不调接口。
+- `from llm import chat` 写摘要要调一次模型,这是压缩的成本:一次额外的调用,外加几秒延迟。
+- `SUMMARY_TAG = ` 摘要消息的固定开头。后面靠它认出「这条 system 是以前压缩出来的摘要」,下次压缩时把它也合并进去。
+- `SUMMARY_PROMPT = """` 写给「总结的那个模型」的指令。正文说了,这几行是整段代码的灵魂。
+- `必须保留:` 按客服业务列出不能丢的东西。套餐和年付这种身份信息排第一,因为后面问「能不能退」全靠它。
+- `可以丢掉:` 明确告诉它哪些可以丢。只说「保留重要信息」,模型对「什么重要」的判断和你不一样。
+- `如果开头有更早的摘要` 处理多次压缩:旧摘要和新的旧对话一起再总结一次,而不是越叠越多。「不超过 200 字」给摘要设个上限,否则压缩完可能比原文还长。
+- `def compact(` 两个参数:`keep_last_turns=3` 最近 3 轮保留原文;`trigger_tokens=3000` 总量超过 3000 才压缩。
+- `total = sum(` 把所有消息的粗估 token 加起来。`m.get("content") or ""` 处理 assistant 调工具时 content 为 None 的情况。演示的 12 条实测 `total = 252`。
+- `if total <= trigger_tokens:` 没超就原样返回。演示数据用默认的 3000,252 远没到,实测 `compact(msgs) is msgs` 为 True:返回的就是原列表本身,连拷贝都没做。下面为了看到效果,把 `trigger_tokens` 调成 100 再跑。
+- `return messages` 不压缩时零成本,不调模型。这个函数可以每轮都调,大多数时候直接走这里。
+- `is_summary = lambda m:` 判断一条消息是不是以前的摘要:role 是 system,并且 content 以「【之前对话的摘要】」开头。`str(...)` 防 content 是 None 时 `.startswith` 报错。
+- `summaries = [` 挑出旧摘要。第一次压缩时是空列表。
+- `system = [` 真正的 system(人设和规则),不含摘要。演示里只有 1 条。
+- `rest = [` 其余的 user/assistant/tool,共 11 条,下标 0–10。
+- `user_idx = [` 每个 user 消息在 `rest` 里的下标,这就是每一轮的起点。实测 `[0, 2, 6, 8, 10]`:第 ②轮从 2 开始,中间夹着 assistant 调工具、tool 结果、assistant 回答共 3 条,所以第 ③轮从 6 开始。
+- `if len(user_idx) <= keep_last_turns:` 总共才 3 轮以内,没有可压的旧对话,原样返回。演示有 5 轮,继续往下走。
+- `return messages` 同上,原样返回。
+- `cut = user_idx[-keep_last_turns]` 倒数第 3 个 user 的位置。`user_idx[-3]` = 6,也就是第 ③轮「好的我试试。另外下个月起我们想换成专业版」。从轮的起点切,保证工具调用和它的结果不会被切散(和 `trim_history` 按轮丢是同一个道理)。<br>后半句 `if keep_last_turns else len(rest)` 是给 0 兜底的:`-0` 就是 `0`,`user_idx[-0]` 取到的是**第一个** user 的下标 0,`rest[:0]` 是空的。不兜底的话,实测 `keep_last_turns=0` 返回 13 条:一条什么都没总结的摘要,加上全部 11 条原文,比压缩前还多一条,还白调了一次模型。兜底后 `cut = len(rest) = 11`,11 条全进摘要,实测返回 2 条:system 和摘要。这时最后一条不是 user 消息,调用方要先把新问题 append 进去再发给模型。`tool_clearing` 里 `[:-0]` 是同一个坑,那边已经用 `if keep_recent` 单独处理了。
+- `old, recent = rest[:cut], rest[cut:]` 一行同时给两个变量赋值。`rest[:6]` 是前两轮共 6 条,要被总结;`rest[6:]` 是后三轮共 5 条,保留原文。
+- `lines = [s["content"] for s in summaries]` 先放旧摘要(第一次压缩时没有)。
+- `lines += [` 每条旧消息变成一行「role: 内容」。content 为 None 的(assistant 调工具那条)写成「(调用了工具)」。实测 6 行,第 4 行就是 `assistant: (调用了工具)`,第 5 行是 `tool: [kb-011#1] E1043:文件编码不是 UTF-8。请另存为 CSV UTF-8 或直接上传 XLSX。`。
+- `summary = chat([` 调模型写摘要,`temperature=0`。
+- `"\n".join(lines)` 整段旧对话作为 user 消息。这次实跑返回的摘要:`用户为公司年付企业版、10席位。反馈导入招商银行流水报E1043，已告知该错误为文件编码非UTF-8，需另存为CSV UTF-8或上传XLSX。用户尚未确认是否解决，待跟进。`「年付企业版、10 席位」保住了,这就是 prompt 里「必须保留」的作用。
+- `note = {"role": "system"` 摘要包成一条 system 消息,开头带上 `SUMMARY_TAG`。
+- `return system + [note] + recent` 拼回去:1 条 system + 1 条摘要 + 最近 5 条原文 = 7 条(原来 12 条)。我又在后面加了 4 条对话,用 `keep_last_turns=2` 再压一次:旧摘要被合并进新摘要,结果是 `system, system(新摘要), user, assistant, user` 共 5 条,摘要始终只有 1 条,不会越叠越多。
+
+</div>
 
 摘要 prompt 里「必须保留什么、可以丢掉什么」是这段代码的灵魂。我最初只写了「总结一下这段对话」,结果模型总结得很流畅,但把「用户是年付」这种关键身份信息当成细节省略了,压缩后 Agent 开始答错。**压缩 prompt 要按你的业务列出不能丢的东西**,而且要放进评估:构造几段长对话,压缩后问一个依赖早期信息的问题,看答得对不对。
 
@@ -891,6 +924,17 @@ def chat_raw(messages: list[Any], **kwargs: Any):
     )
     return resp.choices[0].message
 ```
+
+<div class="line-notes">
+
+- `# agent-60-lab/w3/llm.py` 追加在 `chat()` 后面,`_client`、`MODEL`、`EXTRA_BODY` 都是文件上方已经定义好的。实测 `MODEL` 是 `deepseek-flash`,`EXTRA_BODY` 是 `{'thinking': {'type': 'disabled'}}`(从 `.env` 的 `LLM_EXTRA_BODY` 解析出来,关闭思考模式)。
+- `def chat_raw(` 和 `chat()` 的区别只在返回值:`chat()` 只返回文字,这里返回整个 message 对象。`**kwargs: Any` 把 `tools=...`、`temperature=0` 这些参数原样透传给接口。返回值没写类型标注,实际类型是 openai 的 `ChatCompletionMessage`。
+- `"""返回完整的 message 对象` Agent 循环要看的是 `tool_calls`,`chat()` 拿不到它。
+- `resp = _client.chat.completions.create(` 发请求,和 Day 3 的写法一样。
+- `model=MODEL, messages=messages, extra_body=EXTRA_BODY, **kwargs` `extra_body` 是 openai SDK 留给「厂商私有参数」的口子,原样塞进请求体。漏了它,DeepSeek 就会用思考模式跑工具调用。
+- `return resp.choices[0].message` 取第一个候选的 message。实测带上 `agentic_rag.py` 的 `TOOLS` 问「E1043 怎么解决」,返回 `ChatCompletionMessage`,`content` 是空字符串 `''`(注意不是 None),`tool_calls` 里有一个调用:id 为 `call_00_sz68LxEhciYeTuR4cobQ2598`、name 为 `search_kb`、arguments 为字符串 `'{"query": "E1043 错误码"}'`。不带 tools 问「你好」,`content` 是一句问候,`tool_calls` 是 None。所以 Agent 循环用 `if not msg.tool_calls` 判断要不要停,而不是看 content。
+
+</div>
 
 两个细节和上面的 `chat()` 保持一致:`messages` 标成 `list[Any]`(写 `list[dict]` 编辑器会报红,和 Day 8 同一个原因,openai 要的是它自己的消息类型);`extra_body=EXTRA_BODY` 别漏,否则 DeepSeek 会用思考模式跑工具调用,慢很多,某些参数组合还会直接 400。
 

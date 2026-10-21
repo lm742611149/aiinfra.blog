@@ -336,6 +336,22 @@ print(resp.choices[0].message.content)
 print(resp.usage)
 ```
 
+<div class="line-notes">
+
+- `import os` 只用它一样东西:`os.environ`,也就是当前进程的环境变量。后面三个配置都从这里读。
+- `from dotenv import load_dotenv` 装的包叫 `python-dotenv`,import 的时候名字是 `dotenv`,两者对不上很正常,别以为装错了。
+- `from openai import OpenAI` OpenAI 官方 SDK。DeepSeek 兼容同一套接口协议,所以换个 `base_url` 就能连 DeepSeek,不用另装 SDK。
+- `load_dotenv()` 读 `.env`,把里面每行 `KEY=值` 塞进环境变量。实测:调用前 `"LLM_BASE_URL" in os.environ` 是 `False`,调用后变成 `True`,函数本身返回 `True`,表示找到并读到了文件。它默认从 `main.py` 所在目录开始往上一级一级找 `.env`。
+- `client = OpenAI(base_url=os.environ["LLM_BASE_URL"]` 建一个客户端,只是把地址和 key 存起来,这一行还不会发请求。实测 `client.base_url` 是 `https://api.deepseek.com`。用方括号 `os.environ["..."]` 取值,没配置就立刻报 `KeyError: 'LLM_BASE_URL'`,对应下面报错表的第三行。
+- `resp = client.chat.completions.create(` 这一行才真正发出一次 HTTP POST,地址是 `{base_url}/chat/completions`。它是同步调用,模型回完之前程序就停在这里等。实测返回对象的类型是 `ChatCompletion`。
+- `model=os.environ["LLM_MODEL"],` 模型名也从 `.env` 读,实测值是 `deepseek-flash`。换厂商只改 `.env`,不动代码。
+- `messages=[{"role": "user", "content": "用一句话介绍你自己"}],` 对话历史是一个列表,每条消息是一个 dict,带 `role`(谁说的)和 `content`(说了什么)。这里只有一条用户消息,Day 4 会往里加 system 和多轮对话。
+- `extra_body={"thinking": {"type": "disabled"}},` SDK 不认识的参数放进 `extra_body`,会原样合并进请求 JSON。这里用它关掉 DeepSeek 的思考模式。
+- `print(resp.choices[0].message.content)` `choices` 是一个列表,默认只有 1 个候选,所以取 `[0]`。实测 `len(resp.choices) == 1`,`finish_reason` 是 `"stop"`(模型自己说完了,没被截断)。这次实跑打印出:`我是DeepSeek，由深度求索公司创造的AI助手，致力于用热情细腻的方式帮助你探索世界、解决问题。`
+- `print(resp.usage)` 这次实跑:`completion_tokens=25, prompt_tokens=8, total_tokens=33`,`prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=8`。按输入 2 元、输出 8 元每百万 token 计:`8 × 2 / 1_000_000 + 25 × 8 / 1_000_000 = 0.000216` 元。
+
+</div>
+
 ```bash
 uv run main.py
 ```

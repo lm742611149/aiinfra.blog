@@ -235,6 +235,7 @@ class RobustAgent:
             answer = msg.content or ""
         except Exception as e:  # 收尾也失败了,只能给固定文案
             answer = f"抱歉,这个问题暂时没能处理完({type(e).__name__}),已转给人工同事跟进。"
+        self.messages.append({"role": "assistant", "content": answer})  # 收尾的回答也进历史,日志和下一轮对话才完整
         return AgentResult(answer, status, step, dict(self.usage), needs_human=True)
 
     def run(self, user_input: str) -> AgentResult:
@@ -281,6 +282,73 @@ class RobustAgent:
             d["reasoning_content"] = reasoning
         return d
 ```
+
+<div class="line-notes">
+
+- `import hashlib` 后面 `_is_loop` 用它算 md5 指纹,判断「这次调用和之前是不是一模一样」。
+- `from concurrent.futures import ThreadPoolExecutor` 线程池。工具放到另一个线程里跑,主线程才能「等 15 秒等不到就不等了」。同一个函数直接调的话,它卡住你也只能陪着卡。
+- `import TimeoutError as ToolTimeout` `as` 是起别名。`concurrent.futures.TimeoutError` 和 Python 内置的 `TimeoutError` 名字一样,改叫 `ToolTimeout`,下面 `except ToolTimeout:` 一看就知道接的是「工具超时」。
+- `from dataclasses import dataclass, field` `@dataclass` 让你只写字段和默认值,`__init__`、`__repr__` 自动生成。实测 `print(Limits())` 输出 `Limits(max_steps=12, max_tokens=60000, max_seconds=120, tool_timeout=15, max_tool_chars=4000, max_repeats=2)`,就是 `__repr__` 的功劳。
+- `from tenacity import` 重试库:`retry` 是装饰器,`retry_if_exception_type` 决定哪些异常才重试,`stop_after_attempt` 决定最多试几次,`wait_exponential_jitter` 决定每次等多久。
+- `from w2.agent_loop import ToolRegistry` 复用 Day 9 的工具登记处,今天只换循环,不碰工具。
+- `RETRYABLE = (` 一个元组,装着 4 种「过一会儿重试大概率会好」的异常:连不上、超时、429 限流、5xx。`except RETRYABLE` 能接住元组里任意一种。400(参数错)、401(key 错)不在里面,那种错重试一万次也一样错。
+- `class Limits:` 所有阈值集中放在这里。想改上限时只改一处,测试里也能按需传 `Limits(max_repeats=2)` 这样只改一个字段,其余用默认值。
+- `max_tokens: int = 60_000` `60_000` 就是 60000,下划线只是为了好读,Python 3.6 起支持。注意它是**整个任务**累计的 prompt+completion,不是单次调用的 `max_tokens` 参数。
+- `max_repeats: int = 2` 同一个工具、同样参数最多允许做 2 次,第 3 次就拦。练习 1 专门测的就是「恰好第 2 次」这个边界。
+- `class AgentResult:` `run()` 的返回值,不再是一个裸字符串。调用方看 `status` 就知道是正常完成(`ok`)还是撞了哪条线。
+- `usage: dict = field(default_factory=dict)` 可变的默认值必须用 `field(default_factory=...)`。直接写 `usage: dict = {}`,dataclass 会报 `ValueError: mutable default`,因为那样所有实例会共用同一个 dict。
+- `def __init__(self, registry: ToolRegistry` `client: Any = None` 是给测试留的口子:测试时塞一个假模型进来,不传就自己建真的 OpenAI 客户端。`limits: Limits | None = None` 同理,不传就用默认上限。
+- `self.client = client or OpenAI(` `a or b`:`a` 为真就用 `a`,否则用 `b`。测试里 `client=FakeClient(...)` 为真,真客户端根本不会建,所以测试时 `.env` 里没 key 也不会报 KeyError。
+- `api_key=os.environ["LLM_API_KEY"], timeout=60, max_retries=0` `max_retries=0` 关掉 SDK 自带的重试(默认 2 次)。否则 SDK 重试 3 次 × tenacity 重试 4 次,最坏一次调用要打 12 次请求。
+- `self.model = os.environ.get("LLM_MODEL", "fake")` 实测 `.env` 里配的是 `deepseek-flash`;测试时没配,就是 `"fake"`,假模型不在乎这个名字。
+- `self.messages: list[Any] = [{"role": "system", "content": system}]` 对话历史从 system 开始。测试里 `system="sys"`,所以一开始就是 `[{"role": "system", "content": "sys"}]`。
+- `self.seen: dict[str, int] = {}` 调用指纹 → 出现次数,`_is_loop` 往里记。
+- `self.pool = ThreadPoolExecutor(max_workers=4)` 最多同时跑 4 个工具。这个 Agent 实际是一个一个跑工具的,池子主要是为了能「限时等待」。
+- `retry=retry_if_exception_type(RETRYABLE),` 只有 `RETRYABLE` 里那 4 种异常才重试,其他异常直接往外抛。
+- `wait=wait_exponential_jitter(initial=1, max=20),` 第 n 次重试前等 `1 × 2^n` 秒,再加 0~1 秒随机抖动,最多 20 秒。实测 `test_rate_limit_is_retried`(连续两次 429):第 1 次失败后等了 **1.45 秒**,第 2 次失败后等了 **2.89 秒**,第 3 次成功。抖动是为了避免一堆客户端同时被限流后又同一秒一起重试。
+- `stop=stop_after_attempt(4),` 总共最多试 4 次(1 次 + 重试 3 次)。
+- `reraise=True,` 4 次都失败时抛出**原来的异常**(比如 `RateLimitError`)。不写的话 tenacity 会包一层 `RetryError` 再抛,`run()` 里的 `except RETRYABLE` 就接不住了。
+- `def _llm(self, **kwargs: Any) -> ChatCompletion:` `**kwargs` 收下所有关键字参数,原样转给 `create(...)`。主循环传 `tools=...`,收尾时传 `tools=..., tool_choice="none"`,都走这一个函数,都享受重试。
+- `return self.client.chat.completions.create(model=self.model, messages=self.messages, **kwargs)` 实测收尾那次,`FakeClient` 记下的参数 key 是 `['model', 'messages', 'tools', 'tool_choice']`,`tool_choice` 的值是 `"none"`。
+- `future = self.pool.submit(self.registry.call, name, arguments)` `submit` 把「调用 `registry.call(name, arguments)`」扔进线程池,马上返回一个 `future`(期货单),这时工具已经在另一个线程里开始跑了。
+- `out = future.result(timeout=self.limits.tool_timeout)` 最多等 `tool_timeout` 秒拿结果。实测 `slow` 工具睡 2 秒、`tool_timeout=0.5`:0.5 秒时抛 `ToolTimeout`,整个 `run()` 只用了 0.5 秒左右。注意那个线程其实还在后台继续睡完 2 秒,Python 杀不掉线程,只是我们不等它了。
+- `return json.dumps({"error": f"工具 {name} 超过` 超时不抛异常,变成一条错误消息交给模型。实测内容是 `{"error": "工具 slow 超过 0.5 秒没有返回。可以换个参数重试,或者告诉用户暂时查不到。"}`。`ensure_ascii=False` 让中文原样输出,不变成 `工` 这种转义。
+- `if len(out) > self.limits.max_tool_chars:` 实测测试里的 `big` 工具返回 `{"data": "很长很长…"}`,一共 **10012** 个字符。`max_tool_chars=500` 时进入截断。
+- `out = out[:cut] + f"\n…[结果过长` `out[:500]` 取前 500 个字符,再接一段说明。实测截断后总长 **549**,结尾是 `…[结果过长,已截断:共 10012 字符,只显示前 500。需要的话请用更精确的参数重新查询]`。告诉模型「被截了、原来多长」,它才知道该换更精确的参数,而不是以为数据就这么多。
+- `key = hashlib.md5(f"{name}:{arguments}".encode()).hexdigest()` 把「工具名:参数字符串」算成 32 位指纹。实测 `big:{"x": "a"}` → `65b73c733bc3615e236caf244d35a276`。`.encode()` 是因为 md5 只吃 bytes,不吃 str。
+- `self.seen[key] = self.seen.get(key, 0) + 1` 次数加一,第一次没有这个 key,`get` 返回默认值 0。实测循环测试里四次同样调用,`seen` 的值依次是 1、2、3、4。
+- `return self.seen[key] > self.limits.max_repeats` `max_repeats=2` 时:1>2 False、2>2 False、**3>2 True**、4>2 True。也就是前两次照常执行,第 3 次起被拦。
+- `def _wrap_up(self, status: str, step: int, reason: str) -> AgentResult:` 撞线时的收尾。四种撞线(timeout/budget/loop/max_steps)都走这里,只是 `reason` 不同。
+- `self.messages.append({"role": "user", "content": f"(系统提示:{reason}。` 往对话里补一句「别再调工具了,用已有信息回答」。实测循环测试里,倒数第二条消息就是 `(系统提示:检测到重复调用,任务可能陷入循环。不要再调用工具,……)`,最后一条是下面补进去的收尾回答。
+- `msg = self._llm(tools=self.registry.schemas, tool_choice="none").choices[0].message` `tool_choice="none"` 禁止模型再调工具,只能回文字。`tools` 照样传上,和前面每一步保持一致,只是用 `tool_choice` 把调用关掉。练习 3 实测 `deepseek-flash` 接受这个组合。
+- `answer = msg.content or ""` 模型没回文字时 `content` 是 None,`or ""` 兜成空串。真模型遵守 `tool_choice="none"`,收尾时一定回文字;假模型不管这个参数,剧本里排到哪条就给哪条,所以测试里要把收尾那条文字回复排在正确的位置(见下面 `test_budget_stops_agent`)。
+- `except Exception as e:  # 收尾也失败了` 兜底的兜底。比如正是模型服务挂了才撞的线,收尾这次多半也会失败,这时只能返回固定文案。`type(e).__name__` 取异常类名,比如 `"RateLimitError"`。
+- `self.messages.append({"role": "assistant", "content": answer})` 收尾得到的回答也写进历史。不写的话,历史停在那句「系统提示」上:存日志时看不到最终回答,Day 14 多轮对话里下一轮也接不上。实测循环测试跑完,`agent.messages[-1]` 是 `{"role": "assistant", "content": "根据已有信息,部分完成。"}`。收尾失败时补进去的是那段固定文案,用户看到什么,历史里就记什么。
+- `return AgentResult(answer, status, step, dict(self.usage), needs_human=True)` 撞线一律 `needs_human=True`。`dict(self.usage)` 复制一份,避免外面拿到的结果被后续调用改掉。注意收尾这一次的 token 没有算进 usage(练习 3 后面说了)。
+- `self.messages.append({"role": "user", "content": user_input})` 用户这句话进历史。测试里是 `"hi"`。
+- `start = time.monotonic()` 掐表,只用来算差值。
+- `for step in range(1, self.limits.max_steps + 1):` `range(1, 13)` 就是 1 到 12,step 从 1 开始数,打印、撞线时报的步数和人的直觉一致。
+- `if time.monotonic() - start > self.limits.max_seconds:` 每一步开始前先看时间。超过 120 秒就收尾,状态 `timeout`。
+- `if sum(self.usage.values()) > self.limits.max_tokens:` `usage.values()` 是 prompt 和 completion 两个数,相加就是总消耗。实测 `test_budget_stops_agent`(假模型每次记 100+20=120,上限 300):第 1 步 0、第 2 步 120、第 3 步 240 都没超,照常调模型;第 4 步开始时是 360 > 300,收尾,`status="budget"`、`steps=4`。注意它是「调用前检查」,所以最后一次调用可能让总量超过上限一点,这是有意的取舍。
+- `resp = self._llm(tools=self.registry.schemas)` 主循环的模型调用,带上全部工具 schema。实测测试里的 schema 有 `slow` 和 `big` 两个,参数都是 `{"x": {"type": "string"}}`。
+- `except RETRYABLE as e:` tenacity 重试 4 次还失败,异常才会到这里(多亏 `reraise=True` 抛的是原异常)。这时模型都叫不动,也没法让它收尾,直接返回 `llm_error`。
+- `msg = resp.choices[0].message` 真模型和假模型都是这个结构,所以假模型才能骗过这里。
+- `self.usage["prompt_tokens"] += resp.usage.prompt_tokens` 每一步累加 token。实测练习 3 里,`max_steps=3` 那次三步累计 `{'prompt_tokens': 2145, 'completion_tokens': 285}`。
+- `self.messages.append(self._assistant_dict(msg))` 模型这一步的回复(含 tool_calls)必须进历史,下一轮模型才知道自己刚才要调什么。
+- `if not msg.tool_calls:` 不调工具 = 模型给出了最终回答,`status="ok"`,正常结束。
+- `looping = False` 这一步里有没有出现过「被拦下的重复调用」。
+- `for tc in msg.tool_calls:` 模型一次可以调好几个工具。实测练习 3 第 2 步一次调了 3 个 `get_weather`(杭州、成都、哈尔滨)。
+- `if self._is_loop(tc.function.name, tc.function.arguments):` 先算指纹计次数,超过 `max_repeats` 就不执行,直接回一条「和之前完全一样」的提醒。
+- `out = self._run_tool(tc.function.name, tc.function.arguments)` 正常执行,带超时和截断。
+- `self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})` 每个 tool_call 都必须有一条对应的 tool 消息,`tool_call_id` 要对上,否则下一次调用会 400。被拦下的那次也要回一条(就是那句提醒)。
+- `if looping and max(self.seen.values()) > self.limits.max_repeats + 1:` 第一次被拦时只是提醒,给模型一次改正的机会;被拦后还要再来,才真的收尾。实测循环测试:第 3 步 `seen=3`,`3 > 3` 为 False,只提醒;第 4 步 `seen=4`,`4 > 3` 为 True → `_wrap_up("loop")`,`steps=4`,usage `{'prompt_tokens': 400, 'completion_tokens': 80}`。
+- `return self._wrap_up("max_steps", self.limits.max_steps, "已达到最大步数")` for 循环正常跑完 12 步还没结束,才会走到这里。实测练习 4 里「(37.5 - 12) * 4 等于多少?」就撞了这条线(`max_steps=2`):模型第 2 步明明已经写出了 `= **102**`,却又附带调了一次同样的 calculate,有 tool_calls 就不算结束,两步用完只能收尾。
+- `@staticmethod` 静态方法,不用 `self`,纯粹的格式转换。
+- `d: dict[str, Any] = {"role": "assistant", "content": msg.content}` 把 SDK 的消息对象转成普通 dict 存进历史。
+- `d["tool_calls"] = [tc.model_dump() for tc in msg.tool_calls]` `model_dump()` 是 pydantic 对象转 dict 的方法。实测第一条 assistant 消息存成 `{'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'call_0', 'type': 'function', 'function': {'name': 'big', 'arguments': '{"x": "a"}'}}]}`。
+- `reasoning = getattr(msg, "reasoning_content", None)` `getattr(对象, 属性名, 默认值)`:有这个属性就取,没有就返回 None,不报错。DeepSeek 开思考模式时会有 `reasoning_content`,要原样带回去,不然下一轮会报错;我们的 `.env` 关了思考模式,所以这里一般是 None。
+
+</div>
 
 几个设计点再说一下。
 
@@ -389,11 +457,51 @@ def test_rate_limit_is_retried():
 
 
 def test_budget_stops_agent():
-    loop = [reply(calls=[tool_call("big", {"x": str(i)}, i)]) for i in range(10)]
-    client = FakeClient(loop + [reply("预算用完,先给部分结果")])
+    loop = [reply(calls=[tool_call("big", {"x": str(i)}, i)]) for i in range(3)]  # 每次记 120 token,3 次后超 300
+    client = FakeClient(loop + [reply("预算用完,先给部分结果")])  # 第 4 次调用就是收尾
     r = RobustAgent(reg, "sys", Limits(max_tokens=300), client=client).run("hi")
     assert r.status == "budget" and r.needs_human
+    assert r.answer == "预算用完,先给部分结果" and client.calls[-1]["tool_choice"] == "none"
 ```
+
+<div class="line-notes">
+
+- `import httpx2` openai 3.x 内部用 httpx2 发请求,构造假的 429 响应要用同一个包的 `Request`/`Response`,否则类型对不上。
+- `from w2.robust_agent import Limits, RobustAgent` 被测的东西。测试文件也放在 `w2/` 下,在仓库根目录跑 `uv run pytest -q w2/test_robust_agent.py`。
+- `def tool_call(name, args, i=0):` 造一个假的工具调用对象。实测 `tool_call("big", {"x": "a"}, 0)` 得到的对象:`tc.id == "call_0"`,`tc.function.arguments == '{"x": "a"}'`。
+- `fn = SimpleNamespace(name=name, arguments=json.dumps(args, ensure_ascii=False))` 真模型返回的 `arguments` 是 JSON **字符串**,不是 dict,所以这里要先 `json.dumps`。
+- `tc.model_dump = lambda: {` 给假对象手动挂一个 `model_dump()` 方法,因为 `_assistant_dict` 会调它。实测返回 `{'id': 'call_0', 'type': 'function', 'function': {'name': 'big', 'arguments': '{"x": "a"}'}}`。
+- `def reply(content=None, calls=None):` 造一条假的模型响应,结构见正文下面那段 JSON。
+- `usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20)` 每条假响应固定记 100+20=120 个 token。预算测试就靠这个固定数字算出「第几步会撞线」。
+- `class FakeClient:` 按剧本演的假模型,正文下面有详细讲解。
+- `self.script, self.calls = list(script), []` 一行给两个变量赋值(元组解包)。`list(script)` 复制一份剧本,`pop` 时不会改掉调用方传进来的那个列表。
+- `self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))` 凑出 `client.chat.completions.create(...)` 这条调用路径,实际走到 `self._create`。
+- `self.calls.append(kwargs)` 记下每次调用的参数。实测循环测试跑完 `len(client.calls) == 5`,最后一条的 key 是 `['model', 'messages', 'tools', 'tool_choice']`。
+- `item = self.script.pop(0)` 从剧本开头取一条并删掉。剧本取空了再 `pop` 会抛 `IndexError`,测试就挂,这正好能抓住「Agent 多调了一次模型」。
+- `if isinstance(item, Exception):` 剧本里放的是异常对象就抛出去,模拟 429 这种失败。
+- `reg = ToolRegistry()` 测试专用的工具表,只有下面两个假工具。
+- `def slow(x: str) -> dict:` 故意睡 2 秒的工具,用来测超时。
+- `def big(x: str) -> dict:` 故意返回超长结果。实测 `reg.call("big", '{"x": "a"}')` 返回 10012 个字符。
+- `return {"data": "很长" * 5000}` 字符串乘整数是重复拼接,`"很长" * 5000` 是 10000 个汉字,再加上 JSON 外壳 `{"data": ""}` 的 12 个字符,正好 10012。
+- `same = lambda i: reply(calls=[tool_call("big", {"x": "a"}, i)])` 详细讲解和逐步追踪表在正文下面,这里只说结论:实测 `seen` 依次是 1、2、3、4,第 3 次被拦,第 4 次收尾。
+- `r = RobustAgent(reg, "sys", Limits(max_repeats=2), client=client).run("hi")` 实测 `r` 是 `AgentResult(answer='根据已有信息,部分完成。', status='loop', steps=4, usage={'prompt_tokens': 400, 'completion_tokens': 80}, needs_human=True)`。usage 只算了 4 次,收尾那次没算进去。
+- `client = FakeClient([reply(calls=[tool_call("slow", {"x": "a"})]), reply("好的")])` 剧本:第 1 次让 Agent 调 `slow`,第 2 次回「好的」结束。
+- `agent = RobustAgent(reg, "sys", Limits(tool_timeout=0.5), client=client)` 只给工具 0.5 秒,`slow` 要 2 秒,必然超时。这里把 agent 单独存成变量,是因为后面要翻 `agent.messages`。
+- `tool_msg = [m for m in agent.messages if m["role"] == "tool"][0]` 从历史里筛出所有 tool 消息,取第一条。实测内容是 `{"error": "工具 slow 超过 0.5 秒没有返回。可以换个参数重试,或者告诉用户暂时查不到。"}`。
+- `assert "超过 0.5 秒" in tool_msg["content"] and r.status == "ok"` 两件事:超时变成了给模型看的错误消息;Agent 没崩,模型看完错误回了「好的」,正常结束。实测 `steps=2`。
+- `agent = RobustAgent(reg, "sys", Limits(max_tool_chars=500), client=client)` 只允许工具结果放 500 个字符进上下文。
+- `assert len(tool_msg["content"]) < 600 and "已截断" in tool_msg["content"]` 实测截断后长度 549(500 + 说明文字 49),小于 600。
+- `req = httpx2.Request("POST", "https://x.invalid/v1/chat/completions")` 构造 `RateLimitError` 必须带一个 response,response 又必须带 request,所以先造一个假请求。`.invalid` 是保留域名,永远解析不到,不会真发出去。
+- `err = openai.RateLimitError("429", response=httpx2.Response(429, request=req), body=None)` 实测 `err.status_code == 429`。
+- `client = FakeClient([err, err, reply("第三次成功")])` 剧本:前两次抛 429,第三次成功。
+- `assert r.status == "ok" and len(client.calls) == 3` 实测通过,两次重试之间分别等了 1.45 秒和 2.89 秒,这就是这个测试慢的原因。注意 `steps=1`:重试发生在 `_llm` 内部,对循环来说只算一步。
+- `loop = [reply(calls=[tool_call("big", {"x": str(i)}, i)]) for i in range(3)]` 造 3 条「调 big」的响应,参数分别是 `"0"`、`"1"`、`"2"`,每次都不一样,不会触发循环检测,只能靠预算拦下。为什么正好 3 条:假模型每次记 100+20=120 token,3 次后累计 360,超过 300,第 4 次调用就是收尾。
+- `client = FakeClient(loop + [reply("预算用完,先给部分结果")])` 剧本第 4 条是一句纯文字回复,正好被收尾那次拿到。剧本条数要和撞线的时机对上,不然收尾拿到的是一条工具调用,`answer` 就成了空串,测试也照样能过。
+- `r = RobustAgent(reg, "sys", Limits(max_tokens=300), client=client).run("hi")` 实测 `status='budget', steps=4`,usage 是 `{'prompt_tokens': 300, 'completion_tokens': 60}`(360 > 300)。剧本 4 条刚好用完:3 次正常 + 1 次收尾。
+- `assert r.status == "budget" and r.needs_human` 撞的是预算线,并且标记了要人工接手。
+- `assert r.answer == "预算用完,先给部分结果"` 这一行检查收尾真的拿到了回答,`tool_choice` 也确实是 `"none"`。实测这个测试文件的 5 个测试全部通过。只查 status 是不够的:之前剧本排了 10 条,收尾拿到的是第 4 条工具调用,answer 是空串,但测试照样是绿的。
+
+</div>
 
 先看最上面两个辅助函数,后面每个测试都靠它们造假响应。
 
@@ -518,6 +626,17 @@ def test_second_identical_call_still_runs():
     assert r.status == "ok"
 ```
 
+<div class="line-notes">
+
+- `def test_second_identical_call_still_runs():` 专门测「恰好等于阈值」那一次:同样的调用做第 2 次,必须真的执行。
+- `client = FakeClient([same(0), same(1), reply("好的")])` 剧本:连续两次一模一样的 `big(x="a")`,然后回「好的」。实测 `seen` 依次是 1、2,`2 > 2` 为 False,两次都正常执行。
+- `tool_msgs = [m["content"] for m in agent.messages if m["role"] == "tool"]` 只取 tool 消息的内容。实测两条都是 `{"data": "很长很长…`,真结果。
+- `assert len(tool_msgs) == 2` 两次调用都有回执。
+- `assert all("完全一样" not in c for c in tool_msgs)` `all(...)` 要求每一条都满足条件,括号里是生成器表达式。如果 `_is_loop` 被改成 `>=`,第 2 条就会变成「这个调用和之前完全一样」的提醒,这一行就会失败。
+- `assert r.status == "ok"` 实测 `status='ok', steps=3`:第 1、2 步调工具,第 3 步回「好的」。
+
+</div>
+
 `>=` 的版本下它会失败:
 
 ```text
@@ -554,6 +673,18 @@ def test_unknown_tool_lists_available_ones():
     assert r.status == "ok"
 ```
 
+<div class="line-notes">
+
+- `fn = SimpleNamespace(name="big", arguments='{"x": ')` 手工拼一个半截 JSON。外层用单引号,里面的双引号就不用转义。
+- `tc = SimpleNamespace(id="call_0", type="function", function=fn)` 自己搭工具调用对象,不走 `tool_call()`,因为那个辅助函数会 `json.dumps`,永远造不出坏 JSON。
+- `client = FakeClient([reply(calls=[tc]), reply("参数写错了,我换个方式回答。")])` 剧本:第 1 次吐出坏参数,第 2 次模型「看到错误后改口」。
+- `assert "JSONDecodeError" in tool_msg["content"]` 实测 tool 消息是 `{"error": "JSONDecodeError: Expecting value: line 1 column 7 (char 6)"}`。`ToolRegistry.call` 里 `json.loads` 抛的异常被接住,变成了给模型看的错误消息,程序没崩。`char 6` 指 `{"x": ` 第 7 个字符的位置,那里本该有一个值。
+- `client = FakeClient([reply(calls=[tool_call("search_web", {"q": "退款"})]), reply("我没有搜索工具。")])` 模型调了一个根本没注册的工具 `search_web`。
+- `assert "search_web" in tool_msg["content"]` 实测 tool 消息是 `{"error": "没有叫 search_web 的工具,可用的有 ['slow', 'big']"}`。错误里带上了可用工具清单,模型下一步才知道该换哪个。
+- `assert "slow" in tool_msg["content"] and "big" in tool_msg["content"]` 确认清单真的列出来了。实测 8 个测试全部通过,用时约 5 秒。
+
+</div>
+
 这里不能用 `tool_call()` 辅助函数造坏 JSON,因为它内部会 `json.dumps`,永远是合法的 JSON;所以手工拼了一个 `arguments` 是半截字符串的调用。跑一遍应该是 `8 passed`。
 
 ### 练习 3:接上真模型,看撞线时的部分答案
@@ -575,6 +706,19 @@ for limits in (Limits(max_steps=3), Limits(max_tokens=2000)):
     print(f"status={r.status} steps={r.steps} needs_human={r.needs_human} usage={r.usage}")
     print("回答:", r.answer)
 ```
+
+<div class="line-notes">
+
+- `from w2.day09_demo import reg` 导入 Day 9 注册好三个工具的 `reg`。导入时 `day09_demo.py` 顶层代码会执行(包括 `load_dotenv()`),但 `if __name__ == "__main__":` 下面的部分不会。
+- `QUESTION = "读一下 cities.txt` 要读文件、查三个城市的天气、算平均和温差,至少要 3 步,正好用来撞线。
+- `for limits in (Limits(max_steps=3), Limits(max_tokens=2000)):` 同一个问题用两种上限各跑一次。实测第一次撞步数,第二次撞预算。
+- `agent = RobustAgent(reg, SYSTEM, limits)` 每次新建一个 Agent,历史、计数都是干净的。
+- `r = agent.run(QUESTION)` 这次实跑 `max_steps=3`:第 1 步 `read_file("cities.txt")` 拿到「杭州、成都、哈尔滨」;第 2 步一次调 3 个 `get_weather`,拿到 14.1℃、15.2℃、-0.1℃;第 3 步调两次 `calculate`,`(14.1+15.2+(-0.1))/3` 得 `9.733333333333333`,`15.2-(-0.1)` 得 `15.299999999999999`。第 3 步还有 tool_calls,所以 3 步用完撞线,进 `_wrap_up`。
+- `print(f"\n=== {limits} ===")` 打印出 `Limits(...)` 的全部字段,dataclass 自动生成的 `__repr__`。
+- `print(f"status={r.status} steps={r.steps} needs_human={r.needs_human} usage={r.usage}")` 这次实跑两行分别是:<br>`status=max_steps steps=3 needs_human=True usage={'prompt_tokens': 2145, 'completion_tokens': 285}`<br>`status=budget steps=4 needs_human=True usage={'prompt_tokens': 2177, 'completion_tokens': 308}`<br>第二次三步一共用了 2485 个 token,第 4 步开始前发现超过 2000,收尾。
+- `print("回答:", r.answer)` 两次收尾都给出了完整的表格:平均约 9.73℃,最冷哈尔滨 -0.1℃,最热成都 15.2℃,温差 15.3℃。其实信息在撞线前已经全拿到了,模型自己也说「没有未完成的部分」,只是循环没机会让它把话说完。这说明 `_wrap_up` 的价值:撞线不等于白干。
+
+</div>
 
 `workspace/cities.txt` 是 Day 9 跑 demo 时生成的;如果没有,先跑一次 `uv run python -m w2.day09_demo`。然后:
 
@@ -636,6 +780,20 @@ from pathlib import Path
         Path("runs", name).write_text(json.dumps(record, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 ```
 
+<div class="line-notes">
+
+- `def run(self, user_input: str) -> AgentResult:` 新的 `run` 只是个外壳:掐表、调原来的 `_run`、存日志、返回结果。调用方完全感觉不到变化。
+- `result = self._run(user_input)` 原来的 `run` 改名成了 `_run`,函数体一个字没动。
+- `self._save(result, time.monotonic() - t0)` 第二个参数是这次运行用了多少秒。实测练习 4 第一个问题「北京现在多少度?」存下来是 `"seconds": 5.96`。
+- `Path("runs").mkdir(exist_ok=True)` 建 `runs/` 目录,已经存在也不报错。相对路径,所以是在**当前工作目录**下建,这也是测试要 `chdir` 到临时目录的原因。
+- `name = f"{datetime.now():%Y%m%d-%H%M%S-%f}_{r.status}.json"` f-string 里冒号后面是格式说明,`%f` 是微秒。实测文件名 `20261022-070535-229377_ok.json`、`20261022-070537-834478_max_steps.json`。带微秒是为了同一秒里跑完两次也不会撞名。
+- `record = {` 要存的东西:结果的几个字段,加上完整的 `messages`。
+- `"seconds": round(seconds, 2),` 保留两位小数,`5.9612...` 存成 `5.96`。
+- `"messages": self.messages,` 完整轨迹。实测「北京现在多少度」那份有 5 条:system、user、assistant(调 get_weather)、tool(`"temperature": 4.5`)、assistant(最终回答)。撞线的那几份,倒数第二条是 `_wrap_up` 加的那句「系统提示」,最后一条是收尾得到的回答(`_wrap_up` 会把它也追加进 messages),日志里能直接看到 Agent 最后说了什么。
+- `Path("runs", name).write_text(json.dumps(record, ensure_ascii=False, indent=2, default=str), encoding="utf-8")` `indent=2` 缩进方便人看;`default=str` 是保险:遇到 json 不认识的类型就转成字符串,不至于存日志时崩掉。
+
+</div>
+
 这样所有调用方(包括测试)都不用改,`run` 照旧返回 `AgentResult`,只是多了一个副作用。也正因为多了副作用,测试跑起来会往仓库里写 `runs/`。在 `test_robust_agent.py` 的 `reg = ToolRegistry()` 上面加一个自动生效的 fixture,让每个测试都在临时目录里跑(`import pytest` 放到文件顶部,和其他 import 放在一起,否则 Ruff 会提示 import 不在顶部):
 
 ```python
@@ -647,6 +805,14 @@ def _run_in_tmp(tmp_path, monkeypatch):
     """run() 会写 runs/;测试时切到临时目录,不弄脏仓库。"""
     monkeypatch.chdir(tmp_path)
 ```
+
+<div class="line-notes">
+
+- `@pytest.fixture(autouse=True)` fixture 是 pytest 的「测试前准备」。`autouse=True` 表示这个文件里每个测试都自动套上它,不用在测试函数参数里写名字。
+- `def _run_in_tmp(tmp_path, monkeypatch):` 参数名就是 pytest 内置 fixture 的名字,pytest 按名字自动注入:`tmp_path` 是每个测试独享的临时目录,`monkeypatch` 用来临时改环境,测试结束自动还原。
+- `monkeypatch.chdir(tmp_path)` 把当前目录切到临时目录。`_save` 写的是相对路径 `runs/`,于是日志都落在临时目录里,测试结束 pytest 自己清理,仓库保持干净。
+
+</div>
 
 再把 `runs/` 加进 `.gitignore`,日志里有完整对话,不该进仓库。
 
@@ -675,6 +841,16 @@ for q in QUESTIONS:
     r = RobustAgent(reg, SYSTEM, Limits(max_steps=2, max_tokens=6000)).run(q)
     print(f"[{r.status:9}] steps={r.steps} {q}")
 ```
+
+<div class="line-notes">
+
+- `QUESTIONS = [` 十个问题,有一步就能答的、要好几步的、还有故意读不存在文件的,让结果分布里出现不同情况。
+- `"读一下 notes.txt。",  # 不存在的文件` 实测 `read_file` 返回「文件不存在,workspace 里现有的文件: [...]」,模型照实告诉用户,`status` 是 `ok`。
+- `for q in QUESTIONS:` 每个问题新建一个 Agent,互不影响。
+- `r = RobustAgent(reg, SYSTEM, Limits(max_steps=2, max_tokens=6000)).run(q)` `max_steps=2` 是故意设紧的。这次实跑结果是 6 个 `max_steps`、4 个 `ok`。连「(37.5 - 12) * 4 等于多少?」都撞线了:翻日志发现模型第 2 步写出了 `= **102**`,却又附带调了一次一模一样的 calculate(第 2 次同样调用不算循环,照常执行),有 tool_calls 就不算结束,两步就用完了。
+- `print(f"[{r.status:9}] steps={r.steps} {q}")` `:9` 是格式说明,把 status 补空格到 9 个字符宽,`ok` 和 `max_steps` 打出来是对齐的。实测前两行:<br>`[ok       ] steps=2 北京现在多少度?`<br>`[max_steps] steps=2 (37.5 - 12) * 4 等于多少?`
+
+</div>
 
 ```bash
 uv run python -m w2.day12_runs

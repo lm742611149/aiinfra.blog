@@ -234,6 +234,33 @@ if __name__ == "__main__":
     print("本次消耗 token:", total_tokens)
 ```
 
+<div class="line-notes">
+
+- `import numpy as np` 向量运算全靠 numpy,`np` 是社区约定的简称。
+- `load_dotenv()` 把 `.env` 里的 `EMB_*` 读进环境变量。这一行必须在下面 `os.environ[...]` 之前执行。
+- `_client = OpenAI(base_url=os.environ["EMB_BASE_URL"]` embedding 和聊天模型是两个厂商,所以单独建一个客户端。实测用的是 `https://api.siliconflow.cn/v1`。这里用 `os.environ[...]` 而不是 `.get()`:没配就直接报 `KeyError`,好过拿一个空地址跑半天才失败。
+- `EMB_MODEL = os.environ.get("EMB_MODEL", "BAAI/bge-m3")` 实测 `.env` 里配的就是 `BAAI/bge-m3`。
+- `EMB_BATCH = int(os.environ.get("EMB_BATCH", "10"))` 环境变量是字符串,用 `int()` 转成数字,实测为 10。
+- `total_tokens = 0` 模块级变量,整个进程共用一个计数。
+- `def embed(texts: list[str]) -> np.ndarray:` 输入 N 条文本,输出 `(N, 1024)` 的数组。正文的 bullet 已经逐句讲过语法,这里只用真实数据走一遍。
+- `vectors: list[list[float]] = []` 先用普通列表攒每一批的结果,最后再一次性转成 numpy 数组。
+- `for start in range(0, len(texts), EMB_BATCH):` 实测传 12 条文本,`range(0, 12, 10)` 产生 0 和 10:第一批 `texts[0:10]` 有 10 条,第二批 `texts[10:20]` 只剩 2 条。切片超出末尾不会报错。
+- `batch = [t.replace("\n", " ").strip() or " "` 实测:`"第一行\n第二行"` → `"第一行 第二行"`;`"   "` 去掉空格后是空字符串,`"" or " "` 得到 `" "`;`"退款"` 不变。
+- `resp = _client.embeddings.create(model=EMB_MODEL, input=batch)` 一次请求处理一整批。实测传 `["退款", "发票"]`,`resp.data` 有 2 个对象,`index` 分别是 0、1,每个 `embedding` 是 1024 个浮点数,`resp.usage` 是 `prompt_tokens=10, total_tokens=10`。
+- `vectors.extend(d.embedding for d in sorted(resp.data, key=lambda d: d.index))` 硅基流动实测返回的顺序本来就是 0、1,排序只是防御。`extend` 把这一批的向量逐个追加进去,写成 `append` 会变成列表套列表。
+- `if resp.usage:` 有的服务不返回 usage,这时就不记账,避免 `None.total_tokens` 报错。
+- `total_tokens += resp.usage.total_tokens` 实测 12 条短文本两批一共记了 69 个 token。
+- `arr = np.asarray(vectors, dtype=np.float32)` 12 个长度为 1024 的列表变成形状 `(12, 1024)`、类型 `float32` 的数组。
+- `return arr / np.linalg.norm(arr, axis=1, keepdims=True)` 归一化。`np.linalg.norm(arr, axis=1, keepdims=True)` 的形状是 `(12, 1)`,每行一个长度值。实测发现 bge-m3 在硅基流动上返回的向量**本来就已经归一化了**(原始向量长度就是 1.0),这一步相当于除以 1。保留它是因为换成别的模型不一定这样,多除一次很便宜,漏掉就会让点积不等于余弦。
+- `def embed_one(text: str) -> np.ndarray:` 单条文本的快捷方式。
+- `return embed([text])[0]` 包成只有一条的列表传进去,拿回 `(1, 1024)` 的数组,`[0]` 取出第一行,形状变成 `(1024,)`。
+- `def cosine(a: np.ndarray, b: np.ndarray) -> float:` 通用的余弦公式:点积除以两个向量长度的乘积。对 `embed()` 的结果,分母就是 `1 × 1`。实测「企业版支持按比例退款」和「企业版不支持按比例退款」:`cosine(a, b)` 和 `float(a @ b)` 都是 0.9070,完全一样。
+- `return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))` 外面包一层 `float()`,是为了把 numpy 的 `float32` 标量转成普通 Python 数,打印、写 JSON 都更省心。
+- `v = embed_one("年付套餐买错了能退款吗")` 这次实跑的结果:`维度: 1024`,`前 5 个数: [-0.0202  0.0098 -0.0355  0.0093 -0.0055]`,`长度(归一化后应为 1): 1.0`,`本次消耗 token: 12`。前 5 个数和正文示例不一样是正常的,正文里本来就说了不用对。
+- `print("前 5 个数:", np.round(v[:5], 4))` `v[:5]` 取前 5 个分量,`np.round(..., 4)` 保留 4 位小数,只是为了打印好看。
+
+</div>
+
 **`embed()` 逐行在干什么:**
 
 - `global total_tokens`:要修改文件顶部的全局变量。Python 在函数里给变量赋值时默认当成新的局部变量,不写 `global` 的话 `+=` 会报 `UnboundLocalError`(TS 函数里直接改外层 `let` 没这个限制)。
@@ -292,6 +319,21 @@ for i, s in enumerate(SENTENCES):
     print(f"[{i}] {s[:16]:<16} 最像 [{j}] {SENTENCES[j][:16]}  ({sim[i, j]:.2f})")
 ```
 
+<div class="line-notes">
+
+- `from embed import embed` 平级导入,所以要按文件路径运行(`uv run python w3/sim_matrix.py`)。
+- `SENTENCES = [` 6 句话,注释里标了编号 0–5,后面输出的行号、列号都按这个编号对应。
+- `vecs = embed(SENTENCES)` 实测形状 `(6, 1024)`:6 句话,每句 1024 维。
+- `sim = vecs @ vecs.T` `@` 是矩阵乘法,`.T` 是转置。`(6, 1024) @ (1024, 6)` 得到 `(6, 6)`,实测形状就是 `(6, 6)`。第 0 行精确值是 `[1.0, 0.7437, 0.6869, 0.6264, 0.5237, 0.3669]`,意思是第 0 句和自己是 1,和第 1 句 0.74,和天气那句只有 0.37。
+- `np.set_printoptions(precision=2, suppress=True)` 打印时只保留 2 位小数,`suppress=True` 不用科学计数法。它只影响显示,`sim` 里存的值不变。
+- `print(sim)` 这次实跑打出来的矩阵,和正文那份 10-17 的结果只差一处:`1 ↔ 2` 是 0.68(正文是 0.69),其余完全一样。
+- `for i, s in enumerate(SENTENCES):` `enumerate` 同时给出下标和元素:`(0, "年付套餐买错了…")`、`(1, "退款政策…")`……
+- `order = np.argsort(-sim[i])` `argsort` 返回的是「从小到大排序后各元素原来的下标」。前面加负号就变成从大到小。实测 `i=0`:`-sim[0]` 排序后是 `[0, 1, 2, 3, 4, 5]`,自己排第一。`i=5`(天气)那行是 `[5, 2, 3, 1, 0, 4]`。
+- `j = next(k for k in order if k != i)` 跳过自己,取排名最高的另一句。`next(生成器)` 取第一个满足条件的元素,相当于 TS 的 `order.find(k => k !== i)`。实测 `i=0` 得到 `j=1`;`i=5` 得到 `j=2`,也就是「今天北京天气不错」最像的是「怎么申请退款」,但只有 0.41。
+- `print(f"[{i}] {s[:16]:<16} 最像 [{j}]` `s[:16]` 最多取 16 个字;`:<16` 左对齐并补空格到 16 个字符宽。实测第 0 句只有 14 个字,补了 2 个空格。中文字符显示宽度是英文的两倍,所以列对不齐。实跑输出的第一行是 `[0] 年付套餐买错了能把钱要回来吗   最像 [1] 退款政策:年付套餐中途取消的,按  (0.74)`。
+
+</div>
+
 运行方式是 `uv run python w3/sim_matrix.py`(在 `agent-60-lab` 根目录)。注意这里**不要**用 W2 习惯的 `-m w3.sim_matrix`:脚本里写的是 `from embed import embed`,直接按文件路径运行时 Python 会把 `w3/` 加进搜索路径,所以找得到 `embed.py`;用 `-m` 运行时搜索路径是根目录,会报 `ModuleNotFoundError: No module named 'embed'`。
 
 `vecs @ vecs.T` 这一行值得停一下。`vecs` 形状是 `(6, 1024)`,转置后 `(1024, 6)`,相乘得到 `(6, 6)` 的矩阵,第 i 行第 j 列就是第 i 句和第 j 句的点积。因为已经归一化,这就是余弦相似度。对角线全是 1(自己和自己)。Day 16 检索的时候,你会写一模一样的东西,只不过一边是 1 个问题,另一边是几百个文档块。
@@ -346,6 +388,13 @@ q, d42, d43 = embed(["导入银行流水报错 E1042 怎么办",
                      "导入银行流水报错 E1043 怎么办?这是日期格式无法识别,请把日期列改成 YYYY-MM-DD。"])
 print(float(q @ d42), float(q @ d43))  # 我实测:0.651  0.799
 ```
+
+<div class="line-notes">
+
+- `q, d42, d43 = embed([` 三条文本一次编码,返回 `(3, 1024)` 的数组。左边写三个变量,会按行解包:`q` 是第 0 行(问题),`d42`、`d43` 是两篇文档,每个形状都是 `(1024,)`。
+- `print(float(q @ d42), float(q @ d43))` 两个一维向量的 `@` 就是点积,因为已经归一化,点积就是余弦相似度。这次实跑结果是 `0.6515  0.7991`,和注释里的 0.651、0.799 一致:错的那篇 E1043 比对的那篇 E1042 高了将近 0.15。
+
+</div>
 
 正确答案 E1042 那篇只有 0.651,写法和问题几乎一样的 E1043 那篇有 0.799,排在了第一。客户问 E1042,向量检索把 E1043 的解决办法递给了模型。这种场景关键词匹配是精确的:「E1042」这个词只出现在正确那篇里。这就是 Day 18 要讲混合检索(BM25 + 向量)的原因。
 

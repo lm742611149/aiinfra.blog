@@ -207,7 +207,7 @@ def calculate(expression: Annotated[str, "算式,只能包含数字、+ - * / //
         if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
             return n.value
         if isinstance(n, ast.BinOp) and type(n.op) in _OPS:
-            if isinstance(n.op, ast.Pow) and abs(ev(n.right)) > 100:
+            if isinstance(n.op, ast.Pow) and ev(n.right) > 100:
                 raise ValueError("指数太大")
             return _OPS[type(n.op)](ev(n.left), ev(n.right))
         if isinstance(n, ast.UnaryOp) and type(n.op) in _OPS:
@@ -255,6 +255,7 @@ def files_read(
     except UnicodeDecodeError:
         return {"error": f"'{path}' 不是 UTF-8 文本文件,无法读取"}
     max_lines = max(1, min(max_lines, 300))
+    start_line = max(1, start_line)  # 传 0 或负数一律当成从第 1 行读
     chunk = lines[start_line - 1:start_line - 1 + max_lines]
     out = {"path": path, "total_lines": len(lines),
            "lines": [f"{i}: {s}" for i, s in enumerate(chunk, start_line)]}
@@ -286,6 +287,69 @@ def web_search(
     return {"query": query, "results": hits} if hits else {"query": query, "results": [], "hint": "没有结果,换个说法试试"}
 ```
 
+<div class="line-notes">
+
+- `import ast` `ast` 是 Python 自带的语法树模块,`calculate` 用它把算式解析成一棵树再自己求值,而不是直接 `eval`。
+- `import operator as op` `operator` 模块把 `+ - * /` 这些运算符做成了普通函数:`op.add(2, 3)` 等于 `2 + 3`。下面 `_OPS` 表就是用它把语法树节点类型映射到对应的函数。
+- `from typing import Annotated, Literal` `Annotated[str, "说明"]` 给参数附带说明,`ToolRegistry` 会把这段说明读出来放进 schema 的 `description`;`Literal["celsius", "fahrenheit"]` 会变成 schema 里的 `enum`。
+- `import httpx` 发 HTTP 请求的库,用法和 `requests` 几乎一样,天气和 Tavily 搜索都靠它。
+- `from agent_loop import ToolRegistry` Day 9 写的工具注册表。下面每个 `@reg.tool` 都会把函数登记进去,并根据函数签名和 docstring 自动生成 JSON schema。
+- `reg = ToolRegistry()` 全局只有一个注册表,`main.py` 里 `from tools import reg` 拿的就是它。实测 `reg.schemas` 里依次是 `weather_now`、`calculate`、`files_list`、`files_read`、`web_search` 五个工具。
+- `WORKSPACE = Path(os.environ.get("AGENT_WORKSPACE"` 没设环境变量就用 `"workspace"`。`.resolve()` 把相对路径变成绝对路径,在项目目录里运行时得到 `.../cli-agent/workspace`。**这一行在 `import tools` 的那一刻就执行了**,所以 `main.py` 必须先 `load_dotenv()`,再导入这个文件。
+- `WMO = {0: "晴"` Open-Meteo 返回的天气状况是 WMO 标准的数字代码,这张表把常见的代码翻成中文。实测杭州返回 `weather_code: 1`,查表得到「大致晴」。
+- `@reg.tool` 装饰器:把下面的函数注册成工具。注册之后函数本身不变,你在测试里照样可以直接调用 `weather_now("杭州")`。
+- `city: Annotated[str` 实测生成的 schema 是 `"city": {"type": "string", "description": "城市名,中文或英文。重名城市可以加省份或国家……"}`,没有默认值,所以出现在 `required` 里。
+- `unit: Annotated[Literal["celsius", "fahrenheit"]` 生成 `"enum": ["celsius", "fahrenheit"]`,有默认值 `"celsius"`,所以不是 required。模型只能从这两个值里选,不会传 `"C"` 或者 `"摄氏"`。
+- `"""查询一个城市当前的天气` docstring 会原样成为工具描述。第二句「只能查当前,不能查历史或未来几天」是写给模型看的边界,用户问明天下不下雨时,模型就知道不该调用这个工具。
+- `name = city.split()[0]` 实测 `"杭州 浙江".split()` → `["杭州", "浙江"]`,取第一个得到 `"杭州"`。这么切的原因和毛病见代码块下面的正文。
+- `geo = httpx.get("https://geocoding-api.open-meteo.com/v1/search"` 第一步先把城市名换成经纬度。`params` 会拼成 `?name=杭州&count=1&language=zh`;`count=1` 只要最匹配的一个;`.json()` 把响应解析成 dict。
+- `if not geo.get("results"):` 查不到城市时,接口返回的 JSON 里根本没有 `results` 这个 key,所以用 `.get()`;直接写 `geo["results"]` 会抛 `KeyError`。实测 `weather_now("火星城")` 返回 `{"error": "找不到城市 '火星城'。可以试试英文名(如 'Hangzhou')或者更常见的写法。"}`。
+- `p = geo["results"][0]` 实测杭州这一条是 `{"name": "杭州", "latitude": 30.29365, "longitude": 120.16142, "country": "中国", "admin1": "浙江"}`。`admin1` 是一级行政区,也就是省。
+- `cur = httpx.get("https://api.open-meteo.com/v1/forecast"` 第二步用经纬度查实时天气。`current` 参数列出要哪几项,`temperature_unit` 直接让接口按摄氏或华氏返回。
+- `}).json()["current"]` 只取 `current` 这一段。实测(2026-10-21 23:00):`{"time": "2026-10-21T23:00", "interval": 900, "temperature_2m": 14.1, "weather_code": 1, "wind_speed_10m": 6.0}`。
+- `return {"city": f"{p['name']}({p.get('admin1', '')})"` 把城市名和省份拼起来,模型回答时能说清楚是哪个杭州。`admin1` 有可能缺失,所以用 `.get(..., '')`。
+- `"weather": WMO.get(cur["weather_code"], f"代码{cur['weather_code']}")` 表里查不到的代码(比如 53)就返回 `"代码53"`,不会报错。最终实测 `weather_now("杭州")` → `{"city": "杭州(浙江)", "temperature": 14.1, "unit": "celsius", "weather": "大致晴", "wind_kmh": 6.0}`;`weather_now("Beijing", "fahrenheit")` → `{"city": "北京(北京市)", "temperature": 40.0, "unit": "fahrenheit", ...}`。
+- `_OPS = {ast.Add: op.add` 白名单:只有这 8 种运算能执行。key 是语法树节点的**类型**,value 是对应的函数,比如 `ast.Add → op.add`、`ast.USub → op.neg`(负号)。
+- `def calculate(expression: Annotated[str` 描述里把允许的符号列全,并给了一个例子 `'(21.5 + 18.2) / 2'`,模型照着格式写,出错的概率小很多。
+- `"""精确计算一个数学表达式。` 「不要心算,哪怕看起来很简单」是在逼模型用工具,因为大模型算多位小数加法经常出错。实测「把 weekly.md 里的销售额加起来」时,模型调用了 `calculate("12800 + 9650.5 + 15320")`,得到 37770.5。
+- `def ev(n):` 递归求值函数:给它一个语法树节点,返回这个节点的值。函数里面定义函数,`ev` 只在 `calculate` 内部使用。
+- `if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):` 叶子节点:数字常量直接返回。字符串常量 `'abc'` 也是 `ast.Constant`,但不是 int/float,会落到最后的 raise。
+- `if isinstance(n, ast.BinOp) and type(n.op) in _OPS:` 二元运算 `左 op 右`。用 `"(21.5 + 18.2) / 2"` 追踪一遍:解析出来是 `BinOp(left=BinOp(21.5 + 18.2), op=Div, right=2)`。外层先递归算 left,里面 `21.5 + 18.2 = 39.7`;再算 right 得到 `2`;最后 `op.truediv(39.7, 2) = 19.85`。
+- `if isinstance(n.op, ast.Pow) and ev(n.right) > 100:` 乘方单独检查指数大小,`2**10000000` 这种会让进程卡很久。实测 `"2**10000"` 返回 `指数太大`。只拦正的大指数:负指数算出来是很小的小数,不会卡。实测 `"2**-200"` 正常返回 `{"result": 0.0}`(真实值约 6.2e-61,被下面的 `round(v, 10)` 舍成了 0.0);`"2**-3"` 返回 `0.125`。如果写成 `abs(...) > 100`,这些都会被误报成「指数太大」。
+- `return _OPS[type(n.op)](ev(n.left), ev(n.right))` 先用节点类型查表得到函数,再把左右两边的值传进去,`_OPS[ast.Div]` 就是 `op.truediv`。
+- `if isinstance(n, ast.UnaryOp) and type(n.op) in _OPS:` 一元运算,就是负号。实测 `"-3 + 7 % 4"`:先算 `-3`,再算 `7 % 4 = 3`,相加得 `0`。
+- `raise ValueError("只支持数字和 + - * / // % ** 括号")` 其他节点一律拒绝:变量名、函数调用、属性访问都会走到这里。实测 `"__import__('os')"` 返回 `无法计算 '__import__('os')':只支持数字……`。如果用 `eval`,这一句就能执行任意代码。
+- `v = ev(ast.parse(expression, mode="eval").body)` `mode="eval"` 表示按「单个表达式」解析,写赋值语句会直接报语法错误;`.body` 取出表达式本身的那个节点。
+- `"result": round(v, 10) if isinstance(v, float) else v` 浮点数四舍五入到 10 位小数,把浮点误差抹掉。实测 `"0.1+0.2"` 得到 `0.3`,不加 `round` 就是 `0.30000000000000004`。整数原样返回,`"7//2"` 得 `3`。
+- `except ZeroDivisionError:` 实测 `"1/0"` → `{"error": "除数为 0"}`。除零单独处理,是为了给模型一句它能直接转述给用户的话。
+- `except Exception as e:` 兜底:语法错误、白名单外的节点、指数太大,都变成 `{"error": "无法计算 '...':原因"}`,工具永远不会把异常抛到 Agent 循环里。
+- `def _safe(path: str) -> Path | None:` 文件工具的安全闸门,下划线开头表示内部函数,不注册成工具。
+- `target = (WORKSPACE / path).resolve()` `/` 用来拼路径;`.resolve()` 会把 `..` 真正算掉。实测 `"notes/a.md"` → `.../workspace/notes/a.md`;`"../../etc/passwd"` 解析后跑到了 workspace 外面。
+- `return target if target.is_relative_to(WORKSPACE) else None` 判断解析后的路径是不是还在 workspace 里面(Python 3.9+)。实测 `_safe("../../etc/passwd")` 返回 `None`。必须先 resolve 再判断,只检查字符串里有没有 `..` 是挡不住软链接的。
+- `def files_list(subdir: Annotated[str` 默认 `"."`,即 workspace 根目录。
+- `if d is None or not d.is_dir():` 越界和「不是目录」用同一句报错。实测 `files_list("../")` → `{"error": "'../' 不是 workspace 里的目录"}`。
+- `items = sorted(d.iterdir())[:100]` 排序是为了每次结果一致;最多 100 个,防止目录很大时撑爆上下文。
+- `return {"dir": subdir, "items": [p.name + ("/" if p.is_dir() else "")` 目录名后面加 `/`,模型一眼就能分清文件和文件夹。实测 → `{"dir": ".", "items": ["trip.txt", "weekly.md"]}`。
+- `start_line: Annotated[int, "从第几行开始,默认 1"] = 1` 行号从 1 开始,和编辑器一致。
+- `if not f.is_file():` 实测 `files_read("nope.md")` → `文件 'nope.md' 不存在。先用 files_list 看看有哪些文件。`,错误信息直接告诉模型下一步该做什么。
+- `lines = f.read_text(encoding="utf-8").splitlines()` 读成按行切好的列表。实测 `weekly.md` 是 4 行:`["# 周报", "周一 销售额 12800", "周二 销售额 9650.5", "周三 销售额 15320"]`。
+- `except UnicodeDecodeError:` 读到图片、Excel 这类二进制文件时 UTF-8 解码会失败,转成一句人话。
+- `max_lines = max(1, min(max_lines, 300))` 把行数夹在 1 到 300 之间。实测传 `500` 被压成 300;传 `0` 被抬成 1,只返回 `["1: # 周报"]`。
+- `start_line = max(1, start_line)` 起始行也夹住,最小是 1。模型偶尔会按「下标从 0 开始」的习惯传 `0`,不夹的话切片变成 `lines[-1:79]`,得到 `lines: []`,还会返回 `next_start_line: 0`,模型照着这个值接着读就会原地打转。实测加了这行以后传 `0`,返回的是 `["1: # 周报", ...]`,和传 1 一样。
+- `chunk = lines[start_line - 1:start_line - 1 + max_lines]` 行号转下标要减 1。代入 `start_line=1, max_lines=3`:`lines[0:3]`,取前三行。
+- `"lines": [f"{i}: {s}" for i, s in enumerate(chunk, start_line)]` `enumerate(chunk, start_line)` 让计数从 `start_line` 开始而不是 0,所以每行前面是真实行号。实测 → `["1: # 周报", "2: 周一 销售额 12800", "3: 周二 销售额 9650.5"]`。
+- `if start_line - 1 + len(chunk) < len(lines):` 还没读完就告诉模型下一段从哪里开始。代入:`0 + 3 < 4` 为真,所以多返回一个 `"next_start_line": 4`。
+- `n = max(1, min(max_results, 10))` 和上面一样的夹值写法,条数限制在 1 到 10。
+- `if os.environ.get("TAVILY_API_KEY"):` 配了 Tavily 的 key 就用 Tavily,否则走 DuckDuckGo。
+- `headers={"Authorization": f"Bearer {os.environ['TAVILY_API_KEY']}"}` key 放在请求头里,不要拼进 URL,否则会出现在各种日志里。
+- `hits = [{"title": x["title"], "url": x["url"], "snippet": x["content"][:300]}` 把 Tavily 的字段名统一成 `title/url/snippet`,摘要截到 300 字。两个搜索后端返回的格式一样,模型就不用关心背后用的是哪家。
+- `from ddgs import DDGS` 放在函数里面导入:只有真的走到 DuckDuckGo 分支才需要这个包,没装也不影响其他工具。
+- `for x in DDGS().text(query, max_results=n)]` DuckDuckGo 返回的字段叫 `href` 和 `body`,在这里改名对齐。这次实测搜 `"open-meteo api"` 取 2 条,第一条是 `{"title": "️ Free Open-Source Weather API | Open-Meteo.com", "url": "https://open-meteo.com/", ...}`。
+- `except Exception as e:` 搜索服务时好时坏(正文里那次就是 `DDGSException`),这里只返回异常类型名,不把一大段堆栈塞给模型。
+- `return {"query": query, "results": hits} if hits else` 有结果就正常返回;没结果时多给一条 `hint`,提示模型换个说法,别拿同一个词再搜一遍。
+
+</div>
+
 **`name = city.split()[0]` 在干什么?** `split()` 不带参数时按空白(空格、Tab、连续多个空格)切成列表,`[0]` 取第一个元素,相当于 TS 的 `city.trim().split(/\s+/)[0]`:`"苏州 江苏"` → `["苏州", "江苏"]` → `"苏州"`。要切是因为 Open-Meteo 的地名搜索只认城市名,实测传 `"苏州 江苏"` 返回空结果、传 `"苏州"` 才查得到。但这么写有两个毛病:一是省份被丢掉了,描述里让模型加省份消歧义,其实没用上(实测搜英文 `"Suzhou"`,排第一的是安徽宿州);二是多个单词的英文城市名会被切坏,`"New York"` 只剩 `"New"`,排第一的是尼日利亚的 Nnewi。可以拿它做练习 3:比如查 10 条结果,再用省份那个词按 `admin1` / `country` 过滤。
 
 **`max(1, min(max_lines, 300))` 是什么写法?** 把数值「夹」在一个范围里:先 `min(..., 300)` 压住上限,再 `max(1, ...)` 抬起下限,相当于 TS 的 `Math.max(1, Math.min(maxLines, 300))`。`web_search` 里的 `max(1, min(max_results, 10))` 也是一样。手敲时最容易把括号放错成 `max(1, min(max_lines), 300)`:`min` 只拿到一个参数时会把它当成「一组数」去遍历,类型检查报 `"int" is incompatible with protocol "Iterable"`,运行时报 `TypeError: 'int' object is not iterable`。
@@ -294,7 +358,7 @@ def web_search(
 
 名字都带了命名空间前缀(`weather_`、`files_`、`web_`),以后加更多工具也不会混。每个描述都有三四句,说清了做什么、什么时候用、有什么限制。`weather_now` 明确写了「只能查当前,不能查未来」,不然用户问「明天会下雨吗」,模型会调用它然后拿当前天气胡乱回答;写清楚以后,模型会直接说它查不了预报。
 
-`calculate` 比 Day 8 的版本多了两道保护:指数大于 100 直接拒绝(`2**10000000` 会让进程卡住很久),除零单独给出报错。`files_read` 沿用分段读取和越界检查。`web_search` 在描述里提醒模型「不要重复搜同一个词」,配合 Day 12 的循环检测,双保险。
+`calculate` 比 Day 8 的版本多了两道保护:指数大于 100 直接拒绝(负指数不受影响)(`2**10000000` 会让进程卡住很久),除零单独给出报错。`files_read` 沿用分段读取和越界检查,起始行也夹到不小于 1,模型传 0 不会读出空结果。`web_search` 在描述里提醒模型「不要重复搜同一个词」,配合 Day 12 的循环检测,双保险。
 
 我在本机不调模型、直接调用工具函数做了检查,下面是真实输出:
 
@@ -397,6 +461,46 @@ def main():
 if __name__ == "__main__":
     main()
 ```
+
+<div class="line-notes">
+
+- `import json` `/save` 要把对话存成 JSON 文件。
+- `import time` 有三个用处:system prompt 里写今天的日期、`/save` 文件名里的时间戳、每轮计时。
+- `load_dotenv()  # 必须在下面两个 import 之前` 把 `.env` 里的 `LLM_*`、`AGENT_WORKSPACE`、`TAVILY_API_KEY` 加载进环境变量。顺序的原因正文第一点讲了:`tools.py` 一被导入就读 `AGENT_WORKSPACE`。
+- `from robust_agent import Limits, RobustAgent` Day 12 写的健壮版 Agent。`Limits` 是一组上限(步数、token、时间),`RobustAgent.run()` 返回一个 `AgentResult`,里面有 `answer`、`status`、`steps`、`needs_human`。
+- `from tools import WORKSPACE, reg` 拿到工作目录和注册好的五个工具。
+- `PRICE_IN = float(os.environ.get("PRICE_IN", "0.3"))` 环境变量读出来都是字符串,要 `float()` 转一下。单位是美元/每百万 token,输入 0.3、输出 1.2。
+- `SYSTEM = f"""你是一个命令行助手` 这是 f-string,`{time.strftime('%Y-%m-%d')}` 在启动时会替换成当天日期,这次实跑是「今天是 2026-10-22」。模型自己不知道今天几号,不告诉它,用户问「今天周几」它只能瞎猜。
+- `- 任何数字计算都用 calculate。` 和 `calculate` 描述里那句「不要心算」前后呼应。实测求和那一轮,模型确实去调用了 `calculate`。
+- `- 互不依赖的查询一次性并行发出。` 比如「杭州和成都哪个冷」,模型会在一次回复里同时发出两个 `weather_now` 调用,省掉一轮来回。
+- `HELP = "命令:/reset 清空对话` 斜杠命令由程序自己处理,不发给模型,所以不花钱。
+- `def cost(u: dict) -> float:` 用 token 数算美元。代入实测的总量 `{"prompt_tokens": 7058, "completion_tokens": 228}`:`7058 / 1e6 × 0.3 + 228 / 1e6 × 1.2 = 0.0021174 + 0.0002736 ≈ $0.00239`。`1e6` 就是一百万。
+- `def new_agent() -> RobustAgent:` 建新 Agent 抽成函数,启动和 `/reset` 都调用它。
+- `Limits(max_steps=10, max_tokens=80_000, max_seconds=90)` 每轮最多调用模型 10 次、用 8 万 token、跑 90 秒。`80_000` 里的下划线只是为了好读,等于 `80000`。没传的参数用 `Limits` 的默认值,比如 `max_repeats=2`(完全相同的工具调用最多两次)。
+- `WORKSPACE.mkdir(exist_ok=True)` 目录不存在就创建,已经存在也不报错。
+- `Path("runs").mkdir(exist_ok=True)` `/save` 的文件存在这里。`runs/` 已经写进 `.gitignore`,因为里面是真实的对话记录。
+- `total = {"prompt_tokens": 0, "completion_tokens": 0}` 整段对话的累计用量。和 `agent.usage` 分开记,原因正文第二点讲了。
+- `print(f"CLI Agent 已启动,模型 {agent.model}` 实跑输出:`CLI Agent 已启动,模型 deepseek-flash,工作目录 .../workspace`。
+- `while True:` 主循环:读一行、处理、再读下一行,直到 `/quit` 或者 Ctrl+D。
+- `q = input("\n你> ").strip()` `input` 显示提示符并等待输入,`.strip()` 去掉首尾空格和换行。
+- `except (EOFError, KeyboardInterrupt):` Ctrl+D 抛 `EOFError`,Ctrl+C 抛 `KeyboardInterrupt`,两种都当成正常退出,不打印一大段报错。
+- `if not q:` 直接回车得到空字符串,跳过,不去调用模型。
+- `agent = new_agent()  # 只清对话,不清 total` 实测:`/reset` 前后两次 `/cost` 都是 `{'prompt_tokens': 7058, 'completion_tokens': 228},约 $0.00239`,说明花费累计没有被清掉。
+- `print(f"累计 token {total},约 ${cost(total):.5f}")` `:.5f` 保留 5 位小数。这里的 `$` 是普通字符,不是格式化语法。
+- `for s in reg.schemas:` 打印每个工具的名字和描述的第一行。实测第一行是 `- weather_now : 查询一个城市当前的天气:气温、天气状况、风速。`
+- `print("-", s["function"]["name"], ":", s["function"]["description"].splitlines()[0])` `print` 收到多个参数时默认用空格隔开,所以输出里冒号两边都有空格。
+- `f = Path("runs") / f"chat_{time.strftime('%Y%m%d_%H%M%S')}.json"` 用时间戳当文件名,不会覆盖之前的存档。这次实跑存成 `runs/chat_20261022_070558.json`。
+- `f.write_text(json.dumps(agent.messages, ensure_ascii=False, indent=2)` `ensure_ascii=False` 让中文原样写进文件,不然会变成 `杭` 这样的转义;`indent=2` 是为了方便人看。实测存下来 13 条消息,角色依次是 system、user、assistant(调用 weather_now)、tool、assistant(回答)、user、再加三组 assistant/tool,最后一条 assistant。
+- `agent.seen.clear()` 清空循环检测的计数,`seen` 是一个 `{调用签名: 次数}` 的 dict。
+- `agent.usage = {"prompt_tokens": 0, "completion_tokens": 0}` 本轮 token 从 0 开始算,`max_tokens` 预算就变成按轮比较。
+- `t0 = time.time()` 当前时间的秒数(浮点数),和后面的 `time.time() - t0` 一起算出本轮耗时。
+- `result = agent.run(q)` 跑一整轮 Agent 循环。实测第二轮「把 weekly.md 里的销售额加起来」走了 4 步:`files_list` → `files_read(weekly.md)` → `calculate("12800 + 9650.5 + 15320")` → 回答 37770.5。
+- `for k in total:` 遍历 dict 就是遍历它的 key。把本轮用量加进总量:两轮实测加起来是输入 7058、输出 228。
+- `flag = "  [需要人工跟进]" if result.needs_human else ""` 三元表达式,相当于 TS 的 `needsHuman ? "..." : ""`。撞了步数、预算、超时或循环上限时,`needs_human` 为 True。
+- `print(f"  ({result.status},{result.steps} 步` 实测两轮的状态行:`(ok,2 步,7.4s,本轮 $0.00071)` 和 `(ok,4 步,2.5s,本轮 $0.00169)`。第二轮步数多,而且带着第一轮的历史,所以更贵。
+- `if __name__ == "__main__":` 直接运行 `main.py` 时才进入主循环,被别的文件导入时不会启动。
+
+</div>
 
 有三处值得说。
 

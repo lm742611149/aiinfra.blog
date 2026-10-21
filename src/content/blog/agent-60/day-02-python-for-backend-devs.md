@@ -95,6 +95,16 @@ maybe_id: str | None = None          # 可能为空，相当于 Java 的 @Nullab
 pair: tuple[int, int] = (3, 4)
 ```
 
+<div class="line-notes">
+
+- `def total_cost(prompt_tokens: int` 每个参数后面的 `: int`、`: float` 是类型标注,`-> float` 标的是返回值。它们都存在函数身上,实测 `total_cost.__annotations__` 是 `{'prompt_tokens': <class 'int'>, 'completion_tokens': <class 'int'>, 'price_in': <class 'float'>, 'price_out': <class 'float'>, 'return': <class 'float'>}`。Day 9 的工具注册器就是读这个。
+- `return (prompt_tokens * price_in + completion_tokens * price_out) / 1_000_000` 单价的单位是「元 / 百万 token」,所以最后除以一百万。`1_000_000` 里的下划线只是方便人看,和 `1000000` 完全一样。代入 Day 0 那次真实调用 `total_cost(8, 29, 2.0, 8.0)`:`(8×2 + 29×8) / 1_000_000 = 248 / 1_000_000 = 0.000248` 元。<br>标注不拦错:实测 `total_cost("3", 2, 2.0, 8.0)` 能进到函数里,直到做乘法才炸 `TypeError: can't multiply sequence by non-int of type 'float'`。
+- `names: list[str] = ["deepseek", "qwen"]` 变量也能标类型,写法是 `名字: 类型 = 值`。`list[str]` 读作「字符串列表」。
+- `prices: dict[str, float]` 键是字符串、值是浮点数的 dict。
+- `maybe_id: str | None = None` `|` 表示「二选一」,这里是字符串或者空。判断它是不是空要写 `if maybe_id is None:`。
+
+</div>
+
 和 Java、Go 最大的不同：**这些标注在运行时不做任何检查**。你声明了 `int`，传个字符串进去照样能跑，直到某一行真正用错了才炸。类型标注的价值在于：编辑器能补全和提示、mypy / pyright 这类工具能静态检查、读代码的人一眼看懂。
 
 ### tuple（元组）和解包：后面每天都会用
@@ -241,6 +251,17 @@ u = Usage(prompt_tokens=120, completion_tokens=30)
 print(u)  # Usage(prompt_tokens=120, completion_tokens=30, tags=[])
 ```
 
+<div class="line-notes">
+
+- `from dataclasses import dataclass, field` 都是标准库,不用装。`field` 是小写的函数,下面专门有一节讲它和 pydantic 大写 `Field` 的区别。
+- `@dataclass` 装饰器读取下面写的字段,自动生成 `__init__`(构造函数)、`__repr__`(打印出来长什么样)、`__eq__`(怎么判断相等)。你只写了三行字段,等于省了二十行样板代码。
+- `prompt_tokens: int` 没有默认值的字段是构造时必须传的。
+- `tags: list[str] = field(default_factory=list)` 每建一个实例,就调用一次 `list()` 得到一个新的空列表。实测两个实例的 `u.tags is u2.tags` 是 `False`,各有各的列表。如果直接写 `= []`,实测在定义类的那一刻就报错:`ValueError: mutable default <class 'list'> for field tags is not allowed: use default_factory`。
+- `u = Usage(prompt_tokens=120, completion_tokens=30)` 调的是自动生成的 `__init__`。`tags` 没传,走默认,得到一个新的空列表。
+- `print(u)` 实测输出 `Usage(prompt_tokens=120, completion_tokens=30, tags=[])`,这是自动生成的 `__repr__`。自动生成的 `__eq__` 按字段逐个比较:实测 `u == Usage(120, 30)` 是 `True`,`u is Usage(120, 30)` 是 `False`(值一样,但不是同一个对象)。<br>正文下面那句「dataclass 不校验」也实测过:`Usage(prompt_tokens="abc", completion_tokens=None)` 照样建出来,打印成 `Usage(prompt_tokens='abc', completion_tokens=None, tags=[])`。
+
+</div>
+
 dataclass 不校验。`Usage(prompt_tokens="abc", completion_tokens=None)` 照样能建出来。
 
 **pydantic** 是带校验的数据模型，会按类型标注检查并转换输入：
@@ -265,6 +286,21 @@ try:
 except ValidationError as e:
     print(e)   # 会指出 priority 必须 <= 5
 ```
+
+<div class="line-notes">
+
+- `from pydantic import BaseModel, Field, ValidationError` 三样东西:模型基类、字段配置、校验失败时抛的异常。
+- `class Ticket(BaseModel):` 继承 `BaseModel` 就有了校验、转换、导出 schema 这些能力。
+- `ticket_id: str` 写法和 dataclass 一样,也是必填字段。
+- `category: str = Field(description=` 注意 `Field(...)` 没传默认值,所以 `category` 仍然是必填的。`description` 不参与校验,只会写进 `model_json_schema()` 给模型看。
+- `priority: int = Field(ge=1, le=5)` `ge` 是 greater or equal(≥),`le` 是 less or equal(≤),合起来就是 1 到 5。
+- `t = Ticket.model_validate(` 拿一个 dict 来建模型,边建边校验。这里故意把 `priority` 写成字符串 `"3"`,模拟模型输出里数字带了引号的情况。
+- `print(t.priority, type(t.priority))` 实测 `3 <class 'int'>`。pydantic 默认是宽松模式:能干净转成整数的字符串就帮你转了。打印整个对象是 `Ticket(ticket_id='T-1001', customer_email='a@b.com', category='billing', priority=3)`。换成 `"高"` 就转不了,实测报 `Input should be a valid integer, unable to parse string as an integer`。
+- `Ticket.model_validate({"ticket_id": "T-1002"` 这一条有两处可疑:`customer_email` 是 `"x"`,`priority` 是 9。只有 9 会报错,`"x"` 能通过,因为字段类型只是 `str`。要校验邮箱格式得用 pydantic 的 `EmailStr`。
+- `except ValidationError as e:` 只接住校验错误。别的异常不在这里吞掉,该炸照样炸。
+- `print(e)   # 会指出 priority 必须 <= 5` 实测输出:<br>`1 validation error for Ticket`<br>`priority`<br>`  Input should be less than or equal to 5 [type=less_than_equal, input_value=9, input_type=int]`<br>哪个字段、违反什么规则、你传的是什么,都写得清清楚楚。`e.error_count()` 是 1。Day 6 会把这段错误原样发回给模型,让它自己改。
+
+</div>
 
 我的选择规则很简单：**数据从外部来（HTTP 请求、模型输出、配置文件），用 pydantic；纯内部传来传去，用 dataclass 或者也用 pydantic 都行**。Agent 里最常见的「外部数据」就是模型的输出。模型说它返回了 JSON，你不能信，必须校验。Day 6 整天都在讲这件事，主角就是 pydantic。
 
@@ -348,6 +384,18 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+<div class="line-notes">
+
+- `async def fake_call(name: str, seconds: float) -> str:` 带 `async` 的函数叫协程函数。调用它**不会执行函数体**,只会得到一个协程对象:实测 `type(fake_call("A", 1.2)).__name__` 是 `'coroutine'`。要 `await` 它,或者交给 `gather`,里面的代码才会跑。
+- `await asyncio.sleep(seconds)` 「我要等 seconds 秒,这段时间事件循环先去跑别的协程」。换成 `time.sleep` 就是死等,谁也跑不了。
+- `return f"{name} done"` 比如 `"A done"`。
+- `start = time.perf_counter()` 高精度计时器。它返回的数字本身没意义,只用来算两次调用之间的差值。
+- `results = await asyncio.gather(` 把三个协程同时交给事件循环,等全部结束再一起返回。我在每个协程开始和结束时各打一次时间,实测时间线是:<br>0.00 秒:A、B、C 同时开始等<br>0.80 秒:B 结束<br>1.20 秒:A 结束<br>1.50 秒:C 结束,gather 返回
+- `print(results, f"{time.perf_counter() - start:.1f}s")` 实测打印 `['A done', 'B done', 'C done'] 1.5s`(精确值是 1.5005 秒)。注意结果顺序和**传进去的顺序**一致,不是完成的顺序:B 最先完成,却排在第二。我把 gather 换成 for 循环逐个 await 再跑一次,实测 3.50 秒,正好是 1.2 + 0.8 + 1.5。
+- `asyncio.run(main())` 建一个事件循环,跑完 `main()`,再把循环关掉。整个程序里一般只在最外层调一次。
+
+</div>
+
 三个容易踩的坑，我都踩过：
 
 - **在 async 函数里调用了同步的阻塞函数**，比如 `time.sleep(1)` 或者同步版的 `requests.get()`。整个事件循环会被卡住，所有协程一起等。异步代码里要用 `asyncio.sleep`、`httpx.AsyncClient`、`AsyncOpenAI`。
@@ -375,6 +423,17 @@ async def stars(repo: str, client: httpx.AsyncClient) -> int:
     return r.json()["stargazers_count"]
 ```
 
+<div class="line-notes">
+
+- `r = httpx.get("https://api.github.com/repos/astral-sh/uv", timeout=10)` 同步请求,拿到响应之前这一行一直卡着。实测从国内访问 GitHub 花了 2.52 秒。
+- `print(r.status_code, r.json()["stargazers_count"])` 实测打印 `200 90999`(10 月 22 日 uv 的星数,你跑的时候会更多)。`r.json()` 把响应体解析成 dict,GitHub 这个接口一共返回 86 个字段,我们只取了一个。响应头里的 `x-ratelimit-remaining` 当时是 57,也就是这个小时的匿名请求还剩 57 次。
+- `async def stars(repo: str, client: httpx.AsyncClient) -> int:` 异步版本。`client` 由调用方传进来,多个请求共用同一个连接池,比每次新建一个快。
+- `r = await client.get(f"https://api.github.com/repos/{repo}", timeout=10)` 和同步版差不多,区别是前面加了 `await`,等网络的时候可以让出去。
+- `r.raise_for_status()` 状态码是 4xx 或 5xx 就抛 `httpx.HTTPStatusError`。不加这一行的话,仓库不存在时拿到的是 404,响应体是 `{"message": "Not Found", ...}`,下一行取 `stargazers_count` 就会报 `KeyError`。那个报错比「HTTP 404」难懂得多。
+- `return r.json()["stargazers_count"]` 返回 int,比如 `90999`。
+
+</div>
+
 注意 `timeout`。httpx 默认超时是 5 秒，模型 API 动辄几十秒，直接用 httpx 调模型时要把超时调大。用 OpenAI SDK 的话它自己有更长的默认值。
 
 ## 读框架源码前要认识的几个写法
@@ -384,7 +443,9 @@ async def stars(repo: str, client: httpx.AsyncClient) -> int:
 **装饰器。** 函数上面那一行 `@xxx`，本质是「把下面这个函数传给 xxx，用它的返回值替换原函数」。它在 Agent 框架里到处都是：MCP SDK 用 `@mcp.tool()` 把普通函数注册成工具，LangChain 用 `@tool`，FastAPI 用 `@app.get("/")` 注册路由。你可以把它理解成 Java 的注解加上一段在类加载时执行的处理逻辑，只不过 Python 里它就是一个普通函数。
 
 ```python
-TOOLS: dict[str, callable] = {}
+from collections.abc import Callable
+
+TOOLS: dict[str, Callable[..., str]] = {}
 
 
 def tool(func):
@@ -403,6 +464,21 @@ print(TOOLS)                      # {'get_weather': <function get_weather ...>}
 print(get_weather.__doc__)        # 查询城市天气。
 print(get_weather.__annotations__)  # {'city': <class 'str'>, 'return': <class 'str'>}
 ```
+
+<div class="line-notes">
+
+- `from collections.abc import Callable` `Callable` 是「可以调用的东西」这个类型,函数、带 `__call__` 的对象都算。Python 3.9 起推荐从 `collections.abc` 导入,`typing.Callable` 也能用,只是旧写法。
+- `TOOLS: dict[str, Callable[..., str]] = {}` 工具注册表:名字 → 函数。`Callable[..., str]` 读作「参数随便、返回 str 的可调用对象」:方括号里第一项是参数列表,`...` 表示不限定,第二项是返回类型。只写 `Callable` 不带方括号,basedpyright 会报 `Expected type arguments`。注意别写成小写的 `callable`:那是一个内置函数(`callable(print)` 返回 True),不是类型,能跑但类型检查器会报错。
+- `def tool(func):` 装饰器本身就是一个普通函数:收一个函数,返回一个函数。
+- `TOOLS[func.__name__] = func` `__name__` 是函数的名字字符串。实测这里是 `'get_weather'`,所以执行完后 `TOOLS` 里多了一项 `'get_weather' → 函数本身`。
+- `return func` 原样还回去,所以被装饰后的 `get_weather` 还是原来那个函数。实测 `TOOLS["get_weather"] is get_weather` 为 `True`。
+- `@tool` 等价于在 `def` 后面补一句 `get_weather = tool(get_weather)`。注意它在**定义函数的时候**就执行了,不是等到调用 `get_weather` 时。我在 `tool` 里加了 print 验证过:`def` 那几行一执行完,注册就完成了。这也是为什么只要 import 了这个模块,工具就已经登记好了。
+- `return f"{city}：晴，22 度"` 实测 `TOOLS["get_weather"]("上海")` 返回 `'上海：晴，22 度'`。按名字查到函数再调用,Agent 收到模型说「调 get_weather」时干的就是这件事。
+- `print(TOOLS)` 实测 `{'get_weather': <function get_weather at 0x10e9a53a0>}`。后面那串是内存地址,每次运行都不一样。
+- `print(get_weather.__doc__)` 函数下面第一行三引号字符串就是 docstring,实测打印 `查询城市天气。`。它会当成工具描述发给模型。
+- `print(get_weather.__annotations__)` 实测 `{'city': <class 'str'>, 'return': <class 'str'>}`。参数名和类型都在这里,Day 9 用它拼出参数的 JSON Schema。
+
+</div>
 
 最后两行很关键：函数的文档字符串和类型标注在运行时都能读到。Day 9 的工具注册器就是用这两样东西，自动拼出给模型看的工具描述。
 
@@ -531,6 +607,15 @@ def test_total_cost():
     assert total_cost(0, 500_000, 2.0, 8.0) == 4.0
 ```
 
+<div class="line-notes">
+
+- `from cost import total_cost` 从项目根目录的 `cost.py` 导入。能找到它,靠的是上面 `pyproject.toml` 里加的 `pythonpath = ["."]`。
+- `def test_total_cost():` 函数名以 `test_` 开头,pytest 就会自动收集并运行它,不用注册。
+- `assert total_cost(1_000_000, 0, 2.0, 8.0) == 2.0` 代入:`(1_000_000 × 2.0 + 0 × 8.0) / 1_000_000 = 2.0`。一百万输入 token 正好 2 元,和单价对得上。
+- `assert total_cost(0, 500_000, 2.0, 8.0) == 4.0` 代入:`(0 + 500_000 × 8.0) / 1_000_000 = 4.0`。这两个结果都是整数,浮点数能精确表示,所以可以直接用 `==`。比较 `0.1 + 0.2` 这种小数时要改用 `pytest.approx`。
+
+</div>
+
 `uv run pytest -q` 跑全部测试。测异步函数需要装 `pytest-asyncio` 或者 `anyio` 插件，今天先不碰，用 `asyncio.run` 包一下也能测。
 
 为什么第二天就讲测试？因为 W5 的评测体系就是建在 pytest 上的。模型输出不确定，但你的工具函数、解析逻辑、成本计算都是确定的，这些必须有单元测试。面试官看你的 GitHub，有没有 `tests/` 目录是第一眼就会注意的。
@@ -553,6 +638,15 @@ log = logging.getLogger("agent")
 log.info("调用工具 %s 参数=%s", "get_invoice", {"invoice_id": "INV-1"})
 log.warning("工具返回过长，已截断到 %d 字符", 2000)
 ```
+
+<div class="line-notes">
+
+- `logging.basicConfig(level=logging.INFO` 全局配一次:`INFO` 及以上级别才输出;格式里的 `%(asctime)s` 是时间,`%(levelname)s` 是级别,`%(name)s` 是 logger 名,`%(message)s` 是正文。默认写到 stderr。
+- `log = logging.getLogger("agent")` 拿一个叫 `agent` 的 logger,同一个名字在哪里拿都是同一个对象。
+- `log.info("调用工具 %s 参数=%s"` 两个 `%s` 依次填 `"get_invoice"` 和那个 dict。实测输出:`2026-10-22 07:04:58,033 INFO agent | 调用工具 get_invoice 参数={'invoice_id': 'INV-1'}`
+- `log.warning("工具返回过长，已截断到 %d 字符", 2000)` `%d` 是整数占位。实测输出:`2026-10-22 07:04:58,034 WARNING agent | 工具返回过长，已截断到 2000 字符`。我顺手加了一行 `log.debug(...)`,级别低于 INFO,果然什么也没打出来。
+
+</div>
 
 用 `%s` 占位而不是 f-string，是 logging 的惯例：日志级别不够时字符串根本不会被拼接，省一点开销。调试时把 level 改成 `DEBUG`，上线时改回 `INFO`。W5 会把日志升级成 trace，那时你会感谢现在养成的习惯。
 
@@ -688,6 +782,41 @@ if __name__ == "__main__":
     main()
 ```
 
+<div class="line-notes">
+
+- `import asyncio` 下面几行导入:`asyncio` 负责并发,`time` 负责计时,`httpx` 发请求,pydantic 那三个负责校验。标准库放一组,第三方库空一行另放一组,这是 Python 的习惯排法。
+- `REPOS = [` 要查的 5 个仓库,写成 `所有者/仓库名`。
+- `"this-owner/does-not-exist-404",` 故意放一个不存在的,看程序遇到失败会不会整个崩掉。
+- `class RepoInfo(BaseModel):` GitHub 这个接口实测返回 86 个字段,我们只声明关心的 4 个。没声明的字段 pydantic 默认直接忽略,不报错。
+- `stars: int = Field(alias="stargazers_count", ge=0)` `alias` 的意思是:输入数据里这个字段叫 `stargazers_count`,到了模型里改名叫 `stars`。`ge=0` 要求不能是负数。
+- `language: str | None = None` 有的仓库 GitHub 识别不出主语言,返回 `null`,所以允许为空,默认也是 `None`。
+- `open_issues: int = Field(alias="open_issues_count", ge=0)` 同样是改名。注意 GitHub 的 `open_issues_count` 把还没合并的 PR 也算进去了。实测 uv 解析完是 `{'full_name': 'astral-sh/uv', 'stars': 90999, 'language': 'Rust', 'open_issues': 2974}`。
+- `async def fetch_repo(client: httpx.AsyncClient, repo: str) -> RepoInfo:` 查一个仓库:发请求、检查状态码、校验数据,三步。
+- `r = await client.get(f"https://api.github.com/repos/{repo}")` 代入 `repo = "astral-sh/uv"`,请求的地址就是 `https://api.github.com/repos/astral-sh/uv`。
+- `r.raise_for_status()` 不存在的那个仓库会在这里抛异常,实测内容是 `Client error '404 Not Found' for url 'https://api.github.com/repos/this-owner/does-not-exist-404'`。
+- `return RepoInfo.model_validate(r.json())` 把 86 个字段的 dict 交给 pydantic,只留下 4 个,并顺便把名字改掉。
+- `async def fetch_all(repos: list[str]) -> list[RepoInfo | BaseException]:` 返回值是一个列表,每个元素要么是查到的结果,要么是异常对象。下面正文解释了为什么写 `BaseException`。
+- `async with httpx.AsyncClient(timeout=15, headers={"User-Agent": "agent-60-lab"}) as client:` `async with` 保证结束时把连接池关掉。GitHub 要求请求必须带 `User-Agent`,所以这里加上。`timeout=15` 给慢一点的网络留足时间。
+- `return await asyncio.gather(*(fetch_repo(client, r) for r in repos), return_exceptions=True)` 从里往外拆:<br>`(fetch_repo(client, r) for r in repos)` 是一个生成器,会产出 5 个协程;<br>前面的 `*` 把它们展开成 5 个独立的参数,相当于 `gather(协程1, 协程2, ..., 协程5)`;<br>`return_exceptions=True` 让出错的那个不要把整批拖垮,而是把异常对象放进结果列表。<br>实测返回列表里元素的类型依次是 `RepoInfo, RepoInfo, RepoInfo, RepoInfo, HTTPStatusError`,顺序和 `REPOS` 一一对应。
+- `def summarize(` 普通函数,不涉及网络,所以下面的测试可以直接测它。
+- `ok: list[RepoInfo] = []` 两个空列表,一个装成功的,一个装失败的描述。
+- `for repo, res in zip(repos, results):` `zip` 把两个列表按位置配成对:第一轮是 `("astral-sh/uv", RepoInfo(...))`,……,第五轮是 `("this-owner/does-not-exist-404", HTTPStatusError(...))`。
+- `if isinstance(res, RepoInfo):` `isinstance` 判断对象是不是某个类的实例。前四轮都走这一支,放进 `ok`。
+- `elif isinstance(res, httpx.HTTPStatusError):` 第五轮走这里。`res.response.status_code` 是 404,于是得到 `"this-owner/does-not-exist-404: HTTP 404"`。如果被 GitHub 限流,这里会是 403。
+- `elif isinstance(res, ValidationError):` 数据格式不对的时候走这一支,比如字段缺失或者星数是负数。`error_count()` 是出错的字段数。这次实跑没有走到这里。
+- `failed.append(f"{repo}: {type(res).__name__} {res}")` 兜底分支:超时(`ReadTimeout`)、断网(`ConnectError`)之类都落在这里,`type(res).__name__` 就是异常类名。
+- `return ok, failed` 返回一个二元组。实测 `ok` 里有 4 个,`failed == ['this-owner/does-not-exist-404: HTTP 404']`。
+- `start = time.perf_counter()` 从这里开始计时。
+- `results = asyncio.run(fetch_all(REPOS))` `main` 是普通函数,要靠 `asyncio.run` 才能进入异步世界,跑完再回来。
+- `ok, failed = summarize(results, REPOS)` 解包二元组。
+- `for info in sorted(ok, key=lambda x: x.stars, reverse=True):` `sorted` 返回排好序的新列表,原列表不动。`key=lambda x: x.stars` 表示按星数排,`reverse=True` 表示从大到小。实测顺序:原来是 uv、pydantic、httpx、openai-python,排完变成 uv 90999 → openai-python 31905 → pydantic 29131 → httpx 15663。
+- `print(f"{info.full_name:<28} ⭐ {info.stars:>7}  {info.language or '-'}")` `:<28` 左对齐并用空格补到 28 个字符宽,`:>7` 右对齐补到 7 宽:实测 `f"{90999:>7}"` 是 `'  90999'`。`info.language or '-'` 的意思是:language 为 None 时显示 `-`。
+- `print("失败:", f)` 失败的那些单独打印出来,不会让程序崩溃。
+- `print(f"耗时 {time.perf_counter() - start:.2f}s")` 这次实跑的完整输出:<br>`astral-sh/uv                 ⭐   90999  Rust`<br>`openai/openai-python         ⭐   31905  Python`<br>`pydantic/pydantic            ⭐   29131  Python`<br>`encode/httpx                 ⭐   15663  Python`<br>`失败: this-owner/does-not-exist-404: HTTP 404`<br>`耗时 3.64s`<br>国内访问 GitHub,单个请求就要两三秒。5 个并发后总耗时接近最慢的那一个,而不是 5 个相加。
+- `if __name__ == "__main__":` 直接运行这个文件才调 `main()`;测试文件 import 它的时候不会去访问网络。
+
+</div>
+
 ```bash
 uv run python w1/repo_stats.py
 ```
@@ -730,6 +859,22 @@ def test_summarize_separates_ok_and_failed():
     assert ok == [good]
     assert failed == ["x/y: HTTP 404"]
 ```
+
+<div class="line-notes">
+
+- `from w1.repo_stats import RepoInfo, summarize` 只导入两样纯逻辑的东西,测试全程不碰网络。能找到 `w1` 包,靠的是 `w1/__init__.py` 加上 `pythonpath = ["."]`。
+- `def test_repo_info_parses_github_fields():` 测 alias 改名有没有生效。
+- `{"full_name": "a/b", "stargazers_count": 10` 输入用的是 GitHub 那边的字段名,所以 `info.stars == 10`、`info.open_issues == 2` 能成立,说明改名是对的。
+- `def test_repo_info_rejects_negative_stars():` 测 `ge=0` 这条规则。
+- `with pytest.raises(ValidationError):` 意思是「这个代码块里必须抛出 `ValidationError`」:抛了,测试通过;没抛,测试失败。`stargazers_count: -1` 违反了 `ge=0`。顺便注意 `language` 没传也没关系,它有默认值 `None`。
+- `req = httpx.Request("GET", "https://example.invalid/repos/x/y")` 手工造一个请求对象,不会真的发出去。`.invalid` 是专门保留给测试用的域名,永远解析不到。
+- `err = httpx.HTTPStatusError("not found", request=req, response=httpx.Response(404, request=req))` 造一个和真实 404 一模一样的异常对象,`err.response.status_code` 是 404。
+- `good = RepoInfo.model_validate(` 再造一个成功的结果。
+- `ok, failed = summarize([good, err], ["a/b", "x/y"])` 逐轮代入:`zip` 第一轮 `("a/b", good)` 走 `isinstance(res, RepoInfo)` 进 `ok`;第二轮 `("x/y", err)` 走 HTTPStatusError 分支,得到 `"x/y: HTTP 404"`。
+- `assert ok == [good]` pydantic 模型的 `==` 按字段值比较。
+- `assert failed == ["x/y: HTTP 404"]` 失败描述的文本要一字不差。实测这个文件 `3 passed in 0.18s`。
+
+</div>
 
 为了让 `from w1.repo_stats import ...` 能找到模块，在项目根目录建一个空的 `w1/__init__.py`，并在 `pyproject.toml` 里加上：
 

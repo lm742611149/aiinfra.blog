@@ -239,6 +239,16 @@ TICKETS: list[tuple[str, str]] = [
 ]
 ```
 
+<div class="line-notes">
+
+- `TICKETS: list[tuple[str, str]] = [` 类型标注的意思是:一个列表,每个元素是一个 (字符串, 字符串) 的二元组。第一个是工单原文,第二个是人工标注的正确答案(gold label)。实测 `len(TICKETS) = 12`,`TICKETS[0]` 是 `('我上个月被扣了两次钱，能退一笔吗？', 'billing')`。
+- `("你们支持开增值税专用发票吗？抬头要怎么填", "billing"),` 这条是故意放的边界题:说的是发票,不是扣钱,但按下面 V2 的类别定义,发票归 billing。
+- `("新同事收不到团队邀请邮件，加不进来", "account"),` 也是边界题:「收不到邮件」听着像技术故障,但按定义,邀请成员归 account。
+- `("你们公司在杭州有办公室吗？想去面试", "other"),` other 类放了两条跟产品无关的,看模型会不会硬塞进前三类。
+- `("扣款失败提示卡余额不足，但我卡里明明有钱", "billing"),` 「明明有钱」读起来像系统出了 bug,但诉求还是扣费问题。
+
+</div>
+
 **第 2 步：写四个版本的提示词和测试脚本。**
 
 ```python
@@ -324,6 +334,38 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
+<div class="line-notes">
+
+- `import re` 正则表达式,`parse()` 从 `<category>...</category>` 里抠类别时用。下面的「实测」是 2026-10 用 deepseek-flash(思考关闭)完整跑一遍 4 个版本 × 12 条工单 = 48 次调用得到的。
+- `from w1.tickets import TICKETS` 数据和代码分开放:以后换一套测试集,只改 `tickets.py`。
+- `LABELS = {"billing", "technical", "account", "other"}` 花括号里只有值、没有冒号,这是 set(集合),不是 dict。用 set 是因为下面 `word in LABELS` 只需要判断「在不在里面」,集合查起来最快。
+- `V1 = "请对下面的工单进行分类` 一句话版,实测长 48 个字符。没说只输出类别名,但 deepseek-flash 对第一条工单实测直接回了 `'billing'` 一个词,输入 43 token、输出 2 token。
+- `V2 = """你是云簿 CloudLedger 客服系统的工单分类器` 三引号字符串可以跨多行。加了背景、每类的定义和输出格式要求,长度到了 239 个字符。
+- `只输出类别的英文名` 这句话很关键,下面 V4 会把这一整句换掉。替换要求一字不差。
+- `V3 = V2 + """` 在 V2 后面拼三个示例,长 391 字符。示例用 `<example>` 标签包起来,模型能分清哪部分是规则、哪部分是例子。
+- `V4 = V3.replace(` `str.replace(旧, 新)` 返回一个**新字符串**,V3 本身不会变。实测替换后 V4 里已经没有「只输出」三个字,长度 398 字符。如果旧句子有一个字对不上,replace 什么也不做,也不报错,V4 就会和 V3 一模一样。这种静默失败很难发现。
+- `"先在 <thinking> 里用一两句话分析` 让模型先写分析再给答案。实测第一条工单 V4 的完整输出是:<br>`<thinking>用户反映被重复扣款并要求退款，属于扣费与退款问题。</thinking>`<br>`<category>billing</category>`<br>输入 227 token、输出 28 token,单条花费 ¥0.000678,是 V1 那条(¥0.000102)的 6.6 倍。
+- `VERSIONS = {"v1 一句话": V1` dict 从 Python 3.7 起保证插入顺序,所以下面 for 循环会按 v1→v4 的顺序跑。
+- `def parse(text: str) -> str:` 把模型的输出变成四个类别之一。不认识的统一标成 `INVALID(...)`。
+- `m = re.search(r"<category>\s*(\w+)\s*</category>", text)` `re.search` 在整段文字里找第一处匹配,找不到返回 None。`\s*` 允许标签里有空白,`(\w+)` 括号是捕获组,抓一个单词。实测 `parse("<category> Account </category>")` 返回 `account`。
+- `word = (m.group(1) if m else text).strip().lower()` 找到标签就取捕获组 1,没找到(V1–V3 只输出一个词)就用整段输出。再去掉首尾空白、转小写。实测 `parse(" Technical\n")` → `technical`。
+- `return word if word in LABELS else f"INVALID({word[:20]})"` 不在四个类别里就标成无效,`[:20]` 只截前 20 个字符,免得打印出一长串。实测几个例子:<br>`parse("billing")` → `billing`<br>`parse("<thinking>主要是扣两次钱</thinking>\n<category>billing</category>")` → `billing`<br>`parse("这条工单属于 billing 类别")` → `INVALID(这条工单属于 billing 类别)`,这就是正文说的老模型常见的解析失败。
+- `def run(client: LLMClient, system: str) -> tuple[float, list[str]]:` 用一个 system 提示词把 12 条工单全部跑一遍,返回准确率和错例列表。
+- `for ticket, gold in TICKETS:` 每个元素是二元组,直接拆成两个变量。第一圈:`ticket = "我上个月被扣了两次钱，能退一笔吗？"`,`gold = "billing"`。
+- `[{"role": "system", "content": system}, {"role": "user", "content": f"<ticket>{ticket}</ticket>"}],` 每条工单都是一次全新的对话,只有两条消息,互相之间不带历史。工单用 `<ticket>` 标签包起来,万一工单里写了「忽略之前的规则」这种话,模型也更容易把它当成数据,而不是当成指令去执行。
+- `temperature=0,` 分类任务要稳定:同一条工单每次跑都应该得到同一个答案。
+- `max_tokens=200,` V1–V3 只输出一个词,用不了几个 token;这 200 主要是给 V4 写 thinking 留的。
+- `pred = parse(r.content)` 第一圈:V1 返回 `'billing'` → `pred = 'billing'`。
+- `if pred == gold:` 对了 correct 加 1;错了把工单前 24 个字和预期、实际值记进 wrong。实测 4 个版本 48 次全对,wrong 一直是空列表。
+- `return correct / len(TICKETS), wrong` 实测每个版本都是 `12 / 12 = 1.0`。Python 3 里 `/` 是真除法,结果是 float;整数除法要写 `//`。
+- `before = client.ledger.cost` 账本是累计的,先记下跑这个版本之前的总花费,跑完相减,就是这一版自己花的钱。
+- `start = time.perf_counter()` 计时开始。
+- `print(f"{name:<14} 准确率 {acc:.0%}` `:<14` 左对齐、占 14 格,四行能对齐;`:.0%` 把 1.0 显示成 `100%`;`:.1f` 保留 1 位小数。实测四行:<br>`v1 一句话 准确率 100% 耗时 7.0s 花费 ¥0.0011`<br>`v2 背景+定义 准确率 100% 耗时 6.7s 花费 ¥0.0038`<br>`v3 +示例 准确率 100% 耗时 6.3s 花费 ¥0.0055`<br>`v4 +先想再答 准确率 100% 耗时 8.3s 花费 ¥0.0085`<br>准确率一样,花费随提示词变长一路往上走。v4 还要多输出 thinking,所以最贵也最慢。
+- `for w in wrong:` 有错例就逐行打出来。这次没有。
+- `print("合计：", client.ledger)` 实测 `合计： 48 次调用 | 输入 7716 / 输出 437 tokens | 约 ¥0.0189`。输入 token 是输出的 17 倍:钱主要花在每次重复发送的提示词上。
+
+</div>
 
 ```bash
 uv run python -m w1.prompt_lab

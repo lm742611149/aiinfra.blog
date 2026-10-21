@@ -286,6 +286,20 @@ if __name__ == "__main__":
     main()
 ```
 
+<div class="line-notes">
+
+- `OUT = Path(__file__).resolve().parent.parent / "data" / "helpcenter"` 从里往外读:`Path(__file__).resolve()` 是 `.../agent-60-lab/w3/make_helpcenter.py`,`.parent` 是 `w3/`,再 `.parent` 是 `agent-60-lab/`,最后拼出 `agent-60-lab/data/helpcenter`。这样无论你在哪个目录运行,数据都写到同一个位置。
+- `ARTICLES = [` 20 个元组,每个元组有 4 个元素:`(文章 id, 标题, 分类, 正文)`。正文用三引号字符串,里面可以直接换行。
+- `("kb-002", "退款政策", "退款", """` 举一个例子:`id="kb-002"`、`title="退款政策"`、`category="退款"`,正文分四个 `##` 小节(年付套餐、月付套餐、重复扣款、审批与到账)。后面切块时,它会被切成 4 块。
+- `def main() -> None:` 把每篇文章写成一个 `.md` 文件。
+- `OUT.mkdir(parents=True, exist_ok=True)` `parents=True` 会把中间缺少的 `data/` 一起建出来,相当于 `mkdir -p`。
+- `for doc_id, title, category, body in ARTICLES:` 循环时直接把元组拆成 4 个变量。第二轮拿到的就是 `doc_id="kb-002", title="退款政策", category="退款"`。
+- `text = f"---\nid: {doc_id}\ntitle: {title}\ncategory: {category}\n---\n\n# {title}\n{body}"` 拼出「frontmatter + 一级标题 + 正文」。实际写出的 `kb-002.md` 开头是:<br>`---`<br>`id: kb-002`<br>`title: 退款政策`<br>`category: 退款`<br>`---`<br>(空行)<br>`# 退款政策`<br>(空行,来自 body 开头的换行)<br>`## 年付套餐`
+- `(OUT / f"{doc_id}.md").write_text(text, encoding="utf-8")` 文件名就是 id:`kb-001.md` 到 `kb-020.md`。一定要写 `encoding="utf-8"`,Windows 默认编码不是 UTF-8,中文会乱。
+- `print(f"写入 {len(ARTICLES)} 篇到 {OUT}")` 实跑输出:`写入 20 篇到 .../agent-60-lab/data/helpcenter`。这个脚本可以重复运行,每次都会覆盖成同样的内容。
+
+</div>
+
 ```bash
 uv run python w3/make_helpcenter.py
 # 写入 20 篇到 .../agent-60-lab/data/helpcenter
@@ -385,6 +399,38 @@ if __name__ == "__main__":
         print(asdict(c))
 ```
 
+<div class="line-notes">
+
+- `import re` 正则模块,用来按 `## ` 切小节。
+- `from dataclasses import asdict, dataclass` `@dataclass` 自动生成 `__init__`;`asdict` 把 dataclass 对象转成普通 dict,方便打印和存 JSON。
+- `DATA = Path(__file__).resolve().parent.parent / "data" / "helpcenter"` 和 `make_helpcenter.py` 的 `OUT` 是同一个目录。
+- `@dataclass` 相当于 TS 里只有字段的 class,`Chunk(id=..., doc_id=..., ...)` 就能直接创建。
+- `# 形如 kb-002#1` 块 id = 文章 id + `#` + 第几块(从 1 开始)。实测 `kb-002` 切出 `kb-002#1` 到 `kb-002#4`。
+- `# 送去 embedding` 实测 `kb-002#1` 的 text 是 `"退款政策 > 年付套餐\n年付套餐(专业版和企业版)中途取消的……即 351 元。"`,一共 133 个字符,开头带着「标题 > 小节」前缀。
+- `def parse_article(path: Path) -> tuple[dict, str]:` 正文后面已经讲过语法,这里补上真实值。
+- `_, fm, body = raw.split("---", 2)` 实测 `kb-002.md` 切成 3 段:`""`、`"\nid: kb-002\ntitle: 退款政策\ncategory: 退款\n"`、`"\n\n# 退款政策\n\n## 年付套餐\n……"`。
+- `meta = dict(line.split(": ", 1) for line in fm.strip().splitlines())` 实测得到 `{"id": "kb-002", "title": "退款政策", "category": "退款"}`。
+- `return meta, body.strip()` 正文去掉首尾空白,以 `"# 退款政策\n\n## 年付套餐\n…"` 开头。
+- `def split_long(text: str, max_chars: int, overlap: int) -> list[str]:` 正文用 20 个字的例子讲过了。真实数据里最长的一块是 `kb-001#1`,199 个字符,所有小节都没超过 300,所以这次实跑这个函数**每次都走第一个 `return [text]`**,一刀都没切。
+- `def chunk_article(path: Path, max_chars: int = 300, overlap: int = 50) -> list[Chunk]:` 一篇文章 → 一组块。下面用 `kb-002.md` 逐行追踪。
+- `meta, body = parse_article(path)` 拿到上面那份 meta 和正文。
+- `parts = re.split(r"^## ", body, flags=re.M)` 在每个以 `## ` 开头的行处切开。`re.M`(多行模式)让 `^` 匹配**每一行**的开头,不加的话 `^` 只匹配整段文字的开头,一刀也切不到。实测切出 5 段:`["# 退款政策\n\n", "年付套餐\n年付套餐(专业…", "月付套餐\n…", "重复扣款\n…", "审批与到账\n…"]`。切掉的 `## ` 不会保留在结果里。
+- `n = 0` 块计数器,一篇文章内从 1 开始编号。
+- `for part in parts[1:]:` 跳过第 0 段,那段只有一级标题 `# 退款政策`,没有正文。
+- `section, _, content = part.partition("\n")` `partition` 在**第一个**换行处切成三部分:前面、分隔符本身、后面。实测第 1 段得到 `section="年付套餐"`,`content="年付套餐(专业版和企业版)中途取消的,按剩余的整月数比例退款……"`。中间的 `"\n"` 用 `_` 接住扔掉。和 `split("\n", 1)` 的区别是:没有换行时 `partition` 也一定返回三个值,不会解包失败。
+- `for piece in split_long(content.strip(), max_chars, overlap):` 小节不长时只循环一次,`piece` 就是整个小节的内容。
+- `n += 1` 先加再用,所以第一块是 `#1`。实测 `kb-002` 依次得到 n=1、2、3、4。
+- `id=f"{meta['id']}#{n}",` → `"kb-002#1"`。
+- `section=section.strip(),` → `"年付套餐"`。
+- `text=f"{meta['title']} > {section.strip()}\n{piece}",` 加标题前缀:`"退款政策 > 年付套餐\n" + 正文`。实测 `kb-002` 的 4 块长度分别是 133、52、50、74 个字符。
+- `return chunks` `kb-002` 返回 4 个 `Chunk`,section 依次是 年付套餐、月付套餐、重复扣款、审批与到账。
+- `def load_chunks(max_chars: int = 300, overlap: int = 50) -> list[Chunk]:` 正文讲过流程。实测 20 篇一共切出 42 块:块最多的是 `kb-002`(4 块),其次是 `kb-015`(3 块)。
+- `chunks = load_chunks()` 实跑输出第一行是 `42 块`。
+- `for c in chunks[:3]:` 只打印前 3 块看看。实测依次是 `kb-001#1`(三种套餐)、`kb-001#2`(怎么选)、`kb-002#1`(年付套餐)。
+- `print(asdict(c))` 打印出来像 `{"id": "kb-001#1", "doc_id": "kb-001", "title": "套餐与价格", "category": "套餐与计费", "section": "三种套餐", "text": "套餐与价格 > 三种套餐\nCloudLedger 提供……"}`。
+
+</div>
+
 ```bash
 uv run python w3/chunking.py
 ```
@@ -467,6 +513,21 @@ if __name__ == "__main__":
     main()
 ```
 
+<div class="line-notes">
+
+- `import embed as emb` 导入整个模块,而不是 `from embed import total_tokens`,原因见代码块下面的正文。
+- `from chunking import load_chunks` 复用上一节的切块。
+- `INDEX = Path(__file__).resolve().parent.parent / "index"` 索引放在 `agent-60-lab/index/`,和 `data/` 平级。
+- `chunks = load_chunks()` 实测 42 个 `Chunk`。
+- `vectors = emb.embed([c.text for c in chunks])` 把 42 块的 `text`(带标题前缀的那个)取出来一起编码。`EMB_BATCH=10`,所以实际发了 5 次请求(10+10+10+10+2),返回形状 `(42, 1024)` 的数组。
+- `INDEX.mkdir(exist_ok=True)` 目录不存在就创建。
+- `np.save(INDEX / "vectors.npy", vectors)` 存成 numpy 二进制格式。实测文件 172,160 字节 = 128 字节文件头 + 42 × 1024 × 4 字节数据(172,032)。文件头里记着 `{'descr': '<f4', 'fortran_order': False, 'shape': (42, 1024)}`,`<f4` 就是小端序的 float32。
+- `(INDEX / "chunks.json").write_text(` 块的文字和元数据存成 JSON。第 i 个块对应 `vectors.npy` 的第 i 行,**两个文件靠顺序对齐**,所以只能一起重建。
+- `json.dumps([asdict(c) for c in chunks], ensure_ascii=False, indent=1)` dataclass 不能直接 `json.dumps`,要先用 `asdict` 转成 dict。`indent=1` 缩进 1 个空格,能看清结构,文件又不会太大;实测 14,289 字节。
+- `print(f"{len(chunks)} 块,向量形状 {vectors.shape}` 实跑输出:`42 块,向量形状 (42, 1024),消耗约 2219 token`。42 块一共两千多个 token,在硅基流动的免费模型上花费是 0。
+
+</div>
+
 ```bash
 uv run python w3/build_index.py
 # 42 块,向量形状 (42, 1024),消耗约 …… token
@@ -535,6 +596,29 @@ def answer(question: str, k: int = 4, show_hits: bool = True) -> str:
     return chat(build_prompt(question, hits), temperature=0)
 ```
 
+<div class="line-notes">
+
+- `from embed import embed_one` 查询只编码一条,用 `embed_one`。查询和建索引必须是**同一个模型**(都是 bge-m3)。
+- `from llm import chat` 下面那个小封装,返回模型回答的字符串。
+- `CHUNKS: list[dict] = json.loads((INDEX / "chunks.json").read_text(encoding="utf-8"))` 模块被导入时就读进内存,之后每次查询都不用再读文件。实测是 42 个 dict。
+- `VECTORS: np.ndarray = np.load(INDEX / "vectors.npy")` 形状 `(42, 1024)`,和 `CHUNKS` 按下标一一对应。
+- `def search(question: str, k: int = 4) -> list[tuple[dict, float]]:` 返回 k 个 `(块, 分数)`,按分数从高到低。下面用「年付套餐买错了能退款吗」逐行追踪。
+- `q = embed_one(question)` 问题向量,形状 `(1024,)`。
+- `scores = VECTORS @ q` `(42, 1024) @ (1024,)` 得到 `(42,)`:每块一个相似度。实测最高 0.758(`kb-002#1` 年付套餐),最低 0.369(`kb-019#1` 开放 API)。
+- `top = np.argsort(-scores)[:k]` 从高到低排好的下标取前 4 个,实测是 `[2, 3, 4, 6]`,对应分数 0.7581、0.6992、0.6328、0.6139。
+- `return [(CHUNKS[i], float(scores[i])) for i in top]` 用下标回 `CHUNKS` 里取块。实测下标 2、3、4、6 分别是 `kb-002#1`、`kb-002#2`、`kb-002#3`、`kb-003#1`。和正文示例输出相比,第 2–4 名换成了「月付套餐」「重复扣款」,`kb-002#4` 没进前 4,这正是正文说的「分数会因模型而异」。
+- `SYSTEM = """你是云簿 CloudLedger 的客服助手。` 每一句的来历正文下一节「prompt 里的几个讲究」讲了。
+- `def build_prompt(question: str, hits: list[tuple[dict, float]]) -> list[dict]:` 把检索结果和问题拼成两条消息。
+- `docs = "\n\n".join(` 每块包一个 `<doc>` 标签,块和块之间空一行。
+- `f'<doc id="{c["id"]}" title="{c["title"]}">\n{c["text"]}\n</doc>' for c, _ in hits` 外层用单引号,里面才能直接写双引号。`for c, _ in hits` 拆开 `(块, 分数)`,分数不需要给模型看,用 `_` 丢掉。实测第一块拼出来是:<br>`<doc id="kb-002#1" title="退款政策">`<br>`退款政策 > 年付套餐`<br>`年付套餐(专业版和企业版)中途取消的,按剩余的整月数比例退款。……即 351 元。`<br>`</doc>`
+- `user = f"<资料>\n{docs}\n</资料>\n\n用户问题:{question}"` 资料在前,问题在最后。实测 4 块拼完,这条 user 消息共 522 个字符。
+- `return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]` 只有两条消息,没有历史。这是一问一答的 RAG,多轮对话是 Day 20 的事。
+- `def answer(question: str, k: int = 4, show_hits: bool = True) -> str:` 检索 + 生成。
+- `print(f"  {s:.3f}  {c['id']:<9} {c['title']} > {c['section']}")` `:.3f` 保留 3 位小数,`:<9` 左对齐占 9 格。实测第一行打印 `  0.758  kb-002#1  退款政策 > 年付套餐`。
+- `return chat(build_prompt(question, hits), temperature=0)` `temperature=0` 让回答尽量稳定。但实测同一个问题连跑两次,措辞并不完全一样:一次没提 351 元的例子,一次提了;两次都在最后补了一句「买错了」资料里没有单独说明,建议转人工。
+
+</div>
+
 `llm.py` 是一个很小的封装,用的还是 W1 那组 `LLM_*` 环境变量。如果你 Day 4 写的 `LLMClient` 已经顺手,直接换成它就行,这里单独写一个只是为了让 W3 的目录能独立运行:
 
 ```python
@@ -557,6 +641,18 @@ def chat(messages: list[Any], **kwargs: Any) -> str:
     return resp.choices[0].message.content or ""
 ```
 
+<div class="line-notes">
+
+- `from typing import Any` `list[Any]` 用来躲开 SDK 的消息类型检查,原因见代码块下面的正文。
+- `_client = OpenAI(base_url=os.environ["LLM_BASE_URL"]` 用 W1 那组聊天模型配置,实测是 `https://api.deepseek.com`。和 `embed.py` 里的 `_client` 是两个不同的客户端,各自属于自己的模块,不会冲突。
+- `MODEL = os.environ["LLM_MODEL"]` 实测 `deepseek-flash`。
+- `EXTRA_BODY = json.loads(os.environ.get("LLM_EXTRA_BODY", "{}"))` 环境变量是字符串,`json.loads` 把它解析成 dict。实测 `.env` 里是 `{"thinking": {"type": "disabled"}}`,解析后是一个嵌套 dict;没配置时是 `"{}"` → 空字典。
+- `def chat(messages: list[Any], **kwargs: Any) -> str:` `**kwargs` 收集所有额外的关键字参数,`answer()` 传进来的 `temperature=0` 就装在 `kwargs = {"temperature": 0}` 里。
+- `resp = _client.chat.completions.create(model=MODEL, messages=messages, extra_body=EXTRA_BODY, **kwargs)` `**kwargs` 再原样展开传下去,相当于多写了一个 `temperature=0`。`extra_body` 里的字段会被合并进请求体,用来传 SDK 参数列表里没有的厂商私有参数。
+- `return resp.choices[0].message.content or ""` 取第一个候选回答的文本。`content` 有可能是 `None`(比如模型只调用了工具),`or ""` 保证一定返回字符串。
+
+</div>
+
 两处和最朴素的写法不一样,都是实跑踩出来的。一是 `messages: list[Any]`:如果写成 `list[dict]`,Zed 里会出两条类型红线(`No overloads for "create"`),因为 SDK 要的是它自己定义的消息类型,普通 `dict` 对不上,和 Day 8、Day 13 是同一个原因。二是 `extra_body=EXTRA_BODY`:读 `.env` 里的 `LLM_EXTRA_BODY`,用来关掉 DeepSeek 的思考模式,没配就是空字典,不影响别的厂商。
 
 最后一个命令行入口:
@@ -572,6 +668,15 @@ if __name__ == "__main__":
     print(f"问:{q}\n检索到:")
     print("\n答:" + answer(q))
 ```
+
+<div class="line-notes">
+
+- `import sys` 要用 `sys.argv` 读命令行参数。
+- `q = " ".join(sys.argv[1:]) or "年付套餐买错了能退款吗"` `sys.argv[0]` 是脚本路径,`[1:]` 才是你敲的参数。shell 会按空格把参数切开,`join` 再把它们拼回去。实测 `["年付套餐买错了", "能退款吗"]` → `"年付套餐买错了 能退款吗"`。一个参数都不给时,`" ".join([])` 是空字符串,`or` 就用后面的默认问题。
+- `print(f"问:{q}\n检索到:")` 先打印问题,`answer()` 里会接着打印检索到的块。
+- `print("\n答:" + answer(q))` 这次实跑「你们支持微信支付吗」:检索到的 4 块分数都不高(0.595 两步验证、0.549 审批与到账、0.548 多币种、0.538 E3001 支付失败),模型回答「帮助中心里没有找到这个问题的说明,建议转人工客服。」,没有编出「支持微信支付」。
+
+</div>
 
 ```bash
 uv run python w3/ask.py 年付套餐买错了能退款吗

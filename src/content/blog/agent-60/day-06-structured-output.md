@@ -98,6 +98,22 @@ class TicketInfo(BaseModel):
     needs_human: bool = Field(description="是否必须人工处理：涉及退款、法律、投诉升级时为 true")
 ```
 
+<div class="line-notes">
+
+- `from typing import Literal` `Literal["a", "b"]` 表示「只能是这几个字面值之一」，相当于 TS 的 `"a" | "b"` 联合类型。导出 schema 时它会变成 `enum`。
+- `from pydantic import BaseModel, Field` `BaseModel` 是 pydantic 的基类，继承它的类会自动得到「按类型注解校验」的能力；`Field` 给字段加默认值、约束和 description。
+- `class TicketInfo(BaseModel):` 类的 docstring 也会进 schema，成为最外层的 `"description": "从一张客服工单中抽取的结构化信息。"`，模型能看到。
+- `customer_name: str | None = Field(None` `str | None` 是「字符串或 None」，`Field(None, ...)` 的第一个参数是默认值，所以这个字段**不是必填**。实测导出的 schema 里它长这样：`{"anyOf": [{"type": "string"}, {"type": "null"}], "default": null}`，模型一看就知道可以填 null。
+- `customer_email:` 同上。工单里没邮箱时，`TicketInfo(...)` 得到的是 `customer_email=None`，而不是空字符串。
+- `invoice_ids: list[str] = Field(default_factory=list` 列表的默认值要用 `default_factory=list`，每次新建对象都调用一次 `list()` 生成新列表。写成 `= []` 在普通 Python 类里是经典坑（所有实例共用同一个列表），pydantic 虽然会帮你复制，但 `default_factory` 是不分场合都对的写法。没抽到发票号时值是 `[]`。
+- `category: Literal[` 没有默认值，所以**必填**。实测 schema：`{"enum": ["billing", "technical", "account", "other"], "type": "string"}`。模型输出 `"Billing"`（大写）也会校验失败。
+- `urgency: int = Field(ge=1, le=5` `ge` = greater or equal（≥），`le` = less or equal（≤）。schema 里变成 `"minimum": 1, "maximum": 5`。模型给 7 的话，pydantic 报 `Input should be less than or equal to 5`，下一节的重试就是把这句话喂回去。
+- `sentiment:` 又一个枚举，必填。
+- `summary: str` 只有 `description`、没有默认值，所以必填。实测整个 schema 的 `required` 是 `["category", "urgency", "sentiment", "summary", "needs_human"]`，正好是没给默认值的 5 个字段。
+- `needs_human: bool` 布尔值，JSON 里是 `true`/`false`。必填，模型不能省略。
+
+</div>
+
 几个设计要点：
 
 - **用 `Literal` 定义枚举**。导出的 JSON Schema 里会变成 `enum`，模型能看到所有合法值，校验时也会拦住范围外的值。
@@ -263,6 +279,39 @@ def extract[T: BaseModel](
     raise ExtractionError(f"{max_retries + 1} 次尝试后仍失败：{last_error}")
 ```
 
+<div class="line-notes">
+
+- `"""通用结构化抽取` 一句话说清这个文件的套路：JSON mode + schema 写进提示词 + pydantic 校验 + 带错误重试。下面的数据来自真实运行：用第 2 步的工单调 DeepSeek（`deepseek-flash`），重试分支用第 3 步的假客户端逐条追踪。
+- `from __future__ import annotations` 让所有类型注解都延迟求值（当成字符串保存，用到时才解析）。好处是注解里可以引用还没定义的名字，比如类在自己的方法里写 `-> Conversation`。
+- `from typing import Any, Protocol` `Any` 是「任意类型」；`Protocol` 用来定义「结构类型」，下面的 `ChatClient` 会讲。
+- `from pydantic import BaseModel, ValidationError` `ValidationError` 是 pydantic 校验失败时抛的异常，字段不对、JSON 本身不合法都是它。
+- `from common.llm import ChatResult` Day 4 写的结果类，有 `content`、`finish_reason`、`message` 等字段。
+- `log = logging.getLogger(__name__)` `__name__` 是当前模块的名字，在这个文件里是 `"common.structured"`。每个模块一个 logger，日志里就能看出是谁打的。
+- `class ChatClient(Protocol):` 相当于 TS 的 `interface`：任何对象只要有一个签名一样的 `chat` 方法，就算是 `ChatClient`，不需要继承它。真实的 `LLMClient` 和测试里的 `FakeClient` 都满足这个条件。
+- `def chat(self, messages` 方法体只有 `...`（Ellipsis），意思是「这里只声明签名，不实现」。
+- `class ExtractionError(Exception):` 自定义异常，只写 `pass` 就够了。调用方可以单独 `except ExtractionError`，和网络错误区分开。
+- `def schema_prompt(model: type[BaseModel])` `type[BaseModel]` 表示参数是「类本身」而不是实例：传进来的是 `TicketInfo`，不是 `TicketInfo(...)`。
+- `schema = json.dumps(model.model_json_schema()` 把 pydantic 模型导出成 JSON Schema 字典，再转成带缩进的字符串。`ensure_ascii=False` 让中文 description 原样保留，不变成 `客` 这种转义。实测 `schema_prompt(TicketInfo)` 拼出来一共 1768 个字符。
+- `"请只输出一个 json 对象` 提示词里必须出现小写的「json」：DeepSeek 文档要求，开了 `json_object` 模式时提示词里得有这个词。schema 用 `<schema>` 标签包起来，和指令分开（Day 5 讲过的 XML 标签分隔）。
+- `def extract[T: BaseModel](` 这是 Python 3.12 的泛型写法（PEP 695）：`T` 是一个类型变量，`T: BaseModel` 限定它必须是 BaseModel 的子类。效果是返回值类型跟着传入的 model 走：传 `TicketInfo`，编辑器就知道返回的是 `TicketInfo`，`.invoice_ids` 有补全。相当于 TS 的 `function extract<T extends BaseModel>(...)`。
+- `model: type[T],` 传入的类，决定校验规则和返回类型。
+- `max_retries: int = 2,` 默认重试 2 次，加上第一次一共最多调 3 次模型。
+- `messages = [` 构造请求的两条消息。system 是「指令 + schema 提示」，实测第 2 步跑工单时 system 内容长 1838 个字符（INSTRUCTIONS 约 70 字加 1768 字的 schema 说明）；user 是把工单原文包进 `<input>` 标签，比如 `<input>\n导出报表一直失败，提示 E1023，麻烦看一下。\n</input>`。
+- `last_error = ""` 记下最近一次失败的原因，三次都失败时放进最后的异常信息里。
+- `for attempt in range(max_retries + 1):` `range(3)` 产生 0、1、2。`attempt` 从 0 开始，日志里打 `attempt + 1` 就变成「第 1 次」「第 2 次」。
+- `r = client.chat(` 实测传给 `chat` 的参数是 `{'temperature': 0, 'max_tokens': 1000, 'response_format': {'type': 'json_object'}}`。抽取任务要稳定，所以温度给 0。
+- `response_format={"type": "json_object"},` 打开 JSON mode，服务端保证输出是合法 JSON，但不保证符合 schema。第一张工单这次实跑返回：`{"customer_name":"王磊","customer_email":"wanglei@example.com","invoice_ids":["INV-2026-004417","INV-2026-004418"],"category":"billing","urgency":5,"sentiment":"angry",...}`，输入 685 tokens、输出 86 tokens。
+- `if r.finish_reason == "length":` 输出被 max_tokens 截断，JSON 肯定不完整，这时让模型「修正」没用，应该给更多空间。实测：假客户端第一次返回 `('{"name": "a"', "length")`，日志打 `第 1 次：输出被截断，max_tokens 调到 2000`，两次调用的 max_tokens 依次是 `[1000, 2000]`。`continue` 直接进入下一次循环，**不往 messages 里加东西**。
+- `if not r.content.strip():` DeepSeek 文档说 json 模式有小概率返回空 content。`.strip()` 去掉空白后为空字符串，`not ""` 为 True。这种情况原样重试，messages 不变。实测假客户端先返回 `""` 再返回正确 JSON，两次调用时 messages 长度都是 2。
+- `return model.model_validate_json(r.content)` 一步完成「解析 JSON 字符串 + 按 schema 校验 + 构造对象」。真实跑 3 张工单，每张都是第一次就通过，一共只调了 3 次模型。
+- `except ValidationError as e:` 接住两种错误。实测：`'not json'` 报 `Invalid JSON: expected ident at line 1 column 2 [type=json_invalid]`；`urgency: 7` 报 `urgency  Input should be less than or equal to 5 [type=less_than_equal]`。都是 `ValidationError`，所以一个 except 就够。
+- `log.warning("第 %d 次校验失败` `e.errors()` 返回结构化的错误列表，`[:3]` 只取前 3 条，免得日志太长。实测 qty=0 时打出 `第 1 次校验失败：[{'type': 'greater_than_equal', 'loc': ('qty',), 'msg': 'Input should be greater than or equal to 1', 'input': 0, ...}]`。
+- `messages.append(r.message)` 先把模型这次的错误回答作为 assistant 消息追加进去，让模型看到自己刚才输出了什么。实测假客户端 qty=0 那次：第一次请求 2 条消息，第二次请求变成 4 条（system、user、assistant 错误答案、user 纠错）。
+- `"content": f"你的输出没有通过校验` 再追加一条 user 消息，把 pydantic 的原始报错整段贴进去。实测内容开头是：`你的输出没有通过校验，错误如下：\n1 validation error for Item\nqty\n  Input should be greater than or equal to 1 [type=greater_than_equal, input_value=0, ...]`。模型看到具体哪个字段、什么规则，第二次就能改对。
+- `raise ExtractionError(f"{max_retries + 1} 次尝试后仍失败` 循环正常跑完（没有 return）才会走到这里。实测连续 3 次 `not json`：三次请求的 messages 长度依次是 2、4、6（每失败一次加两条），最后抛出 `3 次尝试后仍失败：1 validation error for Item  Invalid JSON: ...`。
+
+</div>
+
 `model_validate_json` 一步完成「解析 JSON + 校验」，非法 JSON 也会抛 `ValidationError`，所以一个 except 就能接住两种错误。
 
 `client` 的类型为什么不直接写 `LLMClient`，而是自己定义一个 `ChatClient`？`Protocol` 相当于 TS 的 `interface`：只要求「有一个这样签名的 `chat` 方法」，不要求是哪个类。第 3 步测试要传一个假客户端进来，如果这里写死 `LLMClient`，测试照样能跑（Python 运行时不查类型），但编辑器会在每个 `extract(c, ...)` 下面画红线。
@@ -339,6 +388,31 @@ if __name__ == "__main__":
     main()
 ```
 
+<div class="line-notes">
+
+- `import re` 标准库正则模块，下面用它在原文里二次核对发票号。
+- `from common.structured import extract` 第 1 步写的通用抽取函数。
+- `logging.basicConfig(level=logging.INFO` 只在入口脚本里配一次「日志打到哪、什么级别、什么格式」。级别是 INFO，所以这次实跑时 openai 底层的 httpx 也打出了 `INFO HTTP Request: POST https://api.deepseek.com/chat/completions "HTTP/1.1 200 OK"`，每调一次模型一行。嫌吵可以改成 WARNING。
+- `log = logging.getLogger(__name__)` 用 `-m w1.extract_ticket` 运行时，`__name__` 是 `"__main__"`；被别的文件 import 时是 `"w1.extract_ticket"`。
+- `class TicketInfo(BaseModel):` 和上面那节的定义基本一样，只是两处 description 加了约束：邮箱「不要编造」，summary「不要推测金额等原文没有的信息」。对应「抽取任务的几个坑」里的编造和过度推断。
+- `INSTRUCTIONS = (` 括号里两个相邻的字符串会自动拼成一句。它会和 schema 提示一起组成 system 消息。
+- `INVOICE_RE = re.compile(` `re.compile` 把正则预编译成对象，反复使用时更快。`\d{4}` 是 4 位数字，`\d{6}` 是 6 位数字，所以只认 `INV-2026-004417` 这种格式。实测抄错的 `INV-2026-04417`（只有 5 位）匹配不上，`findall` 返回 `[]`。
+- `def verify_ids(info: TicketInfo, text: str)` 不信任模型抄的编号，用正则在原文里再找一遍。
+- `found = set(INVOICE_RE.findall(text))` `findall` 返回所有匹配的列表。第一张工单实测得到 `['INV-2026-004417', 'INV-2026-004418']`，转成 set 是为了去重，也方便后面做集合运算。
+- `kept = [i for i in info.invoice_ids if i in found]` 列表推导式：只保留原文里确实存在的编号。拿一个故意抄错的结果试：模型给 `["INV-2026-04417", "INV-2026-004418"]` → `kept = ["INV-2026-004418"]`。
+- `if len(kept) != len(info.invoice_ids):` 长度变了，说明有编号被丢弃。上面的例子 1 ≠ 2，日志打出 `丢弃原文中不存在的发票号：{'INV-2026-04417'}`。`set(...) - found` 是集合差集。
+- `missed = found - set(kept)` 原文里有、但模型没抽到（或者抄错了）的。上面的例子得到 `{'INV-2026-004417'}`，日志打 `模型漏抽了发票号：{'INV-2026-004417'}，已补上`。
+- `return info.model_copy(update=` pydantic 对象建议当成不可变的，用 `model_copy(update={...})` 复制一份并替换字段。注意这里放进去的是 `sorted(found)` 而不是 `kept`：**最终的发票号完全以正则从原文里找到的为准**，模型抽的只用来对比、打日志。上面的例子最后得到 `['INV-2026-004417', 'INV-2026-004418']`，抄错的被纠正了。
+- `TICKETS = [` 三张测试工单：第一张信息齐全且情绪激烈，第二张是技术问题、没有个人信息，第三张是售前咨询。专门挑「信息缺失」的样本，用来看模型会不会编造。
+- `"你好，我是王磊` 这一行和下一行是两个相邻的字符串字面量，外面套了括号，Python 会把它们拼成一张工单。不套括号也能拼，但看起来和「漏写逗号」一模一样。
+- `client = LLMClient()` 不传参数就读项目根目录的 `.env`。这次实跑是 `deepseek-flash`，`extra_body` 是 `{'thinking': {'type': 'disabled'}}`（关掉思考模式），价格 `Price(hit=0.04, miss=2.0, out=8.0)`（元/百万 token）。
+- `for t in TICKETS:` 三张工单依次处理。
+- `info = verify_ids(extract(` 先抽取再核对。这次实跑三张都是一次通过：<br>第 1 张：姓名 `王磊`、邮箱 `wanglei@example.com`、两个发票号、`billing`、urgency `5`、`angry`、needs_human `true`；<br>第 2 张：姓名、邮箱都是 `null`（没有编造），`technical`、urgency `3`、`neutral`；<br>第 3 张：`other`、urgency `2`、`neutral`，summary 是「客户询问专业版和企业版的区别，团队有12人。」<br>第 2、3 张输入里有 384 个 token 命中了缓存：system 部分每次都一样，DeepSeek 的前缀缓存起作用了。
+- `print(info.model_dump_json(indent=2))` 把对象转回带缩进的 JSON 字符串打印出来。
+- `print(client.ledger)` 实测打印：`3 次调用 | 输入 1972 / 输出 214 tokens | 约 ¥0.0042`。三张工单不到半分钱，大头是输入，每次都带着那段 1768 字的 schema。
+
+</div>
+
 ```bash
 uv run python -m w1.extract_ticket
 ```
@@ -405,6 +479,27 @@ def test_empty_content_is_retried():
     assert extract(c, Item, "抽取", "x").name == "a"
 ```
 
+<div class="line-notes">
+
+- `from dataclasses import dataclass, field` `dataclass` 自动生成 `__init__` 等方法；`field(default_factory=list)` 给列表字段设默认值，用法和 pydantic 的 `Field(default_factory=list)` 一样。
+- `import pytest` 下面要用 `pytest.raises` 断言「这里应该抛异常」。实测这 4 个测试加上 Day 7 的 4 个，`pytest -q` 结果是 `8 passed in 0.83s`，全程不联网。
+- `class Item(BaseModel):` 测试专用的小模型，只有两个字段，`qty` 必须 ≥ 1。用小模型测试，出错时报错信息短，好读。
+- `@dataclass` `FakeClient(replies=[...])` 这种构造函数是 dataclass 自动生成的。
+- `replies: list[tuple[str, str]]` 预设的回复队列，每个元素是 `(content, finish_reason)`，比如 `('{"name": "笔", "qty": 0}', "stop")`。
+- `seen: list[list[dict]] = field(default_factory=list)` 记录每次被调用时收到的 messages，测试结束后检查「重试时到底发了什么」。
+- `def chat(self, messages, **kw) -> ChatResult:` 签名和 `LLMClient.chat` 一致，所以满足 `ChatClient` 协议。`**kw` 把 temperature、max_tokens 这些参数全部接住，假客户端用不上，直接忽略。
+- `self.seen.append(list(messages))` `list(messages)` 是**复制一份**再存。`extract` 会在同一个 messages 列表上 append，如果直接存引用，`seen` 里的每一项都指向同一个列表，最后长度全是最终值。复制之后，实测 `test_retry_feeds_error_back` 里 `seen` 的长度依次是 `[2, 4]`，能准确反映每次调用时的样子。
+- `content, finish = self.replies.pop(0)` 从队头取出一条预设回复（`pop(0)` 取第一个并从列表里删掉），每调一次消耗一条。
+- `return ChatResult(content=content` 构造一个和真实客户端返回值同类型的对象。`message` 字段就是 extract 重试时要 append 回历史的那条 assistant 消息。
+- `def test_first_try_ok():` 最简单的路径：第一次就返回合法 JSON。`==` 比较两个 pydantic 对象时比的是字段值，`Item(name="笔", qty=2) == Item(name="笔", qty=2)` 为 True。
+- `def test_retry_feeds_error_back():` 第一条回复 qty=0 不合法，第二条 qty=1 合法。逐步追踪：第 1 次调用，收到 2 条消息 → 校验失败 → messages 追加 assistant 和纠错 user，变成 4 条 → 第 2 次调用，收到 4 条 → 校验通过，返回 `Item(name='笔', qty=1)`。
+- `retry_msgs = c.seen[1]` 第二次调用时的 messages。实测最后一条是 `{"role": "user", "content": "你的输出没有通过校验，错误如下：\n1 validation error for Item\nqty\n  Input should be greater than or equal to 1 ..."}`，里面确实有 `qty`，断言通过。这个测试保证的是「错误信息真的喂回去了」，不只是「重试了」。
+- `def test_gives_up_after_max_retries():` `[("not json", "stop")] * 3` 是列表乘法，得到三个相同元素的列表。三次全错，实测三次调用的 messages 长度是 2、4、6，预设回复刚好用完，最后抛 `ExtractionError`。
+- `with pytest.raises(ExtractionError):` 断言 with 块里**必须**抛出这个异常，没抛测试就失败。
+- `def test_empty_content_is_retried():` 第一次返回空字符串。实测日志打 `第 1 次：返回空内容，重试`，两次调用的 messages 长度都是 2：空内容不算模型的「错误答案」，不往历史里加东西，原样再问一次。
+
+</div>
+
 ```bash
 uv run pytest -q
 ```
@@ -439,7 +534,22 @@ info = client.chat.completions.create(
 print(info)
 ```
 
-**别用 `uv add instructor`**：我们项目的 openai 是 3.x，instructor 目前最高只支持 openai 2.x，装不上（报 `No solution found when resolving dependencies`）。用 uv 开一个临时环境跑，不动项目依赖：
+<div class="line-notes">
+
+- `import instructor` 后面的 `# pyright: ignore[reportMissingImports]` 是给类型检查器看的：instructor 没装进项目环境，编辑器找不到它，这一行注释让它别画红线。用 `uv run --no-project --with instructor ...` 跑时，uv 会临时装好。这次实跑 uv 装了 42 个包，解析出 instructor 1.17.0、openai 3.3.0。临时环境不受项目里 `openai>=3.29` 的约束，uv 退回到要求 `jiter>=0.10` 的 openai 3.3.0，正好绕开了下面说的 jiter 冲突。
+- `from w1.extract_ticket import TicketInfo` 直接复用第 2 步定义的模型。顺带一个副作用：import 会执行那个模块的顶层代码，包括 `logging.basicConfig(level=logging.INFO)`，所以这次实跑也打出了 `INFO HTTP Request: POST https://api.deepseek.com/chat/completions "HTTP/1.1 200 OK"`。
+- `load_dotenv()` 这里没用 `LLMClient`，`.env` 不会自动加载，要自己调一下，`os.environ["LLM_BASE_URL"]` 才有值。
+- `client = instructor.from_openai(` 把普通的 OpenAI 客户端包一层。返回的对象用法几乎一样，只是 `create` 多了 `response_model` 等参数。
+- `mode=instructor.Mode.JSON,` 告诉 instructor 用 JSON mode 加提示词的方式（和我们自己写的 `extract` 同一个思路），因为 DeepSeek 不支持 schema 约束输出。换成支持的厂商，改这一个参数就行。
+- `info = client.chat.completions.create(` 这一行背后做的事就是我们的 `extract`：把 schema 塞进提示词、发请求、用 pydantic 校验，失败就把错误喂回去重试。
+- `response_model=TicketInfo,` 返回值直接就是 `TicketInfo` 对象，不是原始的 completion。
+- `max_retries=2,` 校验失败时最多再试 2 次，和我们 `extract` 的默认值一样。
+- `extra_body=` 关掉 DeepSeek 的思考模式。`extra_body` 里的内容会原样并进请求 JSON，用来传 SDK 不认识的厂商私有参数。
+- `print(info)` 这次实跑打印：`customer_name=None customer_email=None invoice_ids=[] category='technical' urgency=3 sentiment='negative' summary='客户反映导出报表一直失败，提示错误码 E1023' needs_human=False`。和第 2 步自己写的版本比，只有 sentiment 不同（这里判成 negative，第 2 步那次是 neutral），说明边界情绪本身就不太稳定。
+
+</div>
+
+**别用 `uv add instructor`**：装不上，会报 `No solution found when resolving dependencies`。原因不在 openai 的大版本：instructor 1.17 写的是 `openai>=2.0.0,<4.0.0`，3.x 本来是认的。卡住的是一个间接依赖 jiter（openai 用来解析流式 JSON 的库）：instructor 把它限制在 `<0.15`，而我们项目要求的 openai 3.29 起要 `jiter>=0.16`，两边没有交集。我 2026-10 实测过，就算把项目的 Python 版本范围收窄也一样解不出来。等 instructor 放开 jiter 的上限就能装了。用 uv 开一个临时环境跑，不动项目依赖：
 
 ```bash
 uv run --no-project --with instructor --with python-dotenv python -m w1.try_instructor

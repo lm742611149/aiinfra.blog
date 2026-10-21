@@ -212,7 +212,8 @@ def sync_chunks(conn: psycopg.Connection, chunks: list, embed_fn) -> dict:
 
 def search(conn: psycopg.Connection, query_vec: np.ndarray, k: int = 4,
            categories: list[str] | None = None) -> list[dict]:
-    stmt = """  # 别叫 sql:会遮住文件开头 import 的 psycopg.sql 模块
+    # 别叫 sql:会遮住文件开头 import 的 psycopg.sql 模块
+    stmt = """
         SELECT id, doc_id, title, category, section, content,
                1 - (embedding <=> %(q)s) AS score
         FROM kb_chunks
@@ -229,6 +230,46 @@ def search(conn: psycopg.Connection, query_vec: np.ndarray, k: int = 4,
     cols = ["id", "doc_id", "title", "category", "section", "content", "score"]
     return [dict(zip(cols, r)) for r in rows]
 ```
+
+<div class="line-notes">
+
+- `import hashlib` 标准库,算 sha256 指纹用,给增量更新判断「这块内容变没变」。
+- `import psycopg` Postgres 官方推荐的第 3 版驱动。下面的 `from psycopg import sql` 是它的 SQL 拼接工具模块,专门用来安全地拼表名、维度这类不能当参数的部分。
+- `from pgvector.psycopg import register_vector` pgvector 给 psycopg 做的适配,注册之后 numpy 数组能直接当 SQL 参数传。
+- `DSN = os.environ["PG_DSN"]` 用方括号取,没配就直接 `KeyError`,比拿到 None 连不上再报一个看不懂的错好。实测值是 `postgresql://minliu@localhost:5432/agent60`:用户 minliu、本机 5432 端口、库名 agent60、没密码。
+- `DIM = int(os.environ.get("EMB_DIM", "1024"))` 环境变量读出来一定是字符串 `"1024"`,`int()` 转成整数。实测 `DIM = 1024`,类型是 `int`。
+- `SCHEMA = sql.SQL("""` 建表语句。用 `sql.SQL` 包起来而不是普通字符串,原因见文章下面那张三种写法的对照表。
+- `content_hash text NOT NULL, embedding vector({dim}) NOT NULL,` `{dim}` 是占位符,下面 `.format()` 会把它换掉。实测拼完是 `embedding vector(1024) NOT NULL`。
+- `""").format(dim=sql.Literal(DIM))` `sql.Literal(1024)` 按 SQL 的规矩把值变成字面量文本 `1024`;如果是字符串,还会加引号、转义。建表语句(DDL)不支持 `%s` 参数,所以只能这么拼。
+- `conn = psycopg.connect(DSN, autocommit=True)` 每条语句执行完立刻生效。需要「一批一起成功」的地方,下面另外用 `with conn.transaction():` 包起来。
+- `conn.execute("CREATE EXTENSION IF NOT EXISTS vector")` 必须在 `register_vector` 之前执行,原因文章下面讲了。`IF NOT EXISTS` 让它重复执行也不报错。
+- `register_vector(conn)` 注册之后,写入时 numpy 数组自动变成 `vector`;读出来是 pgvector 的 `Vector` 对象(实测 `SELECT embedding` 拿到的类型是 `pgvector.vector.Vector`,要 `.to_numpy()` 才是数组)。
+- `conn.execute(SCHEMA)` 一次执行多条语句(建扩展、建表、两个索引)。每条都带 `IF NOT EXISTS`,第二次跑 `pg_sync.py` 时全部跳过。
+- `return hashlib.sha256(text.encode("utf-8")).hexdigest()` 实测第一块 `kb-001#1` 的指纹是 `5eb411589be2…`,长度 64。和库里存的完全一样,所以第二次同步不用重算。
+- `existing = dict(conn.execute("SELECT id, content_hash FROM kb_chunks").fetchall())` `fetchall()` 实测返回 `[('kb-001#1', '5eb4…'), ('kb-001#2', '4749…'), …]` 共 42 个二元组,`dict()` 直接把二元组列表变成 `{'kb-001#1': '5eb4…', …}`。第一次运行表是空的,`existing = {}`。
+- `todo = [c for c in chunks if existing.get(c.id) != sha(c.text)]` 列表推导式加过滤。三种情况:<br>第一次运行:`existing.get(...)` 全是 None,42 块全进 todo;<br>第二次运行:42 块指纹都对得上,`todo = []`;<br>我在临时库里把 kb-002#3 的指纹改成 `'old'` 模拟「文章改过」,实测 `todo = ['kb-002#3']`,只有这一块。
+- `if todo:` todo 为空时连 embedding 接口都不调,第二次同步因此一分钱不花。
+- `vectors = embed_fn([c.text for c in todo])` 只把变了的块送去算向量。上面那个模拟场景里,我用一个计数函数包住 `embed`,实测只被调用了 1 次、传进去 1 段文字。返回形状 `(1, 1024)` 的数组。
+- `with conn.transaction():` 包住整批写入:中途哪一条失败,前面写的全部回滚。
+- `for c, v in zip(todo, vectors):` `zip` 把块和它的向量一一配对:第 0 块配第 0 行向量,依此类推。
+- `INSERT INTO kb_chunks (id, doc_id, title,` 八列对应下面元组里的八个值,顺序要一一对上。`updated_at` 没写,插入时用默认值 `now()`。
+- `ON CONFLICT (id) DO UPDATE SET` upsert:id 不存在就插入,已经存在(比如改过的 kb-002#3)就改成更新。
+- `updated_at = now()` 更新时手动刷新时间。实测 kb-002#3 被重写后,`updated_at` 变成了 `2026-10-22 07:16:18+08:00`。
+- `(c.id, c.doc_id, c.title, c.category, c.section, c.text, sha(c.text), v),` 代入第一块:`('kb-001#1', 'kb-001', '套餐与价格', '套餐与计费', '三种套餐', '套餐与价格 > 三种套餐\nCloudLedger 提供免费版、专业版和企业版三种套餐。…', '5eb4…', 1024 维数组)`。注意存的 content 带着「标题 > 小节」前缀,和送去算 embedding 的是同一段文字。
+- `gone = set(existing) - {c.id for c in chunks}` `set(字典)` 取的是所有 key。模拟场景里我往库里多塞了一块已经不存在的 `kb-999#1`:库里 43 个 id,现在的块 42 个,相减得 `{'kb-999#1'}`。
+- `conn.execute("DELETE FROM kb_chunks WHERE id = ANY(%s)", (list(gone),))` psycopg 会把 Python 列表转成 Postgres 数组,`= ANY(数组)` 就是「等于其中任何一个」。
+- `return {"total": len(chunks), "embedded": len(todo), "deleted": len(gone)}` 三次实测:第一次 `{'total': 42, 'embedded': 42, 'deleted': 0}`,第二次 `{'total': 42, 'embedded': 0, 'deleted': 0}`,改一块再多一块时是 `{'total': 42, 'embedded': 1, 'deleted': 1}`。
+- `def search(conn: psycopg.Connection, query_vec: np.ndarray, k: int = 4,` 参数 `query_vec` 是问题的向量。实测「买错了能退钱吗」→ `embed_one` 返回形状 `(1024,)`、类型 float32 的数组,前 3 个数是 `[-0.0184, 0.017, -0.0231]`。
+- `# 别叫 sql:` 局部变量要是叫 `sql`,会在这个函数里遮住文件开头 import 的 `psycopg.sql` 模块。注意这行注释必须写在字符串**外面**:写进三引号里,它就成了 SQL 的一部分,Postgres 会报 `syntax error at or near "#"`。
+- `1 - (embedding <=> %(q)s) AS score` `<=>` 是余弦距离,`1 - 距离` 换回相似度。实测第一名 kb-003#1 的 score 是 0.651。
+- `{where}` 这是 Python 的 `.format` 占位符,只会被换成空字符串或写死的那句 WHERE,用户输入进不来。
+- `ORDER BY embedding <=> %(q)s` 距离从小到大,也就是最相似的排在前面。这里的 `<=>` 和 HNSW 索引的 `vector_cosine_ops` 对应,才能用上索引。
+- `params = {"q": query_vec, "k": k}` 按名字传参。`q` 在 SQL 里出现了两次,用名字只需要传一次。
+- `if categories:` 传 `None` 或空列表都不过滤。实测 `categories=["退款"]` 时 `params` 变成 `{'q': 数组, 'k': 4, 'cats': ['退款']}`。
+- `rows = conn.execute(stmt.format(where=where), params).fetchall()` 先由 Python 把 `{where}` 换掉,再把整段 SQL 和 params 一起交给 psycopg。实测不过滤时返回 4 行,第一行是 `('kb-003#1', 'kb-003', '如何申请退款', '退款', '操作步骤', '如何申请退款 > 操作步骤\n…', 0.651…)`。
+- `return [dict(zip(cols, r)) for r in rows]` 每行元组和列名配对成字典。实测「买错了能退钱吗」不过滤时 4 条是:kb-003#1 0.651、kb-002#3 0.648、kb-002#1 0.643、kb-008#2 0.637(这条分类是「套餐与计费」);只搜「退款」类时,第 4 条换成了 kb-002#4 0.625。
+
+</div>
 
 **`connect()` 在干什么?** 连上数据库,并做好用向量的准备。`autocommit=True` 让每条 SQL 执行完立刻生效;不加的话 psycopg 默认把所有语句放进一个事务,要手动 `conn.commit()`,忘了提交程序一结束改动就全丢了。需要多条语句一起成功或一起失败的地方(`sync_chunks` 的批量写入),另外用 `with conn.transaction():` 包起来。`register_vector(conn)` 告诉 psycopg 怎么在 numpy 数组和数据库的 `vector` 类型之间互相转换:注册后,写入时可以直接把 numpy 数组当 SQL 参数传,查询返回的向量也会自动变回 numpy 数组(有点像给 `JSON.parse` 传 reviver)。它要去数据库里查 `vector` 类型的内部编号,所以必须先 `CREATE EXTENSION`,否则报错找不到类型。为什么 `SCHEMA` 里已经有这句,`connect()` 还要再执行一次?因为 `connect()` 总是最先调用的:`pg_sync.py` 是先 `connect()` 再 `init_schema()`,`rag_pg.py` 更是只调 `connect()`、从不建表。在全新的数据库上,`connect()` 不自己先装扩展,`register_vector` 就会报错。`SCHEMA` 里留着那句,是为了让这段 SQL 单独贴进 `psql` 也能执行;两处都带 `IF NOT EXISTS`,重复执行直接跳过。这种「执行一次和执行多次结果一样」的写法叫**幂等**,初始化代码都尽量这么写,就不用操心调用顺序。
 
@@ -265,6 +306,17 @@ if __name__ == "__main__":
     init_schema(conn)
     print(sync_chunks(conn, load_chunks(), embed))
 ```
+
+<div class="line-notes">
+
+- `from chunking import load_chunks` Day 16 的切块函数:读 `data/helpcenter/kb-*.md`,按 `##` 小节切,返回 42 个 `Chunk`。实测第一个是 `Chunk(id='kb-001#1', doc_id='kb-001', title='套餐与价格', category='套餐与计费', section='三种套餐', text='套餐与价格 > 三种套餐\n…')`。
+- `from embed import embed` 注意 import 的是 `embed` 函数本身,下面原样当参数传给 `sync_chunks`,不在这里调用。
+- `if __name__ == "__main__":` 直接 `uv run python w3/pg_sync.py` 时才执行;被别的文件 import 时不执行。
+- `conn = connect()` 连上 `PG_DSN` 指的库,顺便确保 vector 扩展已启用。
+- `init_schema(conn)` 第一次运行时建表和两个索引,之后再运行就全部跳过。
+- `print(sync_chunks(conn, load_chunks(), embed))` 实测第一次打印 `{'total': 42, 'embedded': 42, 'deleted': 0}`(42 块都算了 embedding;`.env` 里 `EMB_BATCH=10`,所以实际分 5 批请求接口);紧接着再跑一次,打印 `{'total': 42, 'embedded': 0, 'deleted': 0}`。
+
+</div>
 
 ```bash
 uv run python w3/pg_sync.py
@@ -343,6 +395,25 @@ if __name__ == "__main__":
     print("\n只搜「退款」类:")
     print(answer(q, categories=["退款"]))
 ```
+
+<div class="line-notes">
+
+- `import sys` 用 `sys.argv` 读命令行参数。
+- `from pg_store import search as pg_search` `as` 改个名字,一看就知道这是数据库版的检索,和 `rag_numpy.search` 区分开。
+- `from rag_numpy import SYSTEM` 复用 Day 16 的系统提示词。副作用见代码块下面那段提醒。
+- `conn = connect()` 写在模块顶层:整个进程只连一次数据库,`answer()` 调几次都用同一个连接。
+- `docs = "\n\n".join(` 把每块包成 `<doc>` 标签再用空行连起来。代入一块 kb-002#3,实测拼出来的 user 消息是:<br>`<资料>\n<doc id="kb-002#3" title="退款政策">\n退款政策 > 重复扣款\n同一笔订阅被重复扣款…\n</doc>\n</资料>\n\n用户问题:买错了能退钱吗`
+- `f'<doc id="{h["id"]}" title="{h["title"]}">\n{h["content"]}\n</doc>' for h in hits` f-string 外层用单引号,里面才能用双引号取 `h["id"]`。这是生成器表达式,直接作为 `join` 的参数。和 Day 16 的区别只有一点:hits 现在是字典列表,正文字段叫 `content`(数据库列名),不是 `text`。
+- `{"role": "system", "content": SYSTEM},` 系统提示词规定了「只根据资料回答、每句标出处、资料不够就说转人工」。
+- `def answer(question: str, k: int = 4, categories: list[str] | None = None) -> str:` `list[str] | None = None` 表示可以不传;不传就是不过滤。
+- `hits = pg_search(conn, embed_one(question), k=k, categories=categories)` 先把问题变成 1024 维向量,再去数据库找最近的 k 块。
+- `print(f"  {h['score']:.3f}  {h['id']:<9} [{h['category']}] {h['title']} > {h['section']}")` `:.3f` 保留 3 位小数;`:<9` 左对齐、占 9 个字符宽,id 长短不一时列也能对齐。实测第一行打印 `  0.651  kb-003#1  [退款] 如何申请退款 > 操作步骤`。
+- `return chat(build_prompt(question, hits), temperature=0)` `temperature=0` 让回答尽量稳定,方便你对比过滤前后的区别。
+- `q = " ".join(sys.argv[1:]) or "买错了能退钱吗"` `sys.argv[0]` 是脚本名,`[1:]` 是后面的参数。`uv run python w3/rag_pg.py 年付 能退吗` 得到 `"年付 能退吗"`;什么都不传时 `" ".join([])` 是空字符串,`or` 就取默认问题。
+- `print(answer(q))` 不过滤时,实测命中 kb-003#1 0.651、kb-002#3 0.648、kb-002#1 0.643、kb-008#2 0.637(《优惠码使用规则》,分类是「套餐与计费」)。这次实跑的回答把三种情况都列出来了,其中包括优惠码那条 [kb-008#2]。
+- `print(answer(q, categories=["退款"]))` 只搜退款类,kb-008#2 被过滤掉,第 4 条换成 kb-002#4 审批与到账 0.625。这次实跑的回答开头是「帮助中心里没有找到「买错」这类情形的退款说明,建议转人工客服」,后面再列出重复扣款、年付两种能退的情形和申请入口。模型每次的措辞可能不一样。
+
+</div>
 
 注意:`from rag_numpy import SYSTEM` 会顺带执行 `rag_numpy.py` 顶部读取 `index/` 文件的代码。如果你删了 `index/` 目录会报错。更干净的做法是把 `SYSTEM` 挪到单独的 `prompts.py`,这个重构留给你,Day 21 的完整版里我会这么做。
 

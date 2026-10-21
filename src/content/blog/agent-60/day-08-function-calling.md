@@ -94,6 +94,22 @@ WEATHER_TOOL: ChatCompletionToolParam = {
 }
 ```
 
+<div class="line-notes">
+
+- `from openai.types.chat import ChatCompletionToolParam` 只导入一个类型,运行时什么都不做,给编辑器做检查用。它本质是一个 TypedDict,字段名拼错(比如 `paramters`)会画红线。
+- `WEATHER_TOOL: ChatCompletionToolParam = {` 变量名后面的 `: 类型` 是类型标注,相当于 TS 的 `const WEATHER_TOOL: ChatCompletionToolParam = {...}`。全大写表示当常量用。
+- `"type": "function",` 外层固定写 `function`。OpenAI 协议里工具外面套了一层 `{type, function}`,Anthropic 没有这一层。
+- `"name": "get_weather",` 模型回 tool_calls 时 `function.name` 就是这个字符串,你的代码按它找要执行的函数,所以要和真实函数对得上。
+- `"description": "查询某个城市当前的天气。` 写给模型看的。后半句「要不要带伞时使用」帮模型把「明天出门带伞吗」也联想到这个工具。
+- `"parameters": {` 参数的 JSON Schema。实测模型据此生成的 arguments 是字符串 `'{"city": "北京", "unit": "celsius"}'`。
+- `"type": "object",` 参数整体是一个对象,也就是 Python 里会被 `**` 展开成关键字参数的那个 dict。
+- `"city": {` 一个字段一个 key,key 名要和 `get_weather(city, unit)` 的参数名一致,不然 `get_weather(**args)` 会报 `unexpected keyword argument`。
+- `"description": "城市名,中文或英文都可以` 例子写在 description 里,模型就会照着填 `北京` 这样的值,而不是 `Beijing, CN`。
+- `"enum": ["celsius", "fahrenheit"],` 只允许这两个值。实测 DeepSeek 即使用户没提单位,也主动填了 `"unit": "celsius"`。
+- `"required": ["city"],` 只有 city 必填。unit 没列进来,模型可以不填,`get_weather` 用默认值 `"celsius"`。
+
+</div>
+
 第一行的类型标注 `ChatCompletionToolParam` 是 OpenAI SDK 给工具定义提供的类型,标上以后字段名拼错(比如 `paramters`)编辑器会直接画红线;不标的话,把这个字典传给 SDK 时类型检查会报「类型对不上」。
 
 如果你没写过 JSON Schema,别慌,Agent 工程里用到的子集非常小。`type: object` 表示参数是一个对象;`properties` 列出每个字段;每个字段有自己的 `type`(string、number、integer、boolean、array、object)和 `description`;`enum` 把取值限定在几个固定值里;`required` 说明哪些字段必须给。这五六个关键字够你用到毕业项目。
@@ -121,6 +137,18 @@ print(schema)
 #                 'unit': {'default': 'celsius', 'enum': ['celsius', 'fahrenheit'], ...}},
 #  'required': ['city'], 'title': 'GetWeatherArgs', 'type': 'object'}
 ```
+
+<div class="line-notes">
+
+- `from typing import Literal` `Literal["a", "b"]` 表示只能取这几个字面值,生成 schema 时变成 `enum`。
+- `from pydantic import BaseModel, Field` `BaseModel` 是 pydantic 的模型基类,`Field` 给字段加描述、默认值、约束。
+- `class GetWeatherArgs(BaseModel):` 用一个类描述「参数长什么样」,类似 TS 写一个 `interface GetWeatherArgs` 再用 zod 生成 schema。
+- `city: str = Field(description=` 没有 `default`,所以 city 是必填。实测生成 `'city': {'description': "城市名,…", 'title': 'City', 'type': 'string'}`,`title` 是 pydantic 按字段名自动加的。
+- `unit: Literal["celsius", "fahrenheit"] = Field(default="celsius"` 有默认值所以不必填。实测生成 `'unit': {'default': 'celsius', 'description': '温度单位', 'enum': ['celsius', 'fahrenheit'], 'title': 'Unit', 'type': 'string'}`。
+- `schema = GetWeatherArgs.model_json_schema()` 类方法,直接从类生成 JSON Schema 字典,不用先建实例。
+- `print(schema)` 实测输出(一行):<br>`{'properties': {'city': {...}, 'unit': {...}}, 'required': ['city'], 'title': 'GetWeatherArgs', 'type': 'object'}`<br>和上面手写的 `parameters` 对比,只多了 `title`,`required` 也自动算对了(只有 city)。要用它做工具定义,把这个字典放进 `"parameters"` 就行。
+
+</div>
 
 直接 `print` 字典会挤成一长行,很难看。想在控制台里看成缩进好的 JSON,把最后的 `print(schema)` 换成:
 
@@ -178,6 +206,31 @@ if __name__ == "__main__":
     print(get_weather("北京"))
 ```
 
+<div class="line-notes">
+
+- `import httpx` HTTP 客户端,用法和 requests 几乎一样,另外还支持 async。相当于 Node 里的 axios。
+- `WMO = {0: "晴"` Open-Meteo 返回的天气是数字代码(WMO 标准),这张表把常见代码翻成中文。实测北京这次返回 `weather_code: 0`,查表得「晴」。
+- `def get_weather(city: str, unit: str = "celsius") -> dict:` 参数名 `city`、`unit` 必须和工具 schema 里的字段名一样,后面才能 `get_weather(**args)` 直接展开调用。
+- `geo = httpx.get(` 第一步:地理编码,把城市名换成经纬度。
+- `params={"name": city, "count": 1, "language": "zh"},` `params` 会拼成查询串 `?name=北京&count=1&language=zh`。`count=1` 只要最匹配的一个,`language=zh` 让返回的名字是中文。
+- `timeout=10,` 最多等 10 秒。httpx 默认超时只有 5 秒,国内连 Open-Meteo 偶尔慢,放宽一点。
+- `).json()` 把响应体解析成 dict。实测北京返回(节选):<br>`{"results": [{"id": 1816670, "name": "北京", "latitude": 39.9075, "longitude": 116.39723, "country": "中国", "admin1": "北京市", ...}], "generationtime_ms": 0.14}`
+- `if not geo.get("results"):` 查不到时接口不报错,只是没有 `results` 这个键。实测 `火星城` 返回 `{'generationtime_ms': 0.0895}`,`.get("results")` 得 None,`not None` 为 True。用 `.get` 而不是 `geo["results"]`,是为了键不存在时不抛 KeyError。
+- `return {"error": f"找不到城市` 不抛异常,而是返回一个带 error 的字典。实测 `get_weather("火星城")` 返回 `{'error': "找不到城市 '火星城',请换个写法,比如用英文名或加上省份"}`。模型看到这句会换个写法再调。
+- `place = geo["results"][0]` 取第一个(也是唯一一个)结果,就是上面那个北京的 dict。
+- `cur = httpx.get(` 第二步:用经纬度查当前天气。
+- `"latitude": place["latitude"],` 代入得 `39.9075`,下一行经度是 `116.39723`。
+- `"current": "temperature_2m,weather_code,wind_speed_10m",` 逗号分隔要哪些「当前值」:2 米高处气温、天气代码、10 米高处风速。
+- `"temperature_unit": unit,` 直接把模型给的单位透传给接口。实测 `get_weather("Shanghai", "fahrenheit")` 得到 `temperature: 61.2`,接口已经换算好了。
+- `).json()["current"]` 响应很长,这里只取 `current` 部分。实测:`{"time": "2026-10-21T23:00", "interval": 900, "temperature_2m": 4.5, "weather_code": 0, "wind_speed_10m": 0.6}`(时间是 UTC,北京当时是早上 7 点)。
+- `"city": place["name"],` 用接口返回的标准名字,而不是用户输入的原词。
+- `"country": place.get("country"),` 个别地点没有 country 字段,用 `.get` 拿不到时就是 None。
+- `"weather": WMO.get(cur["weather_code"], f"天气代码` `dict.get(键, 默认值)`:表里有就翻译,没有就返回「天气代码 80」这样的原样提示,不会因为表没写全而崩溃。
+- `if __name__ == "__main__":` 直接运行这个模块时才执行,被 import 时不执行。
+- `print(get_weather("北京"))` 实测输出:`{'city': '北京', 'country': '中国', 'temperature': 4.5, 'unit': 'celsius', 'weather': '晴', 'wind_kmh': 0.6}`。这就是之后要交给模型的工具结果。
+
+</div>
+
 先在仓库根目录单独跑一下 `uv run python -m w2.weather`,确认这个函数自己没问题。这是个好习惯:工具本身先用普通单元测试的方式跑通,再交给模型。不然出了错,你分不清是模型参数填错了还是工具本身就坏了。
 
 然后是今天的主角,一次完整往返:
@@ -233,6 +286,35 @@ if msg.tool_calls:
     print("最终回答:", final.choices[0].message.content)
 ```
 
+<div class="line-notes">
+
+- `from typing import Any` `Any` 表示「任何类型都行」,下面用来放宽 messages 的类型检查。
+- `from dotenv import load_dotenv` 读 `.env` 文件,把里面的 `LLM_BASE_URL` 等写进环境变量。
+- `from w2.tools_def import WEATHER_TOOL` 从同一个包导入。前提是在仓库根目录用 `python -m w2.day08_roundtrip` 运行,否则找不到 `w2`。
+- `load_dotenv()` 执行后 `os.environ["LLM_MODEL"]` 就能读到值。按 Day 3 的 `.env`,这里是 `deepseek-flash`。
+- `client = OpenAI(base_url=` 用 OpenAI SDK 连 DeepSeek:`base_url` 换成 `https://api.deepseek.com`,协议是一样的。
+- `messages: list[Any] = [` 初始历史两条:system 定规矩,user 提问题。
+- `{"role": "system", "content": "你是一个简洁的中文助手。` 「需要实时信息时使用工具,不要编造」这句是在推模型去调工具,而不是凭记忆瞎报一个温度。
+- `resp = client.chat.completions.create(model=MODEL, messages=messages, tools=[WEATHER_TOOL])` 第一次请求,多了 `tools` 参数。实测用量:输入 382 token、输出 70 token。工具定义本身也算在输入 token 里。
+- `msg = resp.choices[0].message` 取第一个候选的消息。`choices` 是列表,没传 `n` 时只有一个。
+- `print("finish_reason:"` 实测打印 `finish_reason: tool_calls`,表示模型这一轮是要调工具,不是说完了。
+- `print("content:", msg.content)` 实测 DeepSeek 返回的是空字符串 `''`,所以打印出来 `content:` 后面什么都没有。OpenAI 等厂商这里常给 None,两种都要能处理,判断时用 `if not msg.content`。
+- `print("tool_calls:", msg.tool_calls)` 实测:<br>`[ChatCompletionMessageFunctionToolCall(id='call_00_z118lSyFuQ7eGmPyXnZr3190', function=Function(arguments='{"city": "北京", "unit": "celsius"}', name='get_weather'), type='function', index=0)]`<br>注意 arguments 是字符串。
+- `if msg.tool_calls:` 列表非空就是要调工具。模型直接回答时这里是 None,下面整段跳过。
+- `assistant = {"role": "assistant"` 把模型这条消息拼成普通字典(下面正文有详细拆解)。实测拼出来是:<br>`{"role": "assistant", "content": "", "tool_calls": [{"id": "call_00_z118…", "function": {"arguments": "{\"city\": \"北京\", \"unit\": \"celsius\"}", "name": "get_weather"}, "type": "function", "index": 0}]}`<br>`index: 0` 是 DeepSeek 多给的字段,`model_dump()` 原样带上了,DeepSeek 自己认,不影响。
+- `reasoning = getattr(msg, "reasoning_content", None)` `getattr(对象, 属性名, 默认值)`:有这个属性就取,没有就返回 None,不会报 AttributeError。实测拿到 68 个字符的思维链:`'The user asks about Beijing weather. I should call the weather tool.'`
+- `if reasoning:` 非空字符串为真,于是补进 assistant 字典。带 tools 时 DeepSeek 要求把它回传。
+- `messages.append(assistant)` 现在 messages 有 3 条:system、user、assistant。
+- `for tc in msg.tool_calls:` 这次只有一个调用,循环跑一次。
+- `if tc.type != "function":` 实测 type 就是 `"function"`,不会跳过。这一行的主要作用是让类型检查器知道下面 `tc.function` 一定存在。
+- `args = json.loads(tc.function.arguments)` 字符串 → dict:`'{"city": "北京", "unit": "celsius"}'` 变成 `{'city': '北京', 'unit': 'celsius'}`。
+- `result = get_weather(**args) if tc.function.name == "get_weather" else {"error": "未知工具"}` 条件表达式 `A if 条件 else B`,相当于 JS 的三元 `条件 ? A : B`。`**args` 把字典展开成 `get_weather(city="北京", unit="celsius")`。实测结果:`{'city': '北京', 'country': '中国', 'temperature': 4.5, 'unit': 'celsius', 'weather': '晴', 'wind_kmh': 0.6}`
+- `messages.append({"role": "tool", "tool_call_id": tc.id` 结果作为 tool 消息放回,`tool_call_id` 和上面的 `call_00_z118…` 对上。content 必须是字符串,所以先 `json.dumps`。追加后 4 条的 role 依次是 `['system', 'user', 'assistant', 'tool']`。
+- `final = client.chat.completions.create(` 第二次请求,把完整的 4 条历史发回去。实测输入 507 token(比第一次多了工具调用和结果)、输出 61 token。
+- `print("最终回答:"` 这次实跑返回:`北京现在 **4.5°C**,天气晴朗,风速很小(0.6 km/h)。出门建议穿外套,最好穿保暖外套或羽绒服……` 数字和工具结果完全一致,说明模型读到了工具结果。
+
+</div>
+
 环境变量用 Day 3 建好的 `.env`(`load_dotenv()` 会读进来),不用再 `export`。在仓库根目录运行:
 
 ```bash
@@ -245,8 +327,8 @@ uv run python -m w2.day08_roundtrip
 
 ```text
 finish_reason: tool_calls
-content: None   (也可能是一句「我来查一下」)
-tool_calls: [ChatCompletionMessageToolCall(id='call_0_8f2c...', function=Function(arguments='{"city": "北京"}', name='get_weather'), type='function')]
+content:    (DeepSeek 实测是空字符串 '',有的厂商给 None,也可能是一句「我来查一下」)
+tool_calls: [ChatCompletionMessageFunctionToolCall(id='call_00_z118...', function=Function(arguments='{"city": "北京", "unit": "celsius"}', name='get_weather'), type='function', index=0)]
 ```
 
 ### `assistant = {...}` 这一行在干什么
@@ -263,7 +345,7 @@ assistant = {"role": "assistant", "content": msg.content, "tool_calls": [tc.mode
 
 | 片段 | 意思 | TS 类比 |
 |---|---|---|
-| `"content": msg.content` | 模型说的话,常常是 `None`,原样带上 | `content: msg.content` |
+| `"content": msg.content` | 模型说的话,调工具时常常是空的(DeepSeek 给 `''`,有的厂商给 `None`),原样带上 | `content: msg.content` |
 | `tc.model_dump()` | pydantic 对象转成普通字典(Day 6 讲过 `model_validate_json` 是字符串→对象,这个反过来是对象→字典) | 把 class 实例转成 plain object |
 | `[... for tc in msg.tool_calls]` | 列表推导式,对每个 `tc` 做一次转换,收集成新列表 | `msg.tool_calls.map(tc => toPlain(tc))` |
 
@@ -272,13 +354,15 @@ assistant = {"role": "assistant", "content": msg.content, "tool_calls": [tc.mode
 ```python
 {
     "role": "assistant",
-    "content": None,
+    "content": "",
     "tool_calls": [
-        {"id": "call_0_8f2c...", "type": "function",
-         "function": {"name": "get_weather", "arguments": "{\"city\": \"北京\"}"}},
+        {"id": "call_00_z118...", "type": "function", "index": 0,
+         "function": {"name": "get_weather", "arguments": "{\"city\": \"北京\", \"unit\": \"celsius\"}"}},
     ],
 }
 ```
+
+这是 DeepSeek 实跑拼出来的。`index` 不是 OpenAI 标准字段,是 DeepSeek 在 tool call 上多给的,`model_dump()` 会原样带上;发回给 DeepSeek 它自己认,不影响。换别的厂商时如果报「不认识的字段」,就别整个 dump,只挑 `id`、`type`、`function` 三个拼。
 
 为什么一定要把这条放回去?下一步你会给每个工具结果发一条 `tool` 消息,里面带着 `tool_call_id`。API 会往前找,看是哪条 assistant 消息发出了这个 id。如果找不到,就直接报 400。这正是练习 2 要你亲手看到的那个错误。
 
@@ -290,7 +374,7 @@ assistant = {"role": "assistant", "content": msg.content, "tool_calls": [tc.mode
 
 `finish_reason` 变成了 `tool_calls`,而不是平常的 `stop`。这是你判断「模型这一轮是想调工具还是说完了」的信号之一。实际写代码时我更习惯直接判断 `msg.tool_calls` 是否非空,因为个别兼容厂商的 finish_reason 填得不规范。
 
-`content` 经常是 `None`。模型决定调工具的时候,可能什么话都不说,也可能先说一句「我查一下」。你的代码两种情况都要能处理,别对 `None` 直接做字符串拼接。
+调工具时 `content` 经常是空的。DeepSeek 实测返回空字符串 `''`,OpenAI 等厂商常常返回 `None`,也有模型会先说一句「我查一下」。你的代码几种情况都要能处理:别对 `None` 直接做字符串拼接,也别用 `content is None` 判断模型「没说话」,写成 `if not msg.content` 才能同时覆盖 `None` 和 `''`。
 
 `tool_calls` 是一个**列表**。一次可以有多个,后面讲并行调用时会看到。每个元素有三个字段。`id` 是这次调用的编号,你回传结果时必须带上同一个 id,模型靠它把结果和请求对上。`type` 目前固定是 `function`。`function` 里有 `name` 和 `arguments`。
 
@@ -309,7 +393,7 @@ assistant = {"role": "assistant", "content": msg.content, "tool_calls": [tc.mode
   <rect x="20" y="90" width="600" height="38" fill="none" stroke="var(--rule)"/>
   <text x="32" y="114" font-family="var(--font-mono)" font-size="12" fill="var(--ink-soft)">user     北京现在多少度?出门要穿外套吗?</text>
   <rect x="20" y="135" width="600" height="52" fill="var(--mem-wash)" stroke="var(--mem)"/>
-  <text x="32" y="157" font-family="var(--font-mono)" font-size="12" fill="var(--mem)">assistant content=None</text>
+  <text x="32" y="157" font-family="var(--font-mono)" font-size="12" fill="var(--mem)">assistant content=&#39;&#39;</text>
   <text x="32" y="176" font-family="var(--font-mono)" font-size="12" fill="var(--mem)">          tool_calls=[{id: call_0_8f2c, get_weather, {"city":"北京"}}]</text>
   <rect x="20" y="194" width="600" height="52" fill="var(--compute-wash)" stroke="var(--compute)"/>
   <text x="32" y="216" font-family="var(--font-mono)" font-size="12" fill="var(--compute)">tool     tool_call_id=call_0_8f2c</text>
@@ -399,6 +483,34 @@ async def main() -> None:
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+<div class="line-notes">
+
+- `import asyncio` Python 的异步库,下面用它的 `gather` 让两个天气查询同时跑。
+- `import time` 用 `time.perf_counter()` 计时,看并发到底省了多少时间。
+- `from openai.types.chat import ChatCompletionMessageFunctionToolCall` 「function 类型的工具调用」这个类,只用来给 `run_one` 的参数做类型标注。
+- `async def run_one(tc: ChatCompletionMessageFunctionToolCall) -> dict:` 处理单个调用:解析参数 → 执行 → 包成 tool 消息。`async def` 定义的是协程函数,调用它不会立刻执行。
+- `args = json.loads(tc.function.arguments)` 实测两次分别是 `{'city': '北京', 'unit': 'celsius'}` 和 `{'city': '上海', 'unit': 'celsius'}`。
+- `result = await asyncio.to_thread(get_weather, **args)` `get_weather` 用的是同步 httpx,直接调用会卡住事件循环,两个查询只能排队。`to_thread` 把它放到线程池里跑,`await` 等它结束。注意写法是 `to_thread(函数, 参数)`,不是 `to_thread(get_weather(**args))`,后者会先在当前线程同步执行完。
+- `return {"role": "tool", "tool_call_id": tc.id` 每个调用各自生成一条 tool 消息,id 对应各自的调用。
+- `async def main() -> None:` 主流程也写成协程,因为里面要 `await gather`。
+- `{"role": "user", "content": "北京和上海现在哪个更热?"}` 要回答这个问题需要两份互不依赖的数据,正好用来触发并行调用。
+- `resp = client.chat.completions.create(` 这里用的还是同步 client,请求模型这一步不需要并发。
+- `calls = [tc for tc in msg.tool_calls or [] if tc.type == "function"]` 拆开看:`msg.tool_calls or []` 在没有调用时(None)换成空列表,这样 for 不会报错;`if tc.type == "function"` 过滤掉其他类型。实测原始 tool_calls 的 type 是 `['function', 'function']`,过滤后 `calls` 还是 2 个。
+- `print(f"模型一次给了 {len(calls)} 个调用:")` 实测:`模型一次给了 2 个调用:`
+- `print(" ", tc.id, tc.function.name, tc.function.arguments)` 实测两行:<br>`call_00_VU7VINSpPs9bArs5LfT70899 get_weather {"city": "北京", "unit": "celsius"}`<br>`call_01_MyExPtWxFxSiNb9GMHNj6635 get_weather {"city": "上海", "unit": "celsius"}`<br>DeepSeek 的 id 里 `00`、`01` 是序号。
+- `if not calls:` 模型有时会不调工具直接回答,这时打印它的回答就结束。
+- `assistant: dict[str, Any] = {` 和往返脚本一样,把 assistant 消息拼回去。这里只放过滤后的 `calls`,和后面要回传的 tool 消息一一对应。
+- `messages.append(assistant)` 此时 messages 有 3 条。
+- `t0 = time.perf_counter()` 记下开始时间(单位秒,只用来做差值)。
+- `tool_msgs = await asyncio.gather(` 两个 `run_one` 同时开跑,全部结束后按传入顺序返回。实测 `tool_msgs[0]` 是北京(`call_00_…`,4.5 度),`tool_msgs[1]` 是上海(`call_01_…`,16.2 度,多云)。
+- `print(f"并发执行 {len(calls)} 个工具用时` 这次实测 `3.73s`。我在同一次运行里又串行调了一遍做对照,用了 `8.93s`。每次地理编码加天气查询都要两个网络请求,并发确实省了一半多。
+- `messages.extend(tool_msgs)` 两条 tool 消息逐个追加。现在 role 依次是 `['system', 'user', 'assistant', 'tool', 'tool']`。
+- `final = client.chat.completions.create(` 第二次请求,模型看到两份天气。
+- `print("最终回答:"` 这次实跑返回:`上海更热:16.2°C(多云)vs 北京 4.5°C(晴),相差约 11.7°C。`
+- `asyncio.run(main())` 启动事件循环,运行 `main()` 直到结束。整个程序只调用这一次。
+
+</div>
 
 在仓库根目录运行 `uv run python -m w2.day08_parallel`,我跑出来是这样(id 每次不同):
 
@@ -497,6 +609,24 @@ if resp.stop_reason == "tool_use":
     print(final.content[0].text)
 ```
 
+<div class="line-notes">
+
+- `import anthropic` Anthropic 官方 SDK。这段没有实跑(需要 Claude 的 key),下面的数据是按协议格式举的例子。
+- `client = anthropic.Anthropic()` 不传参数时,SDK 自动读环境变量 `ANTHROPIC_API_KEY`。
+- `tools = [{` 工具定义少了一层 `{"type": "function", "function": {...}}` 包装,直接是 name/description/input_schema。
+- `"input_schema": {` 就是 OpenAI 那边的 `parameters`,换了个名字,内容一样是 JSON Schema。
+- `messages = [{"role": "user"` 没有 system 消息。Anthropic 的 system 是 `create()` 的单独参数,不放在 messages 里。
+- `resp = client.messages.create(model=MODEL, max_tokens=1024` Anthropic 要求必须传 `max_tokens`,OpenAI 可以不传。
+- `if resp.stop_reason == "tool_use":` 对应 OpenAI 的 `finish_reason == "tool_calls"`。
+- `messages.append({"role": "assistant", "content": resp.content})` `resp.content` 是一个内容块列表,比如 `[TextBlock(text="我查一下"), ToolUseBlock(id="toolu_01…", name="get_weather", input={"city": "北京"})]`。整个列表原样放回,SDK 认自己的对象,不用转成字典。
+- `for block in resp.content:` 遍历内容块,只处理 `tool_use` 类型的,文字块跳过。
+- `out = get_weather(**block.input)` `block.input` 已经是 dict(比如 `{"city": "北京"}`),不用 `json.loads`,这是和 OpenAI 最明显的区别。
+- `results.append({"type": "tool_result", "tool_use_id": block.id` 结果用 `tool_use_id` 对上号,对应 OpenAI 的 `tool_call_id`。
+- `messages.append({"role": "user", "content": results})` 工具结果放在一条 **user** 消息里,不是单独的 tool 角色。
+- `print(final.content[0].text)` 最终回答也是内容块列表,取第一个文本块的 `.text`。
+
+</div>
+
 这段**看懂对照表就行,不要求跑**:要跑得有 Claude 的 API key,还要 `uv add anthropic`,并在 `.env` 里加 `ANTHROPIC_API_KEY` 和 `ANTHROPIC_MODEL`。没有 key 的话编辑器会在 `import anthropic` 下画红线,不用管。
 
 我个人觉得 Anthropic 的设计在两处更顺手:`input` 直接是对象,少一次解析;工具结果被看作「用户那边返回的信息」,放在 user 消息里,语义上也说得通。OpenAI 的单独 tool 角色则在日志里更好认。两种都要会,真到项目里通常用一层自己的适配代码把差异抹平,Day 27 讲框架时你会看到各家 SDK 都在做这件事。
@@ -576,6 +706,25 @@ except BadRequestError as e:
     print("报错原文:", e.message)
 ```
 
+<div class="line-notes">
+
+- `from openai import BadRequestError, OpenAI` `BadRequestError` 是 SDK 对 HTTP 400 的异常类,下面专门 catch 它。
+- `{"role": "user", "content": "北京和上海现在哪个更热?"}` 用两个城市的问题,让模型一次给出两个调用,才有东西可以「漏」。
+- `calls = [tc for tc in msg.tool_calls or [] if tc.type == "function"]` 实测 2 个调用:`call_00_swbILejPk8JCzB9R48oc7227`(北京)和 `call_01_lwpdX5eEIIjjrZ1OcCjx3865`(上海)。
+- `if len(calls) < 2:` 前置检查,不够两个调用就没法做实验。这次是 2 个,通过。
+- `raise SystemExit(f"这次模型只给了` 打印这句话后退出,不打 traceback。
+- `assistant: dict[str, Any] = {"role": "assistant"` assistant 消息里**两个调用都放了**,这是故意的:API 会检查后面是不是两个 id 都有回应。
+- `first = calls[0]` 只拿北京那个。
+- `result = get_weather(**json.loads(first.function.arguments))` 解析和调用写在一行:`json.loads` 得到 `{'city': '北京', 'unit': 'celsius'}`,`**` 展开后调用。
+- `messages.append({"role": "tool", "tool_call_id": first.id` 只回传了 `call_00_…` 这一条。
+- `print("已回传:", first.id, "  漏掉:", [tc.id for tc in calls[1:]])` `calls[1:]` 是从第二个开始的切片。实测:`已回传: call_00_swbILejPk8JCzB9R48oc7227   漏掉: ['call_01_lwpdX5eEIIjjrZ1OcCjx3865']`
+- `client.chat.completions.create(model=MODEL, messages=messages, tools=[WEATHER_TOOL])` 发出去后,DeepSeek 在服务端校验消息顺序,直接返回 400,所以下一行的 print 不会执行。
+- `except BadRequestError as e:` 400 被 SDK 转成这个异常,`as e` 拿到异常对象。
+- `print("状态码:", e.status_code)` 实测 `400`。
+- `print("报错原文:", e.message)` 实测:<br>`Error code: 400 - {'error': {'message': "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message) (request_id: …)", 'type': 'invalid_request_error', ...}}`<br>关键句:带 tool_calls 的 assistant 消息后面,每个 tool_call_id 都必须有一条 tool 消息回应。
+
+</div>
+
 `uv run python -m w2.day08_missing_result`,DeepSeek 上我跑出来是:
 
 ```text
@@ -618,6 +767,26 @@ if __name__ == "__main__":
     print(calculate("(22.4 * 9 / 5) + 32"))
     print(calculate("__import__('os').system('ls')"))
 ```
+
+<div class="line-notes">
+
+- `import ast` 把字符串解析成语法树,只解析、不执行。
+- `import operator as op` `operator` 模块把运算符做成了函数:`op.add(2, 3)` 等于 `2 + 3`。`as op` 是起个短名字。
+- `OPS = {ast.Add: op.add` 白名单:AST 运算符类型 → 计算函数。`ast.USub` 是一元负号(`-5` 的那个 `-`)。
+- `def calculate(expression: str) -> dict:` 下面用 `calculate("(22.4 * 9 / 5) + 32")` 走一遍。
+- `def ev(node):` 函数里套函数,递归地算一个节点。
+- `if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):` 递归的终点:数字节点直接返回值。`22.4`、`9`、`5`、`32` 都会走到这里。后半句的检查是为了排除字符串常量,比如 `'os'` 也是 Constant。
+- `if isinstance(node, ast.BinOp) and type(node.op) in OPS:` 二元运算。代入,按递归顺序追踪:<br>① 根节点 `... + 32`,先算 left<br>② left 是 `... / 5`,先算它的 left<br>③ `22.4 * 9` → `op.mul(22.4, 9)` = `201.6`<br>④ 回到 ②:`op.truediv(201.6, 5)` = `40.32`<br>⑤ 回到 ①:`op.add(40.32, 32)` = `72.32`
+- `return OPS[type(node.op)](ev(node.left), ev(node.right))` `type(node.op)` 是 `ast.Mult` → 查表得 `op.mul` → 用左右两边的结果调用。左右两边各自又是一次 `ev`,这就是递归。
+- `if isinstance(node, ast.UnaryOp) and type(node.op) in OPS:` 一元运算。`ast.dump` 看 `-5` 是 `UnaryOp(op=USub(), operand=Constant(value=5))`,算出来是 `op.neg(5)` = `-5`。实测 `-2 ** 2` 得 `-4`,因为 Python 里 `**` 比负号优先级高,等于 `-(2**2)`。
+- `raise ValueError(f"不支持的表达式成分: {ast.dump(node)[:40]}")` 白名单以外的一律拒绝。`__import__('os').system('ls')` 的根节点是 `Call`,走到这里,`ast.dump(node)[:40]` 是 `Call(func=Attribute(value=Call(func=Name`。
+- `return {"expression": expression, "result": ev(ast.parse(expression, mode="eval").body)}` 从里往外:`ast.parse(..., mode="eval")` 解析成表达式,`.body` 取出根节点,`ev(...)` 算出结果。实测返回 `{'expression': '(22.4 * 9 / 5) + 32', 'result': 72.32}`。
+- `except (SyntaxError, ValueError, ArithmeticError, RecursionError) as e:` 实测几种错误:<br>`1 +` → SyntaxError:`invalid syntax (<unknown>, line 1)`<br>`1/0` → ZeroDivisionError(属于 ArithmeticError):`division by zero`<br>`__import__(...)` → 上面自己抛的 ValueError
+- `return {"error": f"无法计算 '{expression}': {e}。` 实测 `calculate("1/0")` 返回 `{'error': "无法计算 '1/0': division by zero。只支持数字和 + - * / ** %"}`。后半句告诉模型能用什么,方便它换个写法。
+- `print(calculate("(22.4 * 9 / 5) + 32"))` 实测:`{'expression': '(22.4 * 9 / 5) + 32', 'result': 72.32}`
+- `print(calculate("__import__('os').system('ls')"))` 实测:`{'error': "无法计算 '__import__('os').system('ls')': 不支持的表达式成分: Call(func=Attribute(value=Call(func=Name。只支持数字和 + - * / ** %"}`。`ls` 根本没有执行。
+
+</div>
 
 ### calc.py 逐段读懂
 
@@ -752,6 +921,35 @@ else:
     print("5 轮还没结束,停下来,别让它无限调下去")
 ```
 
+<div class="line-notes">
+
+- `from collections.abc import Callable` `Callable` 用来标注「可调用的东西」(函数)的类型,下面 REGISTRY 用到。
+- `from w2.calc import calculate` 第二个工具,就是上面的安全计算器。
+- `CALC_TOOL: ChatCompletionToolParam = {` 计算器的工具定义,结构和 WEATHER_TOOL 一样。
+- `"description": "计算一个数学表达式` 「不要自己心算」这句是在劝模型把算术交给工具。实测模型确实乖乖调了 calculate。
+- `"expression": {"type": "string", "description": "Python 风格的算式` 给出例子,模型就会写出 `4.5 * 9 / 5 + 32` 这种 `ast` 能解析的格式,而不是 `4.5×9÷5+32`。
+- `TOOLS = [WEATHER_TOOL, CALC_TOOL]` 两个工具一起交给模型,由它决定先用哪个。
+- `REGISTRY: dict[str, Callable[..., dict]] = {` 工具名 → 函数本身(下面正文有拆解)。
+- `def run_tool(name: str, raw_args: str) -> dict:` 统一的执行入口:找函数 → 解析参数 → 调用 → 出错就包成 error。
+- `func = REGISTRY.get(name)` 实测 `run_tool("send_email", "{}")`:表里没有这个名字,`.get` 返回 None。
+- `return {"error": f"未知工具 {name}"}` 得到 `{'error': '未知工具 send_email'}`。模型偶尔会编出不存在的工具名,这里兜住。
+- `return func(**json.loads(raw_args))` 正常情况:`run_tool("calculate", '{"expression": "1+1"}')` → `calculate(expression="1+1")` → `{'expression': '1+1', 'result': 2}`。
+- `except Exception as e:` 这里有意接住所有异常,因为参数是模型生成的,什么错都可能出。实测两种:<br>参数名写错 `'{"expr": "1+1"}'` → `{'error': "TypeError: calculate() got an unexpected keyword argument 'expr'"}`<br>JSON 少了右括号 `'{"expression": "1+1"'` → `{'error': "JSONDecodeError: Expecting ',' delimiter: line 1 column 21 (char 20)"}`<br>`type(e).__name__` 取异常类名,让模型知道错在哪一类。
+- `{"role": "user", "content": "北京现在的气温换算成华氏度是多少?"}` 这个问题要两步:先查温度,再算换算。
+- `for round_no in range(1, 6):` `range(1, 6)` 是 1、2、3、4、5,最多 5 轮。用 `round_no` 而不是 `round`,是因为 `round` 是内置函数名,不要覆盖它。
+- `resp = client.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS)` 每轮都把完整历史发一次。
+- `calls = [tc for tc in msg.tool_calls or [] if tc.type == "function"]` 第 1、2 轮各有 1 个调用,第 3 轮是空列表。
+- `if not calls:` 没有调用说明模型要给最终回答了。
+- `print(f"[第 {round_no} 轮] 最终回答:", msg.content)` 这次实跑在第 3 轮走到这里:`[第 3 轮] 最终回答: 北京现在天气晴,气温 4.5°C,换算成华氏度是 **40.1°F**。`
+- `break` 跳出 for 循环,下面的 `else` 不会执行。
+- `assistant: dict[str, Any] = {"role": "assistant"` 每一轮的 assistant 消息都要放回去,所以这段写在循环里。
+- `for tc in calls:` 执行这一轮的所有调用。按轮次追踪这次实跑:<br>第 1 轮:`get_weather({"city": "北京", "unit": "celsius"})` → `temperature: 4.5`,messages 变成 4 条<br>第 2 轮:模型看到 4.5,调 `calculate({"expression": "4.5 * 9 / 5 + 32"})` → `result: 40.1`,messages 变成 6 条<br>第 3 轮:不再调用,输出最终回答
+- `result = run_tool(tc.function.name, tc.function.arguments)` 把名字和原始字符串交给 run_tool,解析也在里面做,出错不会让循环崩掉。
+- `print(f"[第 {round_no} 轮] {tc.function.name}({tc.function.arguments}) -> {result}")` 实测第 2 轮打印:`[第 2 轮] calculate({"expression": "4.5 * 9 / 5 + 32"}) -> {'expression': '4.5 * 9 / 5 + 32', 'result': 40.1}`
+- `else:` `for ... else`:循环正常跑完(没被 break 打断)才执行。这次第 3 轮就 break 了,不会执行到这里。
+
+</div>
+
 这里比往返脚本多了两样东西。一是 `REGISTRY` 字典,按工具名找函数,代替 `if name == ...` 一路写下去,明天 Day 9 的工具注册表就是它的升级版。二是外面套了一个最多 5 轮的 `for` 循环:模型很可能先查天气,看到 11.9 度之后才知道要算什么,第二轮再调计算器,只发一次请求是接不住的。`for ... else` 的 `else` 只在循环没被 `break` 打断时执行,也就是 5 轮都没拿到最终回答。
 
 `REGISTRY` 那一行拆开读:
@@ -836,6 +1034,27 @@ for i in range(5):
 
 print("5 次结果一致" if len(results) == 5 and len(set(results)) == 1 else "结果不一致,看看哪次不一样,试着改 description")
 ```
+
+<div class="line-notes">
+
+- `EXTRACT_TOOL: ChatCompletionToolParam = {` 这个工具不会被执行,只是借它的 schema 让模型交出结构化结果。
+- `"order_id": {"type": "string", "description": "订单号,形如 CL-12345;没有就填空字符串"},` 写清楚「没有就填空字符串」,模型就不会编一个订单号出来。
+- `"enum": ["退款", "发票", "登录", "其他"],` 分类只能从这四个里选。
+- `"description": "问题类型。重复扣款、多扣钱、要求退钱都算 退款",` 用户说的是「被扣了两次钱」,没出现「退款」两个字,靠这句把它归到退款。
+- `"required": ["order_id", "issue"],` 两个字段都必填。
+- `messages: list[Any] = [{"role": "user"` 只有一条 user 消息,不需要 system。
+- `results = []` 收集每次的结果,最后比较是否一致。
+- `for i in range(5):` 同一个问题问 5 次,看模型稳不稳定。`i` 是 0 到 4,打印时用 `i + 1`。
+- `tool_choice={"type": "function", "function": {"name": "extract_order"}},` 强制调用:模型不能直接说话,只能交出 extract_order 的参数。
+- `extra_body={"thinking": {"type": "disabled"}},` `extra_body` 里的字段会原样塞进请求体,用来传 SDK 不认识的厂商扩展参数。去掉这行,实测 DeepSeek 返回 400:`Thinking mode does not support this tool_choice`。
+- `tc = (resp.choices[0].message.tool_calls or [None])[0]` 拆开看:`tool_calls` 有值就取列表,是 None 就换成 `[None]`,再取 `[0]`。这样无论有没有调用都不会 IndexError,没有调用时 `tc` 是 None。
+- `if tc is None or tc.type != "function":` 防御性检查。强制调用下理论上不会发生,实测 5 次都没走到这里。
+- `args = json.loads(tc.function.arguments)` 实测每次都是 `{'order_id': 'CL-20931', 'issue': '退款'}`。
+- `print(f"第 {i + 1} 次:", args)` 实测 5 行都是 `第 N 次: {'order_id': 'CL-20931', 'issue': '退款'}`。
+- `results.append(json.dumps(args, ensure_ascii=False, sort_keys=True))` 转成字符串再存。`sort_keys=True` 让 key 按字母排序,得到 `{"issue": "退款", "order_id": "CL-20931"}`,这样两次结果即使 key 顺序不同,字符串也一样。转成字符串是因为 dict 不能放进 `set`。
+- `print("5 次结果一致" if len(results) == 5 and len(set(results)) == 1` `set` 去重,5 个一样的字符串去重后只剩 1 个。条件是 5 次都成功,并且去重后只剩一种结果。实测打印 `5 次结果一致`。
+
+</div>
 
 注意 `extra_body` 那一行。我实测过,DeepSeek 开着思考模式时指定 `tool_choice` 会直接 400:`Thinking mode does not support this tool_choice`。往返脚本没关思考也能跑,是因为它用的是默认的 `auto`。关掉思考以后,我连跑 5 次都是 `{'order_id': 'CL-20931', 'issue': '退款'}`。如果你的结果偶尔是「其他」,先改 `issue` 的 description,把「重复扣款算退款」写得更明白,这就是上面说的「description 是写给模型看的」。
 

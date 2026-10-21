@@ -257,6 +257,24 @@ for name, text in SAMPLES.items():
     print(f"{name}: {len(text)} 个字符 ≈ {n} 个 token，每字符 {n / len(text):.2f}")
 ```
 
+<div class="line-notes">
+
+- `load_dotenv()` 和 Day 0 一样,把 `.env` 读进环境变量。
+- `client = OpenAI(` 整个脚本共用这一个客户端,下面每次调用都复用它。
+- `MODEL = os.environ["LLM_MODEL"]` 实测值是 `deepseek-flash`。全大写的变量名是 Python 的约定,表示「常量,别改它」,语言本身不会拦。
+- `SAMPLES = {` 名字 → 文本 的 dict。`len()` 数的是字符数,实测:中文那句 26 个字符(全角逗号句号也各算 1 个),英文 74 个,编号 47 个。
+- `def prompt_tokens(text: str) -> int:` 给一段文本,返回 API 算出来的输入 token 数。
+- `messages=[{"role": "user", "content": text}],` 每次只放一条用户消息,里面就是要测的文本。
+- `max_tokens=1,` 只让模型输出 1 个 token。实测每次 `completion_tokens=1`,`finish_reason` 是 `"length"`,意思是被长度上限截断了;模型实际吐出来的是 `'Hi'`、`'您好'`、`'I'` 这种半句话。我们本来就不看输出,能省则省。
+- `assert resp.usage is not None` 下面正文讲了:用来消除编辑器的红线。实跑时 usage 从来没有空过。
+- `return resp.usage.prompt_tokens` 只取输入部分的 token 数。
+- `baseline = prompt_tokens("a")` 实测 `baseline = 5`。字母 `a` 本身占 1 个 token,另外 4 个是消息格式带的开销(角色标记、分隔符之类),每次请求都会有。
+- `for name, text in SAMPLES.items():` `.items()` 每次给出一个 `(名字, 文本)` 元组,`for` 把它解包成两个变量。第一轮是 `name="中文"`,`text="我的发票被重复扣款了，…"`。
+- `n = prompt_tokens(text) - baseline + 1` 减掉 baseline 就去掉了格式开销,但 baseline 里还含着 `a` 的那 1 个 token,多减了,所以要 `+ 1` 加回来。实测三轮:<br>中文:API 返回 20 → `20 - 5 + 1 = 16`<br>英文:API 返回 20 → `16`<br>编号:API 返回 26 → `22`
+- `print(f"{name}: {len(text)} 个字符` `{n / len(text):.2f}` 是除完保留两位小数。实测输出:<br>`中文: 26 个字符 ≈ 16 个 token，每字符 0.62`<br>`英文: 74 个字符 ≈ 16 个 token，每字符 0.22`<br>`编号: 47 个字符 ≈ 22 个 token，每字符 0.47`<br>中文 0.62 和文档说的 0.6 基本吻合;英文 0.22 比文档的 0.3 还少,因为这句全是常见短词,一个词常常就是一个 token;编号里的数字和连字符被切得很碎,47 个字符用了 22 个 token。同样长度,编号比英文贵一倍多。
+
+</div>
+
 ```bash
 cd agent-60-lab && uv run w1/count_tokens.py
 ```
@@ -292,9 +310,23 @@ for t in (0.0, 1.0, 1.5):
             max_tokens=20,
             extra_body={"thinking": {"type": "disabled"}},
         )
-        names.append(resp.choices[0].message.content.strip())
+        names.append((resp.choices[0].message.content or "").strip())
     print(f"temperature={t}: {len(set(names))} 种不同答案 -> {Counter(names).most_common(3)}")
 ```
+
+<div class="line-notes">
+
+- `from collections import Counter` `Counter` 是标准库里专门用来计数的 dict,`Counter(["a", "b", "a"])` 得到 `{'a': 2, 'b': 1}`。
+- `PROMPT = "给一家在线记账软件公司起一个中文名字` 要求「只输出名字」,这样每次的输出短而且好比较。
+- `for t in (0.0, 1.0, 1.5):` 外层循环:三档 temperature 各做一轮。
+- `names = []` 每一档开始前清空,只装这一档的 8 个答案。
+- `for _ in range(8):` 同一个问题问 8 次。循环变量用 `_` 是惯例写法,表示「这个变量我用不上」。
+- `temperature=t,` 这一档的温度。
+- `max_tokens=20,` 名字很短,20 个 token 足够,也防止模型不听话写一长段解释。
+- `names.append((resp.choices[0].message.content or "").strip())` `.strip()` 去掉前后的空格和换行,不然 `"轻账"` 和 `"轻账\n"` 会被当成两个不同的名字。前面的 `(… or "")` 和练习 1 里的 `assert` 是同一个道理:SDK 把 `content` 标成 `str | None`,直接 `.strip()` 编辑器会画红线。`or ""` 把 None 换成空字符串,红线消了,万一真返回 None 也不会崩。实跑 24 次 content 都有值。
+- `print(f"temperature={t}: {len(set(names))} 种不同答案` `set(names)` 去重后数个数就是「几种不同答案」;`Counter(names).most_common(3)` 取出现次数最多的前三个,次数相同时按第一次出现的先后排。这次实跑:<br>t=0.0:8 次是 `轻账 ×5、简账 ×3` → `2 种不同答案 -> [('轻账', 5), ('简账', 3)]`<br>t=1.0:`5 种不同答案 -> [('轻账', 3), ('随手记', 2), ('简账通', 1)]`,另外还有「账轻松」「易账通」<br>t=1.5:`6 种不同答案 -> [('随手记', 2), ('轻账', 2), ('云账通', 1)]`<br>temperature=0 也出了两种名字,正好印证「0 也不保证完全一样」。
+
+</div>
 
 跑完你会看到：temperature 越高，8 次里出现的不同名字越多。temperature = 0 时多数情况下是同一个名字，偶尔会有一两个不同，这正好印证了上面说的「0 也不保证完全一样」。把观察记下来。
 
@@ -325,9 +357,19 @@ for q in QUESTIONS:
     print("答：", resp.choices[0].message.content, "\n")
 ```
 
-比较两个回答。第一个很可能编出一段像模像样的政策，或者给出「一般 SaaS 公司的做法」。第二个加了一句「不确定就说不知道」，多数现代模型会老实承认。这说明提示词能缓解幻觉，但不能根治，后面我们会用 RAG 把真实政策送到它眼前。
+<div class="line-notes">
 
-**验收标准：** 三个脚本都跑通；能说出你用的模型下中文每字大约多少 token；能用自己的话解释练习 3 里第一个回答为什么会「编」。
+- `QUESTIONS = [` 两个问题只差后半句。第二个多了「不确定就说不知道,不要猜」。
+- `for q in QUESTIONS:` 依次问两次,每次都是全新的一轮对话,第二问看不到第一问。
+- `temperature=0,` 尽量让输出稳定,两个问题的回答差异才能归到提示词上,而不是随机采样的运气。
+- `print("问：", q)` `print` 传多个参数时,中间自动用空格隔开。
+- `print("答：", resp.choices[0].message.content, "\n")` 最后的 `"\n"` 是为了在两组问答之间多空一行。这次实跑:<br>问题 1 的回答是「抱歉,我无法确认"云簿 CloudLedger"这家公司的退款政策。我的训练数据中不包含这家公司的可靠信息,因此不能凭空给出具体条款……」,后面还列了三条去官网、问客服的建议,一共 140 个输出 token。<br>问题 2 直接回答「我不知道。我的知识库里没有关于……的信息」,48 个 token。<br>可见这次的模型第一问就没有编。新模型在「明显查不到的公司」上越来越会拒答,但这靠的是训练,不是保证。换个更像真事的问题(比如问它某个真实小公司的退款天数),还是可能编出来。
+
+</div>
+
+比较两个回答。第一个可能编出一段像模像样的政策，或者给出「一般 SaaS 公司的做法」；也可能直接说查不到。我用 deepseek-flash 实跑时它直接拒答了，新模型对「明显查不到的公司」越来越谨慎，但这是训练出来的倾向，不是保证，换个更像真事的问题照样可能编。第二个加了一句「不确定就说不知道」，多数现代模型会老实承认。这说明提示词能缓解幻觉，但不能根治，后面我们会用 RAG 把真实政策送到它眼前。
+
+**验收标准：** 三个脚本都跑通；能说出你用的模型下中文每字大约多少 token；能用自己的话解释练习 3 里第一个问题为什么有可能被「编」出来，以及第二个问题多的那句话起了什么作用。
 
 ## 名词解释
 

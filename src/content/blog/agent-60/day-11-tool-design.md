@@ -57,6 +57,27 @@ for i in range(1, 41):
 print("生成", len(list(root.glob("*.md"))), "篇")
 ```
 
+<div class="line-notes">
+
+- `import random` 用伪随机数造数据。
+- `random.seed(7)` 种子固定成 7,每次运行抽到的数字序列都一样,你造出来的 40 篇和我的一字不差。实测第一篇抽到:主题「价格调整」、负责人「陈静」、日期 2026-08-11、39 条讨论。
+- `root = Path("workspace/notes")` 相对路径,相对的是你运行命令的目录。在仓库根目录跑,就会生成 `agent-60-lab/workspace/notes/`。
+- `root.mkdir(parents=True, exist_ok=True)` `parents=True`:workspace 不存在就一起建出来;`exist_ok=True`:目录已经有了也不报错,所以脚本可以反复运行。
+- `topics = [` 8 个主题。只有主题刚好是「退款流程」的那几篇,才有机会藏进那条决定。
+- `people = [` 5 个负责人,写进每篇的第 2 行。
+- `for i in range(1, 41):` i 从 1 到 40,对应 meeting-01 到 meeting-40。
+- `topic = random.choice(topics)` 从列表里随机挑一个。实测 40 篇里主题是退款流程的有 6 篇:meeting-11、17、21、22、23、26。
+- `owner = random.choice(people)` 每次调用 random 都会消耗一个随机数,所以调用的顺序也会影响后面的结果。改了这里的顺序,整批数据都会变。
+- `lines = [f"# {topic} 周会纪要 #{i}"` 前 4 行是:标题、负责人、日期、空行。日期写成 `2026-0{randint(7, 9)}`,硬拼一个 0,是因为月份只会是一位数的 7~9。实测 meeting-01 的前 3 行是 `# 价格调整 周会纪要 #1`、`负责人: 陈静`、`日期: 2026-08-11`。
+- `for j in range(random.randint(30, 120)):` 每篇 30~120 条讨论。`randint` 两头都包含。实测 meeting-01 抽到 39 条,加上 4 行开头一共 43 行。
+- `lines.append(f"- 第 {j + 1} 条讨论` 讨论内容里也会随机提到「退款流程」,这是故意的。实测 meeting-01 的第 5 行就是 `- 第 1 条讨论:关于退款流程的细节,结论是需要客户确认`,所以搜「退款」会命中大量噪音,下面坏版本 grep 的那几万字符就是这么来的。
+- `if topic == "退款流程" and i % 3 == 0:` 两个条件都满足才写决定。`%` 是取余数,`i % 3 == 0` 就是 i 能被 3 整除。退款流程的 6 篇里只有 21 能被 3 整除,所以实测全库只有 **meeting-21** 有这条决定。
+- `lines.append("- 决定:` 追加在最后一行。meeting-21 有 37 条讨论,4 + 37 + 1 = 42,这条决定正好在第 42 行。
+- `(root / f"meeting-{i:02d}.md").write_text(` `{i:02d}` 表示补零到两位:1 → `01`,21 → `21`。`"\n".join(lines)` 用换行把每一行连起来。
+- `print("生成"` 实测输出 `生成 40 篇`。
+
+</div>
+
 然后是一组很多人第一反应会写出来的工具,本质上是把 `ls`、`cat`、`grep` 三个命令包了一层:
 
 ```python
@@ -64,7 +85,7 @@ print("生成", len(list(root.glob("*.md"))), "篇")
 import re
 from pathlib import Path
 
-from agent_loop import ToolRegistry
+from w2.agent_loop import ToolRegistry
 
 ROOT = Path("workspace/notes").resolve()
 bad = ToolRegistry()
@@ -93,9 +114,30 @@ def grep(p: str) -> dict:
     return {"result": hits}
 ```
 
+<div class="line-notes">
+
+- `import re` grep 用正则搜索,这是后面的一个坑。
+- `from w2.agent_loop import ToolRegistry` 复用 Day 9 的注册表,导入方式和 Day 9、Day 10 一样带 `w2.` 前缀,所以要在仓库根目录调用,比如 `uv run python -c "from w2.notes_tools_bad import grep; print(len(str(grep('退款'))))"`。
+- `ROOT = Path("workspace/notes").resolve()` 转成绝对路径,下面 ls 和 grep 返回的路径都会带上这一长串。
+- `bad = ToolRegistry()` 用 Day 9 的注册表,schema 照样自动生成。只是因为下面的参数没写 Annotated,生成出来的 schema 里没有任何参数说明。
+- `def ls() -> dict:` 名字是 Unix 黑话,模型大概能猜到意思,但说不准。
+- `"""列出文件"""` 描述只有 4 个字:列哪里的文件?什么时候该用?都没说。
+- `return {"files": [{"path": str(p)` 每个文件返回绝对路径、字节数和修改时间戳。实测第一条是 `{'path': '/…/workspace/notes/meeting-01.md', 'size': 2807, 'mtime': 1792624099.921519}`,40 条加起来 7,406 个字符(正文里写 7,158,差别来自我这边的目录路径更长,路径越长这个数越大)。`mtime` 是 Unix 时间戳,模型基本用不上。
+- `def cat(f: str) -> dict:` 参数叫 `f`,生成的 schema 实测是 `{"f": {"type": "string"}}`,没有任何描述。模型不知道该填文件名还是路径。
+- `return {"content": Path(f).read_text` `Path(f)` 是相对**当前工作目录**解析的,跟 ROOT 没有关系。实测 `cat("meeting-03.md")` 直接报 `FileNotFoundError`,一定要传 ls 返回的那串绝对路径才读得到。返回的还是**整篇**内容,不分段。
+- `def grep(p: str) -> dict:` 参数叫 `p`。是 pattern 还是 path?模型只能猜。
+- `hits = []` 收集所有命中的行,没有任何数量上限。
+- `for file in sorted(ROOT.glob("*.md")):` 40 篇全部扫一遍。
+- `for n, line in enumerate(` `enumerate(..., 1)` 让行号从 1 开始。
+- `if re.search(p, line):` 把模型给的字符串**当正则**来用。模型如果搜 `退款(`,括号不配对,实测通过注册表返回 `{"error": "error: missing ), unterminated subpattern at position 2"}`。描述里一个字都没提「这是正则」,模型很难猜到问题出在哪。
+- `hits.append(f"{file}:{n}:{line}")` 每条命中都带完整的绝对路径。
+- `return {"result": hits}` 实测 `grep("退款")` 命中 **412 行**,返回 67,570 个字符(正文的 65,098 同样是路径长度不同造成的)。模型真正需要的只是 meeting-21 第 42 行那一条。
+
+</div>
+
 这组工具功能上没有任何问题,一个耐心的程序员用它们完全可以找到答案。但交给模型,问题一大堆。名字 `ls`、`cat`、`grep` 是 Unix 黑话,模型大概能猜到意思,但不知道这里的 `grep` 搜的是内容还是文件名、支不支持中文。参数叫 `f`、`p`,没有描述,模型不知道 `cat` 要的是绝对路径还是文件名。描述只有两三个字,没说什么时候该用。`ls` 返回 40 条记录,每条带绝对路径、字节数、时间戳,模型既用不上 mtime 也看不懂 st_size 的意义。`grep` 没有任何数量限制。
 
-最后一点最致命。我在本机实际跑了一下:用 `grep` 搜「退款」,返回结果有 **65,098 个字符**。中文大致一个字一个 token 左右,这一次工具调用就可能吃掉几万 token 的上下文,而模型真正需要的只是其中一行。`ls` 一次也返回 7,158 个字符,几乎全是模型用不上的绝对路径和时间戳。
+最后一点最致命。我在本机实际跑了一下:用 `grep` 搜「退款」,返回结果有 **65,098 个字符**(每条命中都带绝对路径,你的仓库路径长短不同,这个数会差几千,量级一样)。中文大致一个字一个 token 左右,这一次工具调用就可能吃掉几万 token 的上下文,而模型真正需要的只是其中一行。`ls` 一次也返回 7,158 个字符(同样随路径长短浮动),几乎全是模型用不上的绝对路径和时间戳。
 
 ## 六条原则
 
@@ -131,7 +173,7 @@ Claude 官方文档给了一个很具体的标准:**每个工具描述至少三�
 
 **让模型选择详细程度。** `response_format` 参数让模型自己决定要简洁版还是详细版。Anthropic 文章里的数据是,简洁版大约只用详细版三分之一的 token。大部分时候模型只需要定位,定位到了再要细节。
 
-**大结果分页或截断,并告诉模型还有多少。** `notes_search` 默认只返回 5 条,超出时在 `hint` 里写「还有 409 条没显示,可以加关键词缩小范围」。`notes_read` 默认读 40 行,还有内容时返回 `next_start_line`。注意不是简单地砍掉,而是告诉模型「被砍了多少、怎么拿到剩下的」。Claude Code 默认把单次工具返回限制在 25,000 token,这是一个可以参考的量级,我们这里收得更紧。
+**大结果分页或截断,并告诉模型还有多少。** `notes_search` 默认只返回 5 条,超出时在 `hint` 里写「还有 407 条没显示,可以加关键词缩小范围」。`notes_read` 默认读 40 行,还有内容时返回 `next_start_line`。注意不是简单地砍掉,而是告诉模型「被砍了多少、怎么拿到剩下的」。Claude Code 默认把单次工具返回限制在 25,000 token,这是一个可以参考的量级,我们这里收得更紧。
 
 **用返回值引导下一步。** `hint` 字段、`next_start_line` 字段,以及 Day 10 待办清单工具返回的 `next`,都是在告诉模型接下来该怎么做。工具返回值本身就是提示词的一部分,别浪费它。
 
@@ -150,7 +192,7 @@ import re
 from pathlib import Path
 from typing import Annotated, Literal
 
-from agent_loop import ToolRegistry
+from w2.agent_loop import ToolRegistry
 
 ROOT = Path("workspace/notes").resolve()
 good = ToolRegistry()
@@ -220,6 +262,68 @@ def notes_read(
     return out
 ```
 
+<div class="line-notes">
+
+- `import difflib` 标准库,做「你是不是想找」的模糊匹配,不用装任何东西。
+- `from w2.agent_loop import ToolRegistry` 同上,带 `w2.` 前缀,从仓库根目录运行。
+- `ROOT = Path("workspace/notes").resolve()` 和坏版本一样,但下面不会再把这串路径返回给模型。
+- `good = ToolRegistry()` 新的注册表,只放两个工具。
+- `def _note_names() -> list[str]:` 下划线开头,不加 `@good.tool`,所以它不是工具,只是内部的小帮手。
+- `return sorted(p.stem for p in ROOT.glob("*.md"))` `.stem` 是去掉扩展名的文件名:`meeting-03.md` → `meeting-03`。括号里的写法是生成器表达式,直接交给 sorted 排序。
+- `def notes_search(` 名字带上了 `notes_` 前缀:搜的是会议纪要,以后工具多了也不会和别的 search 混淆。
+- `query: Annotated[str` 说明写清楚了「普通文本,不是正则」和「多个词空格分开,表示都要出现」。实测生成的 schema 里,这段话原样出现在 description 中。
+- `limit: Annotated[int` 默认 5,说明里写了最大 20。
+- `response_format: Annotated[Literal` 生成 `"enum": ["concise", "detailed"]`,模型只能二选一,填不出第三种。
+- `"""在团队的会议纪要库` 描述的第一句:做什么、范围多大(约 40 篇)、返回什么。
+- `用户问「之前开会怎么定的」` 第二句:什么时候用,用完下一步该干嘛。
+- `搜索是简单的关键词包含匹配` 第三句:限制和对策。实测搜「退钱」返回 total 0,换成「退款」就有结果。
+- `不要用它来列出全部笔记。"""` 第四句:什么时候不该用。
+- `words = query.split()` `split()` 不带参数时按任意空白切开,并去掉空串。实测 `"退款 审批".split()` 得到 `['退款', '审批']`。
+- `limit = max(1, min(limit, 20))` 把 limit 夹在 1~20 之间。实测传 99,返回 20 条;传 0,返回 1 条。这就是「宽进严出」:模型传错也不报错,直接帮它修正到合理范围。
+- `hits = []` 先收集全部命中,最后再截断,这样才知道总共有多少条。
+- `for path in sorted(ROOT.glob("*.md")):` 按文件名顺序扫,结果顺序是稳定的。
+- `lines = path.read_text(encoding="utf-8").splitlines()` 拆成行列表,下面的 detailed 模式要用 `lines[0]`、`lines[1]`、`lines[2]` 取标题、负责人和日期。
+- `for n, line in enumerate(lines, 1):` 行号从 1 开始,和编辑器里看到的一致,模型拿去给 notes_read 用时不用换算。
+- `if all(w in line for w in words):` `all(...)` 要求每个词都在这一行里,用的是 `in` 做子串判断,不是正则。实测「退款 审批」只命中 1 行:meeting-21 第 42 行。只搜「退款」则命中 412 行。
+- `hit = {"note": path.stem` 只给三样东西:笔记名、行号、这一行的文字。`.strip()[:120]` 去掉首尾空白,最多保留 120 个字符。
+- `if response_format == "detailed":` 模型说要细节时才多给。
+- `hit["title"] = lines[0].lstrip("# ")` 注意 `lstrip("# ")` 的意思是「从左边去掉所有 `#` 和空格字符」,不是去掉 `"# "` 这个前缀。这里碰巧效果一样。实测得到 `退款流程 周会纪要 #21`。
+- `hit["owner"] = lines[1].replace(` 实测 `负责人: 张伟` → `张伟`。
+- `hit["date"] = lines[2].replace(` 实测 `2026-09-21`。
+- `hit["context"] = [` 本意是取「上一行 + 这一行 + 下一行」。n 是从 1 开始的行号,列表下标从 0 开始,所以切片 `lines[n-2:n+1]` 对应的是第 n-1、n、n+1 行。实测 n=42 是最后一行,没有下一行,只拿到 2 条:`['- 第 37 条讨论:关于价格调整的细节,结论是继续观察', '- 决定:超过 30 天的订单退款需要财务主管审批']`。
+- `hits.append(hit)` 实测 concise 版本的一条命中是 `{"note": "meeting-21", "line": 42, "text": "- 决定:超过 30 天的订单退款需要财务主管审批"}`。
+- `if not hits:` 一条都没命中时,不返回空列表让模型干瞪眼。
+- `return {"total": 0, "hits": []` 实测搜「退钱」返回 `{'total': 0, 'hits': [], 'hint': "没有一行同时包含 ['退钱']。试试更少或更换关键词,比如只搜其中一个词。"}`。
+- `out = {"total": len(hits), "hits": hits[:limit]}` total 是总数,hits 只给前 limit 条。
+- `if len(hits) > limit:` 实测搜「退款」:412 > 5,条件成立。
+- `out["hint"] = f"还有` 实测 hint 是 `还有 407 条没显示。可以加关键词缩小范围,或调大 limit(最大 20)。`(412 - 5 = 407)。
+- `return out` 实测「退款 审批」的完整返回是 `{"total": 1, "hits": [{"note": "meeting-21", "line": 42, "text": "- 决定:超过 30 天的订单退款需要财务主管审批"}]}`,一共 95 个字符。
+- `def notes_read(` 读取「指定的行范围」,而不是整篇。
+- `note: Annotated[str` 说明里直接告诉模型「用 notes_search 返回的 note 字段」,把两个工具串了起来。
+- `start_line: Annotated[int` 默认从第 1 行开始。
+- `max_lines: Annotated[int` 默认读 40 行,最多 200 行。
+- `"""读取一篇会议纪要的指定行范围` 描述里写了分段读的方法:看 `next_start_line`。
+- `note = note.strip().removesuffix(".md")` `removesuffix`(Python 3.9+)只去掉结尾的 `.md`,没有就原样返回。实测 `'meeting-03.md'` → `'meeting-03'`。
+- `m = re.fullmatch(` `fullmatch` 要求**整个字符串**都符合模式。`(?:meeting-?)?` 表示「meeting 加可有可无的横杠」这一整段都可以省略,`(?:...)` 是不捕获的分组。实测 `'3'`、`'meeting-3'`、`'meeting03'` 都能匹配,`'meeting-003'` 不行(超过两位数字)。
+- `if m:` 能匹配上就统一改写成标准格式。
+- `note = f"meeting-{int(m.group(1)):02d}"` `int('3')` → 3,再补零 → `meeting-03`。实测 `'3'`、`'meeting-3'`、`' meeting03 '` 三种写法都读到了同一篇:`# 订阅升级 周会纪要 #3`。
+- `path = ROOT / f"{note}.md"` 拼出完整路径。注意这里没有坏版本那种「相对当前目录」的问题。
+- `if not path.exists():` 找不到文件时,给出能指导模型改正的报错。
+- `close = difflib.get_close_matches(` 按相似度找最接近的名字,最多 3 个。实测 `'meetng-03'` 得到 `['meeting-03', 'meeting-40', 'meeting-39']`,排第一的就是正确答案。
+- `tip = f"你是不是想找` 有相近的就列出来;一个都没有(实测传 `'会议3'`),就建议先用 notes_search 搜。
+- `return {"error": f"没有叫` 实测:`{"error": "没有叫 'meetng-03' 的笔记。笔记名格式是 'meeting-两位数字'。你是不是想找 ['meeting-03', 'meeting-40', 'meeting-39']?"}`。错在哪、正确格式是什么、下一步怎么做,三样都有了。
+- `lines = path.read_text(encoding="utf-8").splitlines()` meeting-21 实测一共 42 行。
+- `max_lines = max(1, min(max_lines, 200))` 和 search 里的 limit 一样,把取值夹在合理范围内。
+- `start = max(1, start_line)` 模型传 0 或负数,都当成从第 1 行开始。
+- `chunk = lines[start - 1:start - 1 + max_lines]` 行号转成下标要减 1。代入 `notes_read("meeting-21", start_line=40, max_lines=5)`:切片 `lines[39:44]`,但文件只有 42 行,切片越界不会报错,只返回 3 行。
+- `end = start + len(chunk) - 1` 实际读到的最后一行号:40 + 3 - 1 = 42。
+- `out = {"note": path.stem, "total_lines"` 每行前面加上行号,`enumerate(chunk, start)` 让编号从 start 开始。上面的例子返回 `["40: - 第 36 条讨论:…", "41: - 第 37 条讨论:…", "42: - 决定:超过 30 天的订单退款需要财务主管审批"]`。
+- `if end < len(lines):` 后面还有内容,才给出继续读的位置。上面的例子 42 < 42 不成立,所以没有 next_start_line。
+- `out["next_start_line"] = end + 1` 代入默认参数 `notes_read("meeting-21")`:读到第 1~40 行,`end=40 < 42`,返回 `next_start_line: 41`,模型下一次从 41 行接着读就行。
+- `return out` 实测 `notes_read("meeting-3", max_lines=3)` 返回 `{"note": "meeting-03", "total_lines": 46, "lines": ["1: # 订阅升级 周会纪要 #3", "2: 负责人: 陈静", "3: 日期: 2026-08-11"], "next_start_line": 4}`,和正文给出的真实输出一致。
+
+</div>
+
 我在本机不调模型、直接调用工具函数,对比了两组工具的返回(这些是真实输出):
 
 ```text
@@ -277,7 +381,7 @@ Anthropic 推荐的流程是评测驱动的:先准备一批真实的多步任务
 
 ## 动手练习
 
-**练习 1:生成数据并对比返回大小。** 运行 `make_notes.py`,然后不调模型,直接调用两组工具,把返回的字符数记下来。确认你得到的数字和上文的量级一致。
+**练习 1:生成数据并对比返回大小。** 在仓库根目录运行 `uv run python -m w2.make_notes`,然后不调模型,直接调用两组工具,把返回的字符数记下来。确认你得到的数字和上文的量级一致。
 
 **练习 2:同一个问题,两组工具。** 用 Day 9 的 `Agent` 分别挂坏工具和好工具,问同一个问题:「之前开会对超过 30 天的订单退款是怎么定的?谁负责的那次会?」。每组跑 3 次,填下表(空表,填你的实测):
 

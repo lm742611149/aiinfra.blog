@@ -155,7 +155,7 @@ from llm import chat
 from prompts import build_messages
 from retrieve import CHUNKS, retrieve
 
-MIN_RERANK = float(os.environ.get("MIN_RERANK_SCORE", "0.05"))  # 用 calibrate_threshold.py 校准
+MIN_RERANK = float(os.environ.get("MIN_RERANK_SCORE", "0.01"))  # 用 calibrate_threshold.py 校准
 CITE = re.compile(r"\[(kb-\d{3}#\d+)\]")
 REFUSAL = "帮助中心里没有找到这个问题的说明,建议转人工客服。"
 
@@ -213,11 +213,45 @@ if __name__ == "__main__":
     main()
 ```
 
+<div class="line-notes">
+
+- `"""W3 小项目:带引用出处的 CloudLedger 文档问答 Agent` 文件开头的 docstring 把一轮的流程和三个命令都写清楚了,别人打开文件先看这里就知道怎么用。下面的数据来自我在临时库里按文章完整跑的一遍(Day 16–20 的代码都按文章版本)。
+- `from compaction import compact` Day 20 的历史压缩:token 超过阈值时,把旧对话总结成一段摘要。
+- `from prompts import build_messages` Day 19 的拼 prompt 函数,返回 `[system 消息, user 消息]` 两个字典。
+- `from retrieve import CHUNKS, retrieve` 同时拿到检索函数和 `{块 id: Chunk}` 字典,后者用来把引用 id 换成文章标题。import 时就会连数据库、建 BM25。
+- `MIN_RERANK = float(os.environ.get("MIN_RERANK_SCORE", "0.01"))` 我的 `.env` 里没配,所以用默认的 0.01。这个数是下面 `calibrate_threshold.py` 在我的评估集上校准出来的,怎么定的见那一节。环境变量是字符串,要 `float()` 转一下。
+- `CITE = re.compile(r"\[(kb-\d{3}#\d+)\]")` 匹配 `[kb-002#1]` 这样的引用。方括号在正则里有特殊含义,要写成 `\[`、`\]`;圆括号是分组,`findall` 只返回括号里的部分,所以拿到的是 `kb-002#1`,不带方括号。
+- `REFUSAL = "帮助中心里没有找到这个问题的说明,建议转人工客服。"` 拒答话术写成常量,和 prompt 里要求模型说的那句一致,前端或评测要识别拒答时只认这一句。
+- `hits = retrieve(question, k=4, mode="hybrid+rerank", history=history, use_rewrite=bool(history))` `bool([])` 是 False、`bool([...])` 是 True:第一轮没有历史,不改写,rerank 用原话打分;之后每轮都改写,rerank 用改写补全后的问法打分(Day 18 `retrieve` 里的 `rerank_q`)。实测第一轮「我们是年付的专业版,买了十天,能退吗」返回 `kb-002#1 0.703`、`kb-002#2 0.048`、`kb-002#3 0.019`、`kb-005#2 0.018`。
+- `if not hits or hits[0][1] < MIN_RERANK:` `hits[0][1]` 是第一名的 rerank 分。下面五轮是按「跑起来」那一节的对话完整实跑的:<br>① 第一轮 0.703 ≥ 0.01,放行。<br>② 追问「那退款前要做什么准备吗」,改写成 `['年付专业版退款前需要准备什么']`,rerank 拿这句补全后的问法打分,第一名 0.075,放行,回答引用了《如何申请退款》的 kb-003#1 和 kb-003#2。最早的版本 rerank 拿的是这半句原话,第一名只有 0.037,在这里被拦下拒答了,这就是 Day 18 `retrieve` 里加 `rerank_q` 的原因。<br>③「发票抬头也写错了,一起处理」改写成 3 条(发票抬头怎么改、已开票怎么红冲、退款前的红冲流程),第一名 kb-007#1《修改发票抬头》0.994,第二名 kb-003#2 0.919,发票和退款都检索到了。<br>④「你们有学生优惠吗」改写成 `['学生优惠']`,第一名 0.006 < 0.01,拒答,不调生成模型。<br>⑤「好的谢谢」改写原样返回 `['好的谢谢']`,rerank 用原话打分,第一名 0.006,同样回了那句拒答话术。寒暄回「没找到,建议转人工」显然不合适,更好的做法是在检索之前先判断要不要查资料,留给你当练习。
+- `return REFUSAL, []` 拒答时连生成模型都不调,省一次调用。返回空列表,所以拒答之后 `/sources` 什么都不打印。
+- `chunks = [c for c, _ in hits]` 只要块,不要分数。
+- `system, user = build_messages(question, chunks)` 函数返回长度为 2 的列表,直接解包成两个变量。实测第一轮 user 消息有 537 个字符:4 块资料加问题。
+- `reply = chat([system, *history, user], temperature=0)` `*history` 把历史列表展开放到中间,相当于 TS 的 `[system, ...history, user]`。顺序是:规则 → 之前的问答 → 本轮资料和问题。
+- `given = {c.id for c in chunks}` 本轮给模型的块 id 集合,第一轮是 `{'kb-002#1', 'kb-002#2', 'kb-002#3', 'kb-005#2'}`。
+- `bad = [cid for cid in CITE.findall(reply) if cid not in given]` 拿一段假回答测:`"资料里写了 [kb-002#1],另外参见 [kb-002#4] 和 [kb-002#1]"`,`findall` 得到 `['kb-002#1', 'kb-002#4', 'kb-002#1']`;假设本轮只给了 `{'kb-002#1', 'kb-002#3'}`,`bad = ['kb-002#4']`。
+- `reply += f"\n(注意:回答里的引用 {', '.join(sorted(set(bad)))} 不在本轮资料中,请人工核对)"` `set` 去重、`sorted` 排序,同一个假引用出现两次也只报一次。
+- `history: list[dict] = []` 对话历史,只存问答文本。
+- `last_hits: list = []` 上一轮的检索结果,给 `/sources` 用。
+- `q = input("\n你:").strip()` 读一行输入,去掉首尾空格。
+- `except (EOFError, KeyboardInterrupt):` 按 Ctrl+D(输入结束)或 Ctrl+C 时不打印一大段报错,直接退出循环。我用管道喂输入测试时,输入读完就是走这里退出的。
+- `if not q:` 直接回车,什么也不做,继续下一轮。
+- `history, last_hits = [], []` 同时清空两个变量。
+- `for c, s in last_hits:` 打印上一轮每块的分数、id、标题和小节。
+- `print(f"  {s:.3f}  [{c.id}] {c.title} > {c.section}\n         {c.text.splitlines()[-1][:60]}…")` `splitlines()[-1]` 取块正文的最后一行,`[:60]` 截前 60 个字。第一轮之后输入 `/sources`,第一条实测是:<br>`0.703  [kb-002#1] 退款政策 > 年付套餐`<br>`例如年付专业版 468 元,折合每月 39 元。在第 3 个月中途取消,前 2 个月加当月共 3 个月不退,退剩余 9 …`
+- `reply, last_hits = answer_turn(q, history)` 注意传进去的是**本轮之前**的历史,本轮问答在下面才加进去。
+- `cited = sorted(set(CITE.findall(reply)))` 第一轮这次实跑的回答里 `[kb-002#1]` 出现了 4 次,去重后 `cited = ['kb-002#1']`。
+- `print("来源:" + ";".join(f"{cid} {CHUNKS[cid].title}" for cid in cited if cid in CHUNKS))` 打印 `来源:kb-002#1 退款政策`。`if cid in CHUNKS` 防止模型编了一个根本不存在的 id,`CHUNKS[cid]` 会 `KeyError`。
+- `history += [{"role": "user", "content": q}, {"role": "assistant", "content": reply}]` 一轮加两条。拒答也会存进历史,下一轮模型知道上一句没答上来。
+- `history = compact(history, keep_last_turns=3, trigger_tokens=2000)` 没超过 2000 token 时原样返回,不调模型。超过了才把较早的几轮总结成一条摘要,只保留最近 3 轮原文。
+
+</div>
+
 注意 `compact` 我今天改了一处:Day 20 的版本在第二次压缩时,会把第一次的摘要原样保留,再加一段新摘要,聊得越久摘要叠得越多。现在的版本会把旧摘要也交给模型一起总结,永远只保留一段。Day 20 的代码我已经同步更新了,如果你是先抄了旧版,记得改过来。这种「用了一阵才发现的问题」,在真实项目里太常见了,所以要有长对话的测试用例。
 
 ### 校准拒答阈值
 
-`MIN_RERANK_SCORE` 默认给的 0.05 只是一个占位值。rerank 分数的分布和 embedding 相似度一样依赖模型,必须在自己的数据上校准。办法是用评估集里「有答案」和「无答案」两类问题,分别看 rerank 最高分落在哪:
+`MIN_RERANK_SCORE` 的默认值 0.01 是我在自己的评估集上定的,换了数据就要重新定。rerank 分数的分布和 embedding 相似度一样依赖模型,必须在自己的数据上校准。办法是用评估集里「有答案」和「无答案」两类问题,分别看 rerank 最高分落在哪:
 
 ```python
 # agent-60-lab/w3/calibrate_threshold.py
@@ -240,7 +274,30 @@ if __name__ == "__main__":
     print("阈值应落在「无答案的最高分」和「有答案的最低分」之间;两者重叠时,宁可偏低(少拒答),再靠 prompt 兜底。")
 ```
 
-理想情况下,两组分数之间有一道清晰的缝,阈值放在缝里。现实中经常会重叠,比如「你们支持微信支付吗」和《错误码 E3001:支付失败》有一定相关性,rerank 分数不会太低。重叠时我倾向于把阈值设得偏低,只拦住明显无关的;剩下的交给 prompt 里「资料不足就说不知道」那条规则兜底。两道防线比一道稳。只有 4 条无答案问题当然太少,这也是给评估集加题的理由。
+<div class="line-notes">
+
+- `from eval_retrieval import load_eval` Day 19 的函数,把 `data/eval/rag_eval.jsonl` 读成字典列表。每行一条,比如 `{"id": "q01", "question": "年付专业版用了两个月,想退款可以吗", "expected_docs": ["kb-002"], "type": "policy", …}`。
+- `rows = load_eval()` 实测 30 条:26 条有答案,4 条无答案。
+- `scores = {"有答案": [], "无答案": []}` 两组分数分开收集。
+- `hits = retrieve(row["question"], k=1, mode="hybrid+rerank")` 只要第一名,因为拒答判断看的就是最高分。30 个问题每个都要调一次 embedding 和一次 rerank。
+- `top = hits[0][1] if hits else 0.0` 有结果就取第一名的分数,没有就当 0。
+- `group = "有答案" if row["expected_docs"] else "无答案"` 无答案的题 `expected_docs` 是空列表,空列表为假。
+- `scores[group].append(top)` 比如第一题打印 `0.930  有答案  年付专业版用了两个月,想退款可以吗`。
+- `for g, s in scores.items():` 两组各算一次。
+- `s.sort()` 原地从小到大排序,所以 `s[0]` 是最低分、`s[-1]` 是最高分。注意 `sort()` 不返回新列表,别写成 `s = s.sort()`,那样会得到 None。
+- `print(f"{g}: 最低 {s[0]:.3f}  最高 {s[-1]:.3f}  共 {len(s)} 条")` 这次实跑:有答案最低 0.006、最高 0.995;无答案最低 0.002、最高 0.105。两组**重叠**了:有答案里「老板想看所有账但不能让他改」只有 0.006、「买错了能把钱要回来吗」0.042,都比无答案的「有没有手机 App」0.105 低。阈值怎么取,下面正文按这组数逐个算了一遍。
+
+</div>
+
+理想情况下,两组分数之间有一道清晰的缝,阈值放在缝里。现实中经常会重叠,比如「你们支持微信支付吗」和《错误码 E3001:支付失败》有一定相关性,rerank 分数不会太低。我这次的数据,无答案 4 条是 0.002、0.004、0.076、0.105,有答案最低的两条是 0.006 和 0.042。拿几个候选阈值算一下:
+
+| 阈值 | 有答案被误拒 | 无答案被拦住 |
+| --- | --- | --- |
+| 0.05 | 2 条(0.006、0.042) | 2 条(0.002、0.004) |
+| 0.01 | 1 条(0.006) | 2 条(0.002、0.004) |
+| 0.005 | 0 条 | 2 条(0.002、0.004) |
+
+0.005 在这 30 题上最好看,但它卡在 0.004 和 0.006 之间,缝只有 0.002,换一批题多半就不成立了,这种数是对着评估集调出来的,不可信。0.05 白白多误拒一条能答的「买错了能把钱要回来吗」,换来的拦截数却和 0.01 一样。所以我把默认值定成 0.01:只拦住明显无关的,剩下的(「微信支付」0.076、「手机 App」0.105)交给 prompt 里「资料不足就说不知道」那条规则兜底,两道防线比一道稳。「老板想看所有账但不能让他改」这条 0.006 被误拒,问题不在阈值,是 rerank 没看懂这种绕弯的说法,该去改检索,而不是把阈值压到 0.005 去迁就它。只有 4 条无答案问题当然太少,这也是给评估集加题的理由。
 
 ### 跑起来
 
@@ -265,7 +322,7 @@ uv run python w3/docqa.py                    # 开聊
 你:发票抬头也写错了,一起处理       ← 多问题;看是否同时检索到发票和退款
 你:/sources                        ← 看来源
 你:你们有学生优惠吗                ← 无答案;看是被阈值拦住,还是模型自己说不知道
-你:好的谢谢
+你:好的谢谢                    ← 寒暄;看它是被改写成上一轮的问题,还是原样走到拒答
 ```
 
 ### 项目分数和说明

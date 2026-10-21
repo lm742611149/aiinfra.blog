@@ -96,6 +96,28 @@ for _ in range(10):  # 最多转 10 圈
         messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result, ensure_ascii=False)})
 ```
 
+<div class="line-notes">
+
+- `import json` 模型给的参数是 JSON 字符串,要用 `json.loads` 解开;工具结果要用 `json.dumps` 变回字符串塞进消息。
+- `from typing import Any` 下面要把 `messages` 标成 `list[Any]`,原因见那一行。
+- `from dotenv import load_dotenv` 从仓库根目录的 `.env` 读 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`,这样 key 不用写进代码。
+- `from w2.tools_def import WEATHER_TOOL` 复用 Day 8 手写的那份 schema。`w2.` 开头的写法要求你在仓库根目录用 `-m w2.minimal_loop` 运行,Python 才能找到 `w2` 这个包。
+- `load_dotenv()` 必须在下面 `os.environ[...]` 之前执行,否则会报 `KeyError: 'LLM_BASE_URL'`。
+- `client = OpenAI(` 拿 OpenAI 兼容协议连 DeepSeek。实测 `.env` 里 `LLM_BASE_URL=https://api.deepseek.com`、`LLM_MODEL=deepseek-flash`。
+- `messages: list[Any] = [` 整个对话历史就是这一个列表,开头只有 1 条 user 消息。标成 `list[Any]` 是为了让编辑器别跟 SDK 的消息类型较劲,运行时没区别。
+- `for _ in range(10):` `_` 表示「循环变量我用不上」。最多转 10 圈,是防止模型一直调工具停不下来的保险丝。实测这个问题只转了 2 圈就结束了。
+- `msg = client.chat.completions.create(` 每一圈都把**完整的 messages** 发出去。实测第 1 圈发 1 条,第 2 圈发 5 条。
+- `).choices[0].message` 只要第一个候选的 message。第 1 圈实测返回:`content='我来查一下这三个城市现在的天气。'`,`tool_calls` 有 3 个,分别是 `get_weather({"city": "北京"})`、上海、广州,一次性并行要了三个工具。用量是 prompt 363 / completion 137 token。
+- `messages.append(msg.model_dump(exclude_none=True))` 把模型这一轮的回复原样放回历史。实测 dump 出来的 key 是 `['content', 'role', 'tool_calls', 'reasoning_content']`,每个 tool_call 里还带了一个 `"index": 0`。`index` 这种多余字段就是正文说的「偷懒写法」的风险:DeepSeek 不在意,换个严格的厂商就可能报错。
+- `if not msg.tool_calls:` 退出条件:模型这一轮没要工具,就说明它觉得可以直接回答了。第 1 圈有 3 个 tool_calls,不进这里;第 2 圈 `tool_calls` 为空,进来。
+- `print(msg.content)` 第 2 圈实测打印的回答开头是「**广州最热,21.6°C。**」,后面列了一张表:广州 21.6°C 晴、上海 16.2°C 多云、北京 4.5°C 晴。打印完 `break` 跳出循环。
+- `for tc in msg.tool_calls:` 第 1 圈要了 3 个工具,这里就循环 3 次,`tc` 依次是北京、上海、广州那三个调用。
+- `if tc.type != "function":` 实测 `tc.type` 都是 `"function"`,这行不会触发。它的作用主要是让编辑器知道下面的 `tc.function` 一定存在。
+- `result = get_weather(**json.loads(tc.function.arguments))` 从里往外读:`tc.function.arguments` 是**字符串** `'{"city": "北京"}'` → `json.loads` 变成字典 `{'city': '北京'}` → `**` 把字典展开成关键字参数,等于 `get_weather(city='北京')`。实测返回 `{'city': '北京', 'country': '中国', 'temperature': 4.5, 'unit': 'celsius', 'weather': '晴', 'wind_kmh': 0.6}`。
+- `messages.append({"role": "tool"` 把结果作为 tool 消息放回历史,`tool_call_id` 要和上面那个 tc 的 id 对上(实测像 `call_00_H77zlrkgjD3hMR7JVr129491`),模型靠它知道哪个结果对应哪次调用。`ensure_ascii=False` 让中文保持原样;不加的话「北京」会变成 `北京`,模型也能读懂,但更费 token。3 个结果放完,messages 从 2 条变成 5 条(user + assistant + 3 个 tool),进入第 2 圈。
+
+</div>
+
 在仓库根目录用 `uv run python -m w2.minimal_loop` 运行。
 
 如果你照着更早的写法写成 `messages = [{"role": "user", ...}]`、循环里直接用 `tc.function`,编辑器会在这两处画红线,但程序照样能跑。原因和 Day 8 一样:第一处,编辑器把 `messages` 推断成「字符串到字符串的字典列表」,和 SDK 要求的消息类型对不上,所以标成 `list[Any]` 放宽;第二处,`tool_calls` 里的元素可能是 function 工具也可能是 custom 工具,只有前者有 `.function`,先用 `if tc.type != "function": continue` 排除掉,编辑器就知道下面一定是 function 了。
@@ -240,6 +262,69 @@ class Agent:
         return d
 ```
 
+<div class="line-notes">
+
+- `import inspect` 用来读函数的签名(参数名、默认值)和 docstring,schema 就是从这些信息生成的。
+- `from collections.abc import Callable` `Callable` 表示「可以调用的东西」,这里就是指工具函数。
+- `from typing import Annotated, Any, Literal, get_args, get_origin, get_type_hints` 后三个是拆类型标注的工具:`get_origin` 问「这是什么外壳」,`get_args` 取「壳里装了什么」,`get_type_hints` 取一个函数所有参数的类型。
+- `PY2JSON = {` Python 类型到 JSON Schema 类型名的对照表,比如 `str` 对应 `"string"`,`int` 对应 `"integer"`。
+- `def _param_schema(tp: Any) -> dict:` 给**一个参数**生成 schema。函数名前面的下划线是约定,表示「模块内部用,别从外面调」。
+- `desc = None` 先假设这个参数没有说明文字。
+- `if get_origin(tp) is Annotated:` 拿 Day 9 demo 里的 `unit` 参数代入:`tp = Annotated[Literal["celsius", "fahrenheit"], "温度单位"]`,实测 `get_origin(tp)` 是 `typing.Annotated`,条件成立。如果是普通的 `str`,`get_origin(str)` 是 `None`。
+- `tp, desc = get_args(tp)[0], get_args(tp)[1]` 实测 `get_args(tp)` 是 `(Literal['celsius', 'fahrenheit'], '温度单位')`。拆开后 `tp = Literal['celsius', 'fahrenheit']`,`desc = '温度单位'`。这是元组拆包,一行给两个变量赋值。
+- `if get_origin(tp) is Literal:` 剥掉 Annotated 以后再看里面那层:`get_origin(Literal[...])` 是 `typing.Literal`,成立。
+- `schema = {"type": "string", "enum": list(get_args(tp))}` `get_args` 拿到 `('celsius', 'fahrenheit')`,转成列表就是 enum。这里假设 Literal 里放的都是字符串。
+- `schema = {"type": PY2JSON.get(tp, "string")}` 不是 Literal 的情况走这里。`dict.get(key, 默认值)`:`str` 查到 `"string"`,`int` 查到 `"integer"`。查不到的一律当成 string,实测 `list[str]` 就得到 `{'type': 'string'}`,这是正文说的「故意简化」。
+- `if desc:` 有说明文字才加 description。实测 `unit` 最终是 `{'type': 'string', 'enum': ['celsius', 'fahrenheit'], 'description': '温度单位'}`。
+- `class ToolRegistry:` 注册表负责两件事:登记工具(生成 schema),以及按名字执行工具。
+- `self.funcs: dict[str, Callable] = {}` 名字 → 函数的映射。demo 注册完以后实测是 `['get_weather', 'calculate', 'read_file']` 三个 key。
+- `self.schemas: list[Any] = []` 发给模型的 `tools=` 列表,和 funcs 一一对应。
+- `def tool(self, fn: Callable) -> Callable:` 这是一个装饰器:`@reg.tool` 写在函数上面,等于 `get_weather = reg.tool(get_weather)`。
+- `hints = get_type_hints(fn, include_extras=True)` 实测拿 demo 的 get_weather 代入:`{'city': Annotated[str, "城市名,中文或英文,例如 '北京'"], 'unit': Annotated[Literal['celsius', 'fahrenheit'], '温度单位'], 'return': dict}`。`include_extras=True` 不能省:不加的话 Annotated 外壳会被剥掉,只剩 `{'city': str, 'unit': Literal[...]}`,说明文字就全丢了。
+- `sig = inspect.signature(fn)` 签名里有默认值信息,类型标注里没有,所以两个都要取。
+- `props, required = {}, []` 一行初始化两个变量:参数 schema 字典和必填列表。
+- `for name, p in sig.parameters.items():` 依次是 `city`(实测 `p.default` 是 `inspect._empty`,表示没有默认值)和 `unit`(`p.default = 'celsius'`)。
+- `props[name] = _param_schema(hints.get(name, str))` 某个参数没写类型标注的话,就默认当成 str。
+- `if p.default is inspect.Parameter.empty:` 没默认值才算必填。所以 `city` 进了 required,`unit` 没进。比较用 `is` 而不是 `==`,因为 `empty` 是一个哨兵对象,要比的是「是不是同一个对象」。
+- `self.funcs[fn.__name__] = fn` 用函数名当工具名,`fn.__name__` 就是 `'get_weather'`。
+- `self.schemas.append({` 实测 get_weather 生成的完整 schema:`{"type": "function", "function": {"name": "get_weather", "description": "查询某个城市当前的天气(气温、天气状况、风速)。", "parameters": {"type": "object", "properties": {"city": {...}, "unit": {...}}, "required": ["city"]}}}`。和 Day 8 手写的那份结构一模一样。
+- `"description": inspect.getdoc(fn) or "",` `getdoc` 会把 docstring 的缩进清理干净。函数没写 docstring 时它返回 None,`or ""` 把 None 换成空串。
+- `return fn` 装饰器一定要把原函数还回去,不然 `get_weather` 这个名字会变成 None,后面就没法直接调用了。
+- `def call(self, name: str, arguments: str) -> str:` 入参是模型给的两个字符串,返回值也是字符串,因为 tool 消息的 content 只能是字符串。
+- `if name not in self.funcs:` 实测 `call("nope", "{}")` 返回 `{"error": "没有叫 nope 的工具,可用的有 ['get_weather', 'calculate', 'read_file']"}`。把可用列表告诉模型,它下一轮就能改对。
+- `args = json.loads(arguments or "{}")` 有的模型调无参工具时 arguments 给空串,`or "{}"` 兜底。实测传半截 JSON `'{"expression": '` 会在这里抛 `JSONDecodeError`。
+- `result = self.funcs[name](**args)` 实测 `call("calculate", '{"expression": "(21.5+18)/2"}')` 返回 `{"expression": "(21.5+18)/2", "result": 19.75}`。参数名写错的话(`{"expr": "1+1"}`)会在这里抛 `TypeError`。
+- `except Exception as e:` 所有异常都接住,变成一条 error 交还给模型。实测四种坏输入:<br>半截 JSON → `{"error": "JSONDecodeError: Expecting value: line 1 column 16 (char 15)"}`<br>参数名写错 → `{"error": "TypeError: calculate() got an unexpected keyword argument 'expr'"}`<br>空参数 `''` → `{"error": "TypeError: calculate() missing 1 required positional argument: 'expression'"}`<br>`type(e).__name__` 取的是异常类名,比如 `'TypeError'`。
+- `return json.dumps(result, ensure_ascii=False, default=str)` `default=str` 是兜底:结果里如果有 JSON 不认识的对象(datetime、Path……),就先转成字符串,不会再抛一次异常。
+- `class Agent:` 把 Day 9 最小版那个 for 循环包成一个类,并把历史、用量、步数上限都管起来。
+- `def __init__(self, registry: ToolRegistry, system: str, max_steps: int = 10):` 每个 Agent 带着一个注册表、一段 system 提示词和步数上限。
+- `self.messages: list[Any] = [{"role": "system"` 历史从 system 消息开始,所以 demo 第 1 次请求实测发出的是 2 条(system + user)。
+- `self.usage = {` 两个计数器从 0 开始,下面每一步往上加。
+- `def run(self, user_input: str) -> str:` 先把用户输入追加进历史,然后进入循环。
+- `for step in range(1, self.max_steps + 1):` 让 step 从 1 开始数,日志里显示的就是 `[step 1]` 而不是 `[step 0]`。
+- `t0 = time.time()` 记下这一步的开始时间,完成时打印耗时。实测最后一步用了 0.8s。
+- `resp = self.client.chat.completions.create(` 每一步都发完整历史。demo 实测每步发出的消息条数是 2 → 4 → 8 → 10。
+- `msg = resp.choices[0].message` 下面按「有没有 tool_calls」分成两路。
+- `if resp.usage:` 实测 demo 四步的 prompt_tokens 依次是 542、629、945、1038,累加过程:542 → 1171 → 2116 → 3154。completion 依次是 43、155、51、184,累加到 433。最后打印 `{'prompt_tokens': 3154, 'completion_tokens': 433}`。每一步都要重发全部历史,所以 prompt 越来越大。
+- `self.messages.append(self._assistant_dict(msg))` 用手工挑过字段的字典,不用 model_dump,下面 `_assistant_dict` 里细讲。
+- `if not msg.tool_calls:` 实测前三步都有 tool_calls,第 4 步没有,于是从这里返回。
+- `print(f"[step {step}] 完成` `:.1f` 保留一位小数,实测打印 `[step 4] 完成 (0.8s)`。
+- `return msg.content or ""` content 可能是 None,`or ""` 保证返回的一定是字符串。
+- `for tc in msg.tool_calls:` 实测 step 2 一次给了 3 个调用(杭州、成都、哈尔滨),在同一步里依次执行。
+- `print(f"[step {step}] 调用` 实测打印 `[step 1] 调用 read_file({"path": "cities.txt"})`。
+- `out = self.registry.call(` 不管成功还是失败,拿回来的都是字符串。实测 step 3 是 `calculate({"expression": "(14.1+15.2+(-0.1))/3"})`,结果 `{"expression": "(14.1+15.2+(-0.1))/3", "result": 9.733333333333333}`。
+- `print(f"           结果 {out[:120]}")` 只打印前 120 个字符,免得日志被长结果刷屏。这只影响打印,存进历史的还是完整的 `out`。
+- `self.messages.append({"role": "tool"` 一个 tool_call 对应一条 tool 消息。实测 step 2 的 3 个调用追加完以后,messages 从 5 条变成 8 条。
+- `return f"已达到最大步数` 循环正常走完(没有中途 return)才会到这里。返回一句说明而不是抛异常,调用方可以照常处理。
+- `@staticmethod` 这个方法不用 self,只是把 SDK 的消息对象转成字典,挂在类里方便找。
+- `d: dict[str, Any] = {"role": "assistant"` 只挑需要的字段。content 可能是空串:实测 step 2 返回 3 个工具调用时 content 就是 `''`。
+- `if msg.tool_calls:` 有工具调用才加 tool_calls 这个 key,没调工具时消息里就只有 role 和 content,干干净净。
+- `d["tool_calls"] = [tc.model_dump() for tc in msg.tool_calls]` 每个调用转成 `{"id", "function": {"name", "arguments"}, "type"}` 结构。
+- `reasoning = getattr(msg, "reasoning_content", None)` `getattr(对象, 属性名, 默认值)`:属性不存在时返回默认值,不会报错。实测 demo 的 step 2 带了 reasoning_content(模型先想了一段再并行调 3 个天气),其他步没带。思考模式下带着工具调用的那一轮,思考内容要原样回传给 DeepSeek,原因 Day 8 讲过。
+- `return d` 返回的字典直接追加进 messages。
+
+</div>
+
 挑几处细节说一下。
 
 `_param_schema` 处理了三种情况:普通类型直接映射,`Annotated` 拆出说明文字,`Literal` 变成 enum。没覆盖的类型(比如 `list[str]` 这种带泛型的、嵌套的 pydantic 模型)一律当成 string,这是故意的简化。生产里遇到复杂参数,直接用 Day 6 学过的 pydantic 模型生成 schema 会更稳,注册表留个口子接受手写 schema 即可。
@@ -304,6 +389,35 @@ if __name__ == "__main__":
     print("\n最终回答:\n", answer)
     print("token 用量:", agent.usage)
 ```
+
+<div class="line-notes">
+
+- `from pathlib import Path` 下面用 Path 处理 workspace 路径和越界检查。
+- `from w2.calc import calculate as _calculate` 用 `as` 改个带下划线的名字,因为下面要定义一个同名的 `calculate` 工具去包装它,不改名就冲突了。
+- `load_dotenv()` 模块一被 import 就执行。Day 10 的 plan_execute 也是靠 import 这个模块顺带加载了 `.env`。
+- `WORKSPACE = Path("workspace").resolve()` 相对路径,是相对**你运行命令的目录**来算的,`.resolve()` 把它变成绝对路径。在仓库根目录运行,它就是 `.../agent-60-lab/workspace`。
+- `reg = ToolRegistry()` 全局注册表。Day 10 会 `from day09_demo import reg` 复用它。
+- `@reg.tool` 装饰器在**模块被 import 的时候**就执行了,所以函数定义完,schema 就已经生成好了。
+- `city: Annotated[str` 实测生成 `{"type": "string", "description": "城市名,中文或英文,例如 '北京'"}`。没有默认值,进 required。
+- `unit: Annotated[Literal` 实测生成 `{"type": "string", "enum": ["celsius", "fahrenheit"], "description": "温度单位"}`。有默认值,不进 required。
+- `"""查询某个城市当前的天气` 这句 docstring 原封不动变成 schema 的 description。
+- `return _get_weather(city, unit)` 工具本身只是一层包装,真正干活的是 Day 8 写的 weather.py。实测杭州返回 `{"city": "杭州", "country": "中国", "temperature": 14.1, "unit": "celsius", "weather": "大致晴", "wind_kmh": 6.0}`。
+- `def calculate(expression` 描述里的「不要心算」很重要:模型心算小数经常算错,让它全部走工具。
+- `return _calculate(expression)` 实测 `(14.1+15.2+(-0.1))/3` 得到 `9.733333333333333`。
+- `def read_file(path` 正文说的「一个 10 行的工具,预演了后面三天的主题」就是它。
+- `target = (WORKSPACE / path).resolve()` `/` 是 Path 的拼接运算符。`resolve()` 会把 `..` 算掉:实测传 `'../.env'` 会解析成 workspace 上一级目录里的 `.env`。
+- `if not target.is_relative_to(WORKSPACE):` 「解析后还在不在 workspace 里面」。实测 `call("read_file", '{"path": "../.env"}')` 返回 `{"error": "只能读取 workspace 目录内的文件"}`,API key 没被读出去。
+- `if not target.exists():` 实测传拼错的 `'city.txt'` 返回 `{"error": "文件 city.txt 不存在。workspace 里现有的文件: ['cities.txt']"}`,模型下一轮就能改成正确的文件名。
+- `files = [p.name for p in WORKSPACE.iterdir()]` `iterdir()` 列出目录里的每一项,`.name` 只取文件名,不带长长的绝对路径。
+- `return {"path": path, "content": target.read_text(encoding="utf-8")[:4000]}` 切片 `[:4000]` 最多取 4000 个字符。实测 cities.txt 只有 27 个字符,原样返回。
+- `if __name__ == "__main__":` 被 import 时(比如 Day 10 复用 reg)不会执行下面的代码。
+- `WORKSPACE.mkdir(exist_ok=True)` 目录已经存在也不报错。
+- `(WORKSPACE / "cities.txt").write_text(` 每次运行都重写这个文件,保证演示数据一样:杭州、成都、哈尔滨。
+- `agent = Agent(reg, system=` 「算术一律用 calculate」配合工具描述,实测模型第 3 步确实调了 calculate 来算平均气温,没有自己心算。
+- `answer = agent.run(` 实测完整过程:step 1 调 read_file(content 写着「我先读取文件。」)→ step 2 一次并行调 3 个 get_weather:杭州 14.1、成都 15.2、哈尔滨 -0.1 → step 3 调 calculate 得 9.733… → step 4 完成。最终回答:平均气温约 9.7°C,最冷的是哈尔滨 -0.1°C。
+- `print("token 用量:", agent.usage)` 实测 `{'prompt_tokens': 3154, 'completion_tokens': 433}`。一个 4 步的小任务,输入 token 是输出的 7 倍多,因为每一步都在重发历史。
+
+</div>
 
 `read_file` 这个工具值得多看两眼。它做了三件事:把路径限制在 workspace 目录内(`is_relative_to` 检查,防止模型读 `../../.ssh/id_rsa`);文件不存在时把现有文件列表告诉模型;内容截断到 4000 字符。这三件事分别对应 Day 40 的权限、Day 11 的报错设计、Day 12 的结果过长问题。一个 10 行的工具,已经把后面三天的主题都预演了一遍。
 
