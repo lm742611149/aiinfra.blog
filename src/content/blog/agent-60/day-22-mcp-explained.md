@@ -274,8 +274,8 @@ npx @modelcontextprotocol/inspector uvx mcp-server-time
 **第二步:用 Python 自己当一回 client。** 不靠任何界面,用官方 SDK 连同一个 server,打印工具列表并调用一次。
 
 ```bash
-# 在 agent-60-lab 目录下
-mkdir -p w4 && cd w4
+# 在 agent-60-lab 根目录下,后面的命令也都在根目录跑
+mkdir -p w4
 uv add "mcp[cli]"
 ```
 
@@ -283,8 +283,15 @@ uv add "mcp[cli]"
 # agent-60-lab/w4/peek_time_server.py
 import anyio
 from mcp import Client, StdioServerParameters
+from mcp.types import CallToolResult, TextContent
 
 server = StdioServerParameters(command="uvx", args=["mcp-server-time"])
+
+
+def first_text(result: CallToolResult) -> str:
+    """取结果里第一条文本。content 可能是文本、图片、音频等几种类型,先确认是文本再读 .text。"""
+    block = result.content[0]
+    return block.text if isinstance(block, TextContent) else f"<{block.type}>"
 
 
 async def main() -> None:
@@ -292,42 +299,47 @@ async def main() -> None:
         print("协议版本:", client.protocol_version)
         listing = await client.list_tools()
         for tool in listing.tools:
-            print(f"- {tool.name}: {tool.description[:60]}")
+            print(f"- {tool.name}: {(tool.description or '')[:60]}")
             print("  参数:", list(tool.input_schema.get("properties", {}).keys()))
 
         ok = await client.call_tool("get_current_time", {"timezone": "Asia/Shanghai"})
-        print("正常调用 is_error =", ok.is_error, "|", ok.content[0].text[:120])
+        print("正常调用 is_error =", ok.is_error, "|", first_text(ok)[:120])
 
         bad = await client.call_tool("get_current_time", {"timezone": "Mars/Olympus"})
-        print("错误调用 is_error =", bad.is_error, "|", bad.content[0].text[:120])
+        print("错误调用 is_error =", bad.is_error, "|", first_text(bad)[:120])
 
 
 if __name__ == "__main__":
     anyio.run(main)
 ```
 
+`first_text` 这个小函数不能省。`content` 里每一项可能是文本、图片、音频、资源链接等好几种类型,直接写 `ok.content[0].text` 能跑,但编辑器会报 8 条「`ImageContent` 没有 `text` 属性」的红线。先用 `isinstance` 确认是 `TextContent` 再读,和 TS 里用类型守卫收窄联合类型是一回事。`tool.description` 也可能是 `None`,所以写成 `(tool.description or '')[:60]`。
+
 ```bash
-uv run python peek_time_server.py
+uv run python w4/peek_time_server.py
 ```
 
-我在 2026 年 10 月跑的输出大致长这样(时间以你实际为准):
+第一次跑会慢几秒,`uvx` 要先下载 `mcp-server-time`。
+
+我在 2026-10-21 跑的输出(时间以你实际为准):
 
 ```text
-协议版本: 2025-11-25
+协议版本: 2026-07-28
 - get_current_time: Get current time in a specific timezone
   参数: ['timezone']
 - convert_time: Convert time between timezones
   参数: ['source_timezone', 'time', 'target_timezone']
 正常调用 is_error = False | {
   "timezone": "Asia/Shanghai",
-  "datetime": "2026-10-12T15:12:34+08:00",
-  "day_of_week": "Monday",
-  "is_dst": false
-}
-错误调用 is_error = True | Error processing mcp-server-time query: Invalid timezone: 'No time zone found with key Mars/Olympus'
+  "datetime": "2026-10-21T17:50:52+08:00",
+  "day_of_week": "Wednesday",
+  "is_dst": fa
+错误调用 is_error = True | Error executing tool get_current_time: Invalid timezone: 'No time zone found with key Mars/Olympus'
 ```
 
-协议版本是 `2025-11-25` 而不是最新的 `2026-07-28`,因为官方的 Time server 还跑在 1.x SDK 上。你的 2.x Client 先发了一个新式的 `server/discover`,对方不认识,于是自动退回老的 initialize 握手。终端的 stderr 里会刷出一大段 `WARNING:root:Failed to validate request ... server/discover` 的校验警告,那是老 server 在抱怨看不懂新请求,不影响使用。新旧版本混用在 2026 年下半年会很常见,知道这段警告是怎么来的,能省你一次排查。
+`"is_dst": fa` 被截断是因为代码里 `[:120]` 只取了前 120 个字符,不是出错。stderr 里还会多一行 `Tool 'get_current_time' failed: ...`,那是 server 自己打的日志,stdio 模式下 server 的 stderr 会直接显示在你的终端里,stdout 才是协议通道。
+
+协议版本:官方 Time server 已经升级到 2.x SDK,所以双方直接谈成了最新的 `2026-07-28`。如果你碰到还在 1.x SDK 上的老 server,会看到版本退回 `2025-11-25`,终端里还会刷一大段 `WARNING:root:Failed to validate request ... server/discover`:你的 2.x Client 先发新式的 `server/discover`,老 server 不认识,于是自动退回老的 initialize 握手。这段警告不影响使用,新旧版本混用在 2026 年下半年很常见,知道它是怎么来的能省一次排查。
 
 另外注意 content 和 structured_content 的区别:返回一个列表的工具,content 里是每个元素一条文本,structured_content 是整个列表包在 `result` 键下面。明天写桥接代码时会用到这个细节。
 
@@ -336,6 +348,8 @@ uv run python peek_time_server.py
 ```bash
 claude mcp add time -- uvx mcp-server-time
 ```
+
+练完不想留着可以 `claude mcp remove time`。
 
 进入 Claude Code 后输入 `/mcp`,能看到 time 已连接。然后直接问它「东京现在几点」,观察它调用了哪个工具。用 Cursor 的同学,在项目根目录建 `.cursor/mcp.json`,写 `{"mcpServers": {"time": {"command": "uvx", "args": ["mcp-server-time"]}}}`,重启后在设置里能看到。
 
