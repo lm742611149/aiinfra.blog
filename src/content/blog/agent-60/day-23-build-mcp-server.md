@@ -270,6 +270,8 @@ a = random.Random(42); b = random.Random(42); c = random.Random(7)
 [c.randint(1, 100) for _ in range(5)]   # [42, 20, 51, 84, 7]  换种子,换一串
 ```
 
+`randint(1, 100)` 随机取 1 到 100 的整数(两头都包含),相当于 JS 的 `Math.floor(Math.random() * 100) + 1`。`[... for _ in range(5)]` 是「做 5 次,结果装进列表」,相当于 `Array.from({length: 5}, () => ...)`。
+
 同一个 `rng` 连着调用,每次拿到的是这串里的下一个数(82、15、4……),所以数据看起来是随机的;但重新运行脚本,又从 82 开始,所以每次生成的库一模一样。这类随机数叫「伪随机」:它是用种子算出来的,不是真随机。有一个前提:调用的顺序和次数也得一样。比如你在 `seed.py` 中间多加一句 `rng.choice(...)`,后面所有数据都会跟着变。
 
 ```python
@@ -325,7 +327,7 @@ a = random.Random(42); b = random.Random(42); c = random.Random(7)
 ```
 - `list(PLANS)` 取出 dict 的键 `["基础版", "专业版", "企业版"]`,再随机挑一个。
 - `"monthly"` 写两遍,是让月付的概率变成 2/3。
-- `rng.choices`(多了个 s)支持权重:70% active,其余各 10%。它返回的是**列表**(默认抽 1 个),所以要 `[0]` 取出来。真实结果是 active 23 个、past_due 3 个、trialing 2 个、canceled 2 个。
+- `rng.choices(候选列表, 权重列表)`(多了个 s)支持权重,不带 s 的 `choice` 只能等概率挑:70% active,其余各 10%。它返回的是**列表**(默认抽 1 个),所以要 `[0]` 取出来。真实结果是 active 23 个、past_due 3 个、trialing 2 个、canceled 2 个。
 
 ```python
         started = created + timedelta(days=rng.randint(0, 20))
