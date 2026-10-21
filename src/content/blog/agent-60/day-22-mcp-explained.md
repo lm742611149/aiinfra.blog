@@ -341,6 +341,138 @@ uv run python w4/peek_time_server.py
 
 协议版本:官方 Time server 已经升级到 2.x SDK,所以双方直接谈成了最新的 `2026-07-28`。如果你碰到还在 1.x SDK 上的老 server,会看到版本退回 `2025-11-25`,终端里还会刷一大段 `WARNING:root:Failed to validate request ... server/discover`:你的 2.x Client 先发新式的 `server/discover`,老 server 不认识,于是自动退回老的 initialize 握手。这段警告不影响使用,新旧版本混用在 2026 年下半年很常见,知道它是怎么来的能省一次排查。
 
+**`peek_time_server.py` 逐行讲解。** 下面的值都是 2026-10-21 实际打印出来的。
+
+**导入**
+
+```python
+import anyio
+```
+异步运行库。它在 asyncio 之上包了一层统一接口,MCP 的 Python SDK 内部就是用它写的,所以这里也用它来启动。用法上你可以把 `anyio.run(main)` 当成 `asyncio.run(main())`。
+
+```python
+from mcp import Client, StdioServerParameters
+```
+`Client` 是 MCP 客户端,负责握手、发请求、收响应。`StdioServerParameters` 描述「怎么启动一个 stdio 模式的 server」。
+
+```python
+from mcp.types import CallToolResult, TextContent
+```
+两个类型:`CallToolResult` 是 `tools/call` 的返回结果;`TextContent` 是结果里「文本」那一种内容块。导入它们是为了下面做类型标注和类型收窄。
+
+**描述 server 怎么启动**
+
+```python
+server = StdioServerParameters(command="uvx", args=["mcp-server-time"])
+```
+这一行**还没有启动任何东西**,只是一份启动说明。打印出来是:
+
+```text
+command='uvx' args=['mcp-server-time'] env=None cwd=None encoding='utf-8' ...
+```
+
+意思是:等会儿用子进程执行 `uvx mcp-server-time`,环境变量和工作目录都沿用当前的。stdio 模式下,client 往子进程的 stdin 写 JSON-RPC 请求,从它的 stdout 读响应,每条消息一行。
+
+**`first_text`**
+
+```python
+def first_text(result: CallToolResult) -> str:
+    block = result.content[0]
+```
+`content` 是一个列表,每一项是一个内容块。时间工具只返回一块,所以取 `[0]`。真实数据里 `block` 是一个 `TextContent`,它的 `type` 是 `"text"`。
+
+```python
+    return block.text if isinstance(block, TextContent) else f"<{block.type}>"
+```
+`A if 条件 else B` 是 Python 的条件表达式,相当于 TS 的 `条件 ? A : B`。是文本块就返回 `.text`;是别的类型(图片、音频……)就返回 `<image>` 这样的占位。`isinstance` 之后,编辑器就知道这个分支里的 `block` 一定是 `TextContent`,所以 `.text` 不报红,和 TS 里 `if (block.type === "text")` 收窄联合类型一样。
+
+**`main`**
+
+```python
+async def main() -> None:
+    async with Client(server) as client:
+```
+`async with` 是异步版的上下文管理器,进入和退出时各做一件事:
+
+- 进入时:按 `server` 的说明启动子进程 `uvx mcp-server-time`,然后完成握手(双方交换协议版本和各自支持的能力)。
+- 退出时(包括中途报错):关闭连接,结束子进程。
+
+相当于 TS 里的 `await using client = ...`,或者手写 `try { ... } finally { await client.close() }`。不用担心子进程留在后台。
+
+```python
+        print("协议版本:", client.protocol_version)
+```
+握手时双方谈好的协议版本,打印 `协议版本: 2026-07-28`。
+
+```python
+        listing = await client.list_tools()
+```
+发一个 JSON-RPC 请求,`method` 是 `"tools/list"`。返回 `ListToolsResult`,它的 `.tools` 是 2 个 `Tool` 对象的列表。
+
+```python
+        for tool in listing.tools:
+            print(f"- {tool.name}: {(tool.description or '')[:60]}")
+```
+第一圈:`tool.name` 是 `"get_current_time"`,`tool.description` 是 `"Get current time in a specific timezone"`。协议里 description 是可选的,可能是 `None`,所以先用 `or ''` 换成空串,再用 `[:60]` 截前 60 个字符。打印 `- get_current_time: Get current time in a specific timezone`。
+
+```python
+            print("  参数:", list(tool.input_schema.get("properties", {}).keys()))
+```
+`input_schema` 就是工具参数的 JSON Schema,和 Day 8 给 OpenAI 写的 `parameters` 是同一种东西。真实值:
+
+```python
+{"type": "object",
+ "properties": {"timezone": {"type": "string", "title": "Timezone",
+                             "description": "IANA timezone name (e.g., 'America/New_York', ...)"}},
+ "required": ["timezone"],
+ "title": "get_current_timeArguments"}
+```
+
+`.get("properties", {})` 取出 `properties` 这个 dict(没有就给空 dict);`.keys()` 得到 `dict_keys(['timezone'])`;`list(...)` 转成普通列表 `['timezone']`。第二圈的 `convert_time` 同理,打印 `['source_timezone', 'time', 'target_timezone']`。
+
+```python
+        ok = await client.call_tool("get_current_time", {"timezone": "Asia/Shanghai"})
+```
+发一个 `tools/call` 请求。线上实际传的 JSON 是:
+
+```json
+{"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+ "params": {"name": "get_current_time", "arguments": {"timezone": "Asia/Shanghai"}}}
+```
+
+`id` 是请求编号,每发一个请求递增一次,你在 Inspector 里看到的数字可能不一样,响应会带着同一个 `id` 回来,client 靠它把响应和请求对上。
+
+返回的 `ok` 是 `CallToolResult`,三个字段的真实值:
+
+| 字段 | 值 |
+| --- | --- |
+| `ok.content` | 1 个 `TextContent`,`text` 是 `'{\n  "timezone": "Asia/Shanghai",\n  "datetime": "2026-10-21T19:16:22+08:00", ...}'`(一段 JSON **字符串**) |
+| `ok.structured_content` | `{'timezone': 'Asia/Shanghai', 'datetime': '2026-10-21T19:16:22+08:00', 'day_of_week': 'Wednesday', 'is_dst': False}`(已经是 **dict**) |
+| `ok.is_error` | `False` |
+
+同一份数据给了两种形式:`content` 是给模型看的文本,`structured_content` 是给程序直接用的结构化数据。协议里的字段名是驼峰的 `structuredContent`、`isError`,Python SDK 转成了蛇形的 `structured_content`、`is_error`。
+
+```python
+        print("正常调用 is_error =", ok.is_error, "|", first_text(ok)[:120])
+```
+`first_text(ok)` 取出那段 JSON 文本,`[:120]` 只要前 120 个字符,所以输出最后停在 `"is_dst": fa`。
+
+```python
+        bad = await client.call_tool("get_current_time", {"timezone": "Mars/Olympus"})
+        print("错误调用 is_error =", bad.is_error, "|", first_text(bad)[:120])
+```
+火星时区不存在。真实值:`bad.is_error` 是 `True`,`bad.structured_content` 是 `None`,`content` 里有 1 个文本块:`Error executing tool get_current_time: Invalid timezone: ...`。
+
+注意这里**没有抛异常**,`call_tool` 正常返回了。原因是:请求本身没毛病(方法名对、工具存在、参数格式对),工具也确实执行了,只是业务上失败了。这种错误用 `isError: true` 放在正常结果里,模型能读到错误信息,下一轮自己换个时区重试。只有协议层面的问题(方法名不存在、请求格式不对)才返回 JSON-RPC error,SDK 会把它变成异常抛出来。
+
+**入口**
+
+```python
+if __name__ == "__main__":
+    anyio.run(main)
+```
+注意传的是 `main`(函数本身),不是 `main()`:`anyio.run` 要的是一个函数,它自己去调用。写成 `asyncio.run` 的话则要传 `main()`,两者的习惯不一样。
+
 另外注意 content 和 structured_content 的区别:返回一个列表的工具,content 里是每个元素一条文本,structured_content 是整个列表包在 `result` 键下面。明天写桥接代码时会用到这个细节。
 
 **第三步:把同一个 server 接进一个现成 host。** 如果你装了 Claude Code:
