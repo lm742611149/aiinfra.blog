@@ -112,6 +112,7 @@ DB_PATH = Path(os.environ.get(...))
 - 每条开头的 inline code 是 key,会**按顺序**去匹配上面代码块里第一个包含它的行(从上一条匹配到的位置往后找),所以重复出现的行可以一处写一条。key 取那一行里有辨识度的一小段就行。
 - 代码块的 ``` 和 `<div class="line-notes">` 之间空一行,div 内首尾也各空一行,否则 markdown 不渲染。
 - 正文支持 inline code、加粗、`<br>` 换行。按「逐行讲+代入真实数据」写,数据要实跑得来。
+- 「展开全部解释」会把每条解释插到对应行下面(代码块内部),提示条吸顶方便收起。
 - `python3 scripts/check-course.py` 会检查每个 key 都能在代码块里按顺序找到;浏览器控制台里 `[line-notes]` 开头的警告也表示有 key 没挂上。没有 JS 时注释列表会直接显示在代码块下面。
 - 实现在 `src/scripts/line-notes.ts`,样式在 `global.css` 的 Line notes 段。
 

@@ -310,6 +310,14 @@ pre > code {
 	color: var(--mem);
 }
 
+.line-notes-wrap {
+	margin: 1.8rem 0;
+}
+
+.line-notes-wrap > pre {
+	margin: 0;
+}
+
 .line-notes-hint {
 	display: flex;
 	flex-wrap: wrap;
@@ -318,7 +326,23 @@ pre > code {
 	font-family: var(--font-display);
 	font-size: 0.8rem;
 	color: var(--ink-faint);
-	margin: 1.8rem 0 -1.3rem;
+	margin: 0;
+	padding: 0 0 0.5rem;
+	background: var(--paper);
+}
+
+/* While expanded the block gets long; keep the collapse button within reach. */
+.line-notes-wrap.is-expanded .line-notes-hint {
+	position: sticky;
+	top: 0;
+	z-index: 30;
+	padding-top: 0.5rem;
+	transition: top 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* The site header slides back in when scrolling up; sit just below it then. */
+body:has(.site-header:not(.is-tucked)) .line-notes-wrap.is-expanded .line-notes-hint {
+	top: var(--site-header-h, 59px);
 }
 
 .line-notes-hint button {
@@ -374,6 +398,38 @@ pre.has-line-notes .line.is-open {
 
 pre.has-line-notes .line.is-open::before {
 	opacity: 1;
+}
+
+.line-note-inline {
+	display: block;
+	position: sticky;
+	left: 0;
+	box-sizing: border-box;
+	width: var(--note-w, 100%);
+	white-space: normal;
+	margin: 0.15rem 0 0.6rem;
+	padding: 0.45rem 0.8rem;
+	border-left: 2px solid var(--mem);
+	border-radius: 2px;
+	background: rgba(240, 185, 11, 0.08);
+	color: var(--code-fg);
+	font-family: var(--font-body);
+	font-size: 0.88rem;
+	line-height: 1.7;
+	overflow-wrap: anywhere;
+}
+
+.line-note-inline code {
+	font-family: var(--font-mono);
+	font-size: 0.86em;
+	padding: 0.08em 0.3em;
+	background: rgba(255, 255, 255, 0.08);
+	color: inherit;
+	border-radius: 3px;
+}
+
+pre.notes-expanded .line[data-note-html] {
+	cursor: auto;
 }
 
 .line-note-pop {

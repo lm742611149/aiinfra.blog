@@ -18,6 +18,7 @@
  * Without JS the list simply renders under the code block. With JS the list is
  * hidden, annotated lines get a dot in the gutter, and hovering (or tapping,
  * or focusing) a line shows its note in a popover just below that line.
+ * "展开全部解释" instead shows every note inline under its line.
  */
 
 const blocks = [...document.querySelectorAll<HTMLElement>('.line-notes')];
@@ -49,6 +50,8 @@ if (blocks.length) {
 
 	const show = (line: HTMLElement) => {
 		clearTimeout(hideTimer);
+		// With every note expanded inline the popover would only repeat what is already on screen.
+		if (line.closest('.notes-expanded')) return;
 		if (current === line && !pop.hidden) return;
 		current?.classList.remove('is-open');
 		current = line;
@@ -83,6 +86,13 @@ if (blocks.length) {
 	});
 	window.addEventListener('resize', () => current && place(current));
 
+	// The pinned "收起" bar sits under the site header, whose height changes with the viewport.
+	const header = document.querySelector<HTMLElement>('.site-header');
+	const measureHeader = () =>
+		header && document.documentElement.style.setProperty('--site-header-h', `${header.offsetHeight}px`);
+	measureHeader();
+	window.addEventListener('resize', measureHeader);
+
 	for (const block of blocks) {
 		const pre = block.previousElementSibling;
 		if (!(pre instanceof HTMLPreElement)) {
@@ -90,8 +100,8 @@ if (blocks.length) {
 			continue;
 		}
 		const lines = [...pre.querySelectorAll<HTMLElement>('.line')];
+		const annotated: HTMLElement[] = [];
 		let from = 0;
-		let attached = 0;
 
 		for (const li of block.querySelectorAll<HTMLLIElement>(':scope > ul > li')) {
 			const keyEl = li.querySelector('code');
@@ -123,24 +133,67 @@ if (blocks.length) {
 				if (current === line && !pop.hidden && Date.now() - openedAt > 400) hide();
 				else show(line);
 			});
-			attached++;
+			annotated.push(line);
 		}
 
+		const attached = annotated.length;
 		if (!attached) continue;
 		pre.classList.add('has-line-notes');
 		block.hidden = true;
 
 		const hint = document.createElement('p');
 		hint.className = 'line-notes-hint';
-		hint.innerHTML = `<span class="line-notes-dot" aria-hidden="true"></span>带圆点的 ${attached} 行有逐行解释,鼠标悬停(手机点一下)就会在这一行下面弹出。`;
+		const collapsedText = `带圆点的 ${attached} 行有逐行解释,鼠标悬停(手机点一下)就会在这一行下面弹出。`;
+		const label = document.createElement('span');
+		label.textContent = collapsedText;
+		hint.innerHTML = '<span class="line-notes-dot" aria-hidden="true"></span>';
+		hint.append(label);
 		const toggle = document.createElement('button');
 		toggle.type = 'button';
 		toggle.textContent = '展开全部解释';
-		toggle.addEventListener('click', () => {
-			block.hidden = !block.hidden;
-			toggle.textContent = block.hidden ? '展开全部解释' : '收起全部解释';
-		});
+		toggle.setAttribute('aria-expanded', 'false');
 		hint.append(toggle);
-		pre.before(hint);
+
+		// Hint and code share a wrapper so the hint can stay pinned while the expanded block scrolls by.
+		const wrap = document.createElement('div');
+		wrap.className = 'line-notes-wrap';
+		pre.before(wrap);
+		wrap.append(hint, pre);
+
+		const fitNotes = () => {
+			const cs = getComputedStyle(pre);
+			const w = pre.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+			pre.style.setProperty('--note-w', `${w}px`);
+		};
+
+		// "Expand all" puts every note right under its own line, inside the code block,
+		// so the effect shows up where the reader already is.
+		toggle.addEventListener('click', () => {
+			const open = !pre.classList.contains('notes-expanded');
+			hide();
+			// Keep the first line that is on screen in the same place, so the page doesn't jump.
+			const anchor = annotated.find((l) => l.getBoundingClientRect().top >= 0) ?? annotated[0];
+			const before = anchor.getBoundingClientRect().top;
+			if (open) {
+				fitNotes();
+				for (const line of annotated) {
+					const note = document.createElement('span');
+					note.className = 'line-note-inline';
+					note.innerHTML = line.dataset.noteHtml ?? '';
+					// Shiki separates lines with a "\n" text node; the note goes after it.
+					const nl = line.nextSibling;
+					line.parentNode?.insertBefore(note, nl ? nl.nextSibling : null);
+				}
+			} else {
+				for (const n of pre.querySelectorAll('.line-note-inline')) n.remove();
+			}
+			pre.classList.toggle('notes-expanded', open);
+			wrap.classList.toggle('is-expanded', open);
+			toggle.textContent = open ? '收起全部解释' : '展开全部解释';
+			label.textContent = open ? `已展开 ${attached} 条解释` : collapsedText;
+			toggle.setAttribute('aria-expanded', String(open));
+			window.scrollBy(0, anchor.getBoundingClientRect().top - before);
+		});
+		window.addEventListener('resize', () => pre.classList.contains('notes-expanded') && fitNotes());
 	}
 }
