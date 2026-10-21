@@ -1308,6 +1308,181 @@ if __name__ == "__main__":
 
 隔离不是免费的。Anthropic 在介绍他们的多 Agent 调研系统时给过一组数字:按他们的数据,Agent 的 token 消耗大约是普通聊天的 4 倍,多 Agent 系统大约是 15 倍。子 Agent 省的是主对话的上下文,花的是总 token。所以只有「需要大量探索、但结论很短」的子任务才值得隔离。简单的单点查询直接调 `search_kb` 就好。
 
+**`subagent.py` 逐行讲解。** 数据来自一次真实运行 `__main__` 里的套餐对比任务(DeepSeek deepseek-flash)。结构和 `agentic_rag.py` 的 `run()` 几乎一样,下面重点讲不一样的地方。
+
+**导入**
+
+```python
+import json
+from typing import Any
+```
+`json` 解析工具参数;`Any` 用来标注消息列表的类型。
+
+```python
+from agentic_rag import FUNCS, TOOLS
+```
+直接复用上一节的两个工具,不重写。注意 Python 的 import 会**执行**被导入文件的顶层代码:`agentic_rag.py` 里的 `RETRIEVER = MemRetriever()` 会在这一刻跑一遍(读文章、建 BM25),但它的 `if __name__ == "__main__":` 块不会跑,因为此时 `agentic_rag` 的 `__name__` 是 `"agentic_rag"`,不是 `"__main__"`。这和 Node 里 `require` 一个模块时顶层代码会执行是一样的。
+
+```python
+from llm import chat_raw
+```
+返回完整 message 对象的那个函数。
+
+**`SUB_SYSTEM`**
+
+```python
+SUB_SYSTEM = """你是一个资料调研助手,只负责查 CloudLedger 帮助中心并整理结论,不直接面对用户。
+用工具把任务里涉及的每一点都查清楚。最后输出不超过 300 字的结论,每条结论后标注出处 id,
+查不到的点明确写「帮助中心未提及」。"""
+```
+和主 Agent 的 SYSTEM 是两套人设。子 Agent 的读者是主 Agent,不是用户,所以要求的是:每一点都查清楚、输出短、带出处、查不到明说。「不超过 300 字」是整个隔离设计的关键:子 Agent 读多少都行,交回去的必须短。
+
+**`run_subagent`**
+
+```python
+def run_subagent(task: str, max_steps: int = 8) -> str:
+```
+`task` 是主 Agent 交过来的调研任务。上限比主 Agent 的 6 大一点,因为调研本来就要多查几次。
+
+```python
+    messages: list[Any] = [
+        {"role": "system", "content": SUB_SYSTEM},
+        {"role": "user", "content": task},
+    ]
+```
+**这就是「隔离」本身**:一个全新的消息列表,里面没有主对话的任何历史,只有调研规则和这个任务。子 Agent 后面查到的几千字全都堆在这个局部变量里,函数返回后它就被回收了,主 Agent 永远看不到。`list[Any]` 的原因和前面一样:不标的话,后面 append 带 `tool_calls` 的 dict 时编辑器会报类型不匹配。
+
+真实数据,一开始 2 条消息,共 155 字。
+
+```python
+    for _ in range(max_steps):
+```
+`_` 是 Python 的惯用写法,表示「这个循环变量我用不到」。`run()` 里要打印 `step` 所以起了名字,这里不打印。
+
+```python
+        msg = chat_raw(messages, tools=TOOLS, temperature=0)
+        if not msg.tool_calls:
+            return msg.content or ""
+```
+和 `run()` 一样:模型不再调工具,它的 `content` 就是最终结论,直接返回。
+
+```python
+        messages.append(
+            {
+                "role": "assistant",
+                "content": msg.content,
+                "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
+            }
+        )
+```
+先记下「我要调这些工具」的 assistant 消息,必须排在 tool 消息前面。
+
+```python
+        for tc in msg.tool_calls:
+            try:
+                result = FUNCS[tc.function.name](
+                    **json.loads(tc.function.arguments or "{}")
+                )
+```
+和 `run()` 里拆成两行(`args = ...`、`result = ...`)是同一件事,这里写成了一行:`json.loads` 把参数字符串变成 dict,`**` 拆成关键字参数,`FUNCS[...]` 找到函数调用。比如 `FUNCS["search_kb"](query="导出次数限制")`。
+
+```python
+            except Exception as e:  # noqa: BLE001
+                result = f"工具调用失败:{e}"
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+```
+出错也当结果告诉模型;每个结果用 `tool_call_id` 对上它的调用。和 `run()` 相比少了 `print`:子 Agent 是在后台干活的,日志由调用方决定要不要打。
+
+```python
+    return "子任务未在步数上限内完成,已查到的信息不完整。"
+```
+8 轮还没结束就降级。这句话会作为 `research` 工具的结果交给主 Agent,主 Agent 看到后可以决定告诉用户「信息不全」或者转人工。
+
+**真实运行轨迹**
+
+任务:「对比免费版、专业版、企业版在账本数、成员数、导出次数、能否开专票、退款规则上的区别」。
+
+| 轮 | 发出的 messages | 上下文总字数 | 模型返回 |
+| --- | --- | --- | --- |
+| 1 | 2 条 | 155 | 一次发 4 个 `search_kb`:「套餐对比 免费版 专业版 企业版 账本数 成员数」「导出次数限制」「增值税专用发票 开专票」「退款政策 年付退款」 |
+| 2 | 7 条(+1 assistant +4 tool) | 1854 | 片段不够,发 2 个 `get_article`:`kb-002`(退款政策)、`kb-006`(发票类型) |
+| 3 | 10 条(+1 assistant +2 tool) | 2316 | 没有 tool_calls,输出结论 |
+
+第 1 轮 4 个检索各返回了什么:
+
+| query | 返回字数 | 命中的块 |
+| --- | --- | --- |
+| 套餐对比 免费版 专业版 企业版 账本数 成员数 | 459 | kb-001#2、kb-001#1、kb-015#2、kb-005#2 |
+| 导出次数限制 | 352 | kb-014#2、kb-019#2、kb-014#1、kb-009#1 |
+| 增值税专用发票 开专票 | 500 | kb-006#1、kb-003#2、kb-001#1、kb-006#2 |
+| 退款政策 年付退款 | 374 | kb-002#1、kb-003#1、kb-002#2、kb-008#2 |
+
+五个方面被模型拆成了 4 个查询(账本数和成员数合成一个),并且在同一轮里并行发出。第 2 轮去读整篇,是因为退款和专票的规则分散在好几块里。
+
+最终交回的结论 404 字(带 Markdown 符号,比要求的 300 字略长,模型对字数的遵守本来就是大概的):
+
+```text
+**CloudLedger 三档套餐对比**
+- 账本数:免费版 1 个;专业版最多 5 个;企业版不限(kb-001#1)。
+- 成员数:免费版 1 名;专业版最多 3 名;企业版不限(kb-001#1、kb-015#2)。
+- 导出次数:免费版每天 1 次;专业版和企业版每天 20 次(kb-014#2)。
+- 专票:增值税专用发票仅限企业版,或年付的专业版(kb-006#1)……
+- 退款:年付按剩余整月数比例退款……月付不支持中途退款(kb-002#1、kb-002#2)……
+```
+
+**这就是子 Agent 的账**:子 Agent 自己的上下文涨到了 2316 字(7 次工具调用、3 轮模型请求),而主 Agent 只收到 404 字。如果让主 Agent 自己去查,这 2316 字会一直留在主对话里,之后用户每问一句,这些字都要再发一遍、再算一遍钱。
+
+**`RESEARCH_TOOL`**
+
+```python
+RESEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "research",
+```
+把子 Agent 包装成主 Agent 的一个普通工具。主 Agent 只看到一个叫 `research` 的工具,它不知道、也不需要知道这个工具内部又跑了一个 Agent 循环。
+
+```python
+        "description": "把一个需要查多篇帮助文章的问题交给调研助手,返回整理好的结论(带出处)。"
+        "适合「对比几种套餐」「列出所有和发票有关的规则」这类需要翻很多资料的任务。",
+```
+两段字符串挨着写、中间没有 `+`,Python 会在编译时自动把它们拼成一个字符串。这是把长字符串分行写的常用办法,TS 里没有这个语法,要用 `+` 或模板字符串。description 里举了两个例子,告诉主 Agent 什么时候该派子 Agent:要翻很多资料的用 `research`,简单问题自己用 `search_kb` 就够了。
+
+```python
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "要调研的问题,写清楚需要覆盖哪些方面",
+                },
+            },
+            "required": ["task"],
+        },
+```
+只有一个参数 `task`,正好对应 `run_subagent(task)` 的参数名,所以 `**args` 能直接对上。「写清楚需要覆盖哪些方面」是提醒主 Agent:子 Agent 看不到主对话,用户之前说过什么,主 Agent 必须写进 task 里传过去。
+
+这个文件只定义了 `RESEARCH_TOOL`,没有接进主 Agent。要接上,在主 Agent 里加两处就行:
+
+```python
+TOOLS_WITH_RESEARCH = [*TOOLS, RESEARCH_TOOL]
+FUNCS["research"] = run_subagent
+```
+
+然后在主循环里用 `TOOLS_WITH_RESEARCH` 调模型。主 Agent 一调 `research`,`FUNCS["research"](task="...")` 就会跑一整个子循环,返回那 404 字,作为普通的 tool 结果放进主对话。
+
+**入口**
+
+```python
+if __name__ == "__main__":
+    print(
+        run_subagent(
+            "对比免费版、专业版、企业版在账本数、成员数、导出次数、能否开专票、退款规则上的区别"
+        )
+    )
+```
+不经过主 Agent,直接测子 Agent 本身,打印它交回的结论。练习 6 要你记下工具调用次数和 token 用量,可以照上面的表格,在循环里加 `print` 统计。
+
 ## Agent Harness:把这些拼在一起的那一层
 
 如果你最近在看国内的 JD,会发现「Agent Harness」「Agent Infra」这两个词出现得越来越多,腾讯、美团、字节、百度都有岗位标题直接带着它们。站长 2026 年 10 月抓了 120 条国内 Agent 岗位的 JD 做统计,提到上下文工程或上下文管理的占 66%,是国内 JD 里出现最多的要求之一,海外同类 JD 只有 25% 左右。国内大厂明显更看重 Agent 内部机制。所以今天这些内容,不是锦上添花,是面试的主战场。
