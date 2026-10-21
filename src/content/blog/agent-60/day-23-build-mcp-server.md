@@ -203,6 +203,236 @@ uv run python w4/cloudledger/seed.py
 
 随机种子固定成 42,所以你我跑出来的数据完全一样,课程里提到的 `C007`、`INV-2026-0123`、`T1041` 在你的库里也都存在。用 `sqlite3 w4/cloudledger/cloudledger.db "select * from invoices where customer_id='C007'"` 看一眼,能看到两张 10 月 8 日、金额都是 2392.00 元的发票,这就是我们造的重复扣款。
 
+**`seed.py` 逐行讲解。** 下面的数据都是用种子 42 真实跑出来的,你那边应该一模一样。
+
+**导入**
+
+```python
+import os
+import random
+import sqlite3
+from datetime import date, timedelta
+from pathlib import Path
+```
+`os` 读环境变量;`random` 造随机数据;`sqlite3` 是 Python 自带的 SQLite 驱动,不用装任何东西,数据库就是一个文件;`date` 表示日期、`timedelta` 表示一段时长,两者可以加减;`Path` 处理路径。
+
+```python
+DB_PATH = Path(os.environ.get("CLOUDLEDGER_DB", Path(__file__).with_name("cloudledger.db")))
+```
+从里往外读:`Path(__file__)` 是 `seed.py` 自己的路径;`.with_name("cloudledger.db")` 把文件名换掉,得到同目录下的 `.../w4/cloudledger/cloudledger.db`;`os.environ.get("CLOUDLEDGER_DB", 默认值)` 先看有没有设这个环境变量,没设就用默认值;最外面再包一层 `Path`,因为环境变量读出来是字符串。相当于 Node 的 `process.env.CLOUDLEDGER_DB ?? path.join(__dirname, "cloudledger.db")`。
+
+**表结构 `SCHEMA`**
+
+五张表,关系是:一个客户(customers)有一个订阅(subscriptions),订阅产生多张发票(invoices);客户可以提工单(tickets);退款申请(refund_requests)挂在某张发票上。
+
+- `TEXT PRIMARY KEY`:主键用 `C001` 这样的可读编号,不用自增数字,工单和日志里一眼能认出来。
+- `REFERENCES customers(id)`:外键,声明这一列指向哪张表。SQLite 默认**不强制检查**外键(要 `PRAGMA foreign_keys=ON` 才检查),这里主要起文档作用。
+- `amount_cents INTEGER`:金额用整数「分」存。`0.1 + 0.2` 在浮点里等于 `0.30000000000000004`,钱不能有这种误差,所以 2392 元存成 `239200`。
+- 日期列都是 `TEXT`,存 `2026-10-08` 这样的 ISO 格式字符串。SQLite 没有专门的日期类型,ISO 格式按字符串排序正好就是按时间排序。
+- `paid_at TEXT` 没有 `NOT NULL`:还没付的发票这里是 `NULL`。
+- `refund_requests` 的主键是 `INTEGER PRIMARY KEY AUTOINCREMENT` 自增,因为它是后面 Agent 运行时才写入的,seed 不往里放数据。
+
+**常量**
+
+```python
+PLANS = {"基础版": 4900, "专业版": 9900, "企业版": 29900}   # 每席位每月,单位:分
+```
+三个套餐每个席位每月 49、99、299 元。
+
+```python
+SURNAMES = "王李张刘陈杨黄赵吴周徐孙马朱胡郭何林罗高"
+```
+一个字符串。`rng.choice` 对字符串也能用,会随机挑一个字符,所以这里不用写成列表。
+
+`GIVEN`、`COMPANIES` 是名字和公司名的候选池。
+
+```python
+TICKET_TEMPLATES = [
+    ("重复扣款", "你好,我这个月的账单好像扣了两次,{inv} 和另一笔金额一样,..."),
+    ...
+]
+```
+8 个工单模板,每个是 `(标题, 正文)` 元组。正文里的 `{inv}`、`{seats}`、`{company}`、`{plan}` 是占位符,后面用 `.format()` 填。注意这里是普通字符串,不是 f-string:f-string 定义时就会立刻替换,这里要等到后面拿到具体客户才填。
+
+**`main`:准备工作**
+
+```python
+    rng = random.Random(42)
+```
+创建一个独立的随机数生成器,种子固定为 42。同样的种子,每次产生的随机序列完全一样,所以「随机」数据每次跑都一样,课程里提到的 `C007`、`INV-2026-0123` 在你的库里也一定存在。用自己的 `rng` 而不是全局的 `random.choice`,是为了不受其他代码调用 random 的影响。
+
+```python
+    DB_PATH.unlink(missing_ok=True)
+```
+删掉旧库文件,`missing_ok=True` 表示文件不存在也不报错。这就是开头说的「每次删库重建」。
+
+```python
+    conn = sqlite3.connect(DB_PATH)
+    conn.executescript(SCHEMA)
+```
+`connect` 打开数据库,文件不存在就新建一个。`executescript` 能一次执行多条用分号隔开的 SQL,五张表一次建完;普通的 `execute` 一次只能执行一条。
+
+```python
+    today = date(2026, 10, 12)
+    inv_seq = 0
+```
+「今天」写死成 2026-10-12,而不是 `date.today()`,否则你哪天跑数据就会变。`inv_seq` 是发票的全局流水号。
+
+**造 30 个客户**
+
+```python
+    for i in range(1, 31):
+        cid = f"C{i:03d}"
+```
+`i` 从 1 到 30。`{i:03d}` 是格式说明:整数(`d`)补足 3 位,不够补 0。`i=7` 得到 `C007`。相当于 TS 的 `` `C${String(i).padStart(3, "0")}` ``。
+
+```python
+        name = rng.choice(SURNAMES) + rng.choice(GIVEN)
+        company = COMPANIES[(i - 1) % len(COMPANIES)] + ("" if i <= 15 else "二店")
+        email = f"user{i:03d}@example.com"
+        created = today - timedelta(days=rng.randint(60, 700))
+```
+- 名字:随机姓加随机名,`C001` 是「刘伟」。
+- 公司:`(i - 1) % 15` 让 30 个客户轮流用 15 个公司名;第 16 个起加「二店」,保证公司名不重复。`C001` 是「星河餐饮」,`C016` 是「星河餐饮二店」。
+- 邮箱按编号生成,保证 `UNIQUE` 约束不冲突。
+- 注册日期:今天往前随机 60 到 700 天(`randint` 两头都包含)。`C001` 是 `2025-11-05`。`date - timedelta` 得到另一个 `date`。
+
+```python
+        conn.execute("INSERT INTO customers VALUES (?,?,?,?,?)",
+                     (cid, name, email, company, created.isoformat()))
+```
+`?` 是参数占位符,值按顺序从后面的元组里填,驱动负责转义,不会 SQL 注入。`isoformat()` 把日期变成 `"2025-11-05"` 字符串。
+
+**每人一个订阅**
+
+```python
+        sid = f"S{i:03d}"
+        plan = rng.choice(list(PLANS))
+        cycle = rng.choice(["monthly", "monthly", "yearly"])
+        seats = rng.choice([1, 2, 3, 5, 8, 12])
+        status = rng.choices(["active", "trialing", "past_due", "canceled"], [70, 10, 10, 10])[0]
+```
+- `list(PLANS)` 取出 dict 的键 `["基础版", "专业版", "企业版"]`,再随机挑一个。
+- `"monthly"` 写两遍,是让月付的概率变成 2/3。
+- `rng.choices`(多了个 s)支持权重:70% active,其余各 10%。它返回的是**列表**(默认抽 1 个),所以要 `[0]` 取出来。真实结果是 active 23 个、past_due 3 个、trialing 2 个、canceled 2 个。
+
+```python
+        started = created + timedelta(days=rng.randint(0, 20))
+        months = 12 if cycle == "yearly" else 1
+        period_end = today + timedelta(days=rng.randint(1, 30 * months))
+```
+注册后 0~20 天开始订阅;年付一个账期 12 个月,月付 1 个月;当前账期在未来 1 天到一个账期内结束。
+
+`S001`:基础版、monthly、2 席位、trialing,`2025-11-22` 开始,`2026-10-15` 到期。
+`S007`:企业版、monthly、8 席位、active,`2026-11-01` 到期。
+
+**每人 3~5 张发票**
+
+```python
+        for k in range(rng.randint(3, 5)):
+            inv_seq += 1
+            inv_id = f"INV-2026-{inv_seq:04d}"
+            amount = PLANS[plan] * seats * months
+            issued = today - timedelta(days=30 * months * k + rng.randint(0, 5))
+```
+`k=0` 是最近一张,`k=1` 往前推一个账期,以此类推。金额 = 单价 × 席位 × 月数:`C001` 是 4900 × 2 × 1 = `9800` 分(98 元);`C007` 是 29900 × 8 × 1 = `239200` 分(2392 元)。开票日再随机往前错 0~5 天,让日期不那么整齐。`inv_seq` 是全局累加的,所以 `C001` 拿到 0001~0005,`C007` 拿到 0026~0029。
+
+```python
+            inv_status = "paid" if k > 0 else rng.choice(["paid", "paid", "open"])
+            paid_at = (issued + timedelta(days=rng.randint(0, 3))).isoformat() if inv_status == "paid" else None
+```
+历史发票全部已付;只有最近一张有 1/3 概率还没付(`open`)。已付的付款日在开票后 0~3 天,没付的 `paid_at` 是 `None`,写进数据库就是 `NULL`。
+
+`C001` 的五张:
+
+| id | amount_cents | status | issued_at | paid_at |
+| --- | --- | --- | --- | --- |
+| INV-2026-0001 | 9800 | paid | 2026-10-09 | 2026-10-09 |
+| INV-2026-0002 | 9800 | paid | 2026-09-12 | 2026-09-13 |
+| INV-2026-0003 | 9800 | paid | 2026-08-12 | 2026-08-12 |
+| INV-2026-0004 | 9800 | paid | 2026-07-10 | 2026-07-11 |
+| INV-2026-0005 | 9800 | paid | 2026-06-09 | 2026-06-12 |
+
+循环结束,30 个客户一共生成了 122 张发票。
+
+**故意造一笔重复扣款**
+
+```python
+    row = conn.execute("SELECT * FROM invoices WHERE customer_id='C007' ORDER BY issued_at DESC LIMIT 1").fetchone()
+```
+取 `C007` 最近一张发票,`fetchone()` 返回一个元组:
+`('INV-2026-0026', 'C007', 'S007', 239200, 'paid', '2026-10-08', '2026-10-08')`。按列顺序,`row[0]` 是 id,`row[1]` 是客户,`row[2]` 是订阅,`row[3]` 是金额,`row[5]` 是开票日,`row[6]` 是付款日。
+
+```python
+    inv_seq += 1
+    dup_id = f"INV-2026-{inv_seq:04d}"
+    conn.execute("INSERT INTO invoices VALUES (?,?,?,?,?,?,?)",
+                 (dup_id, row[1], row[2], row[3], "paid", row[5], row[6] or row[5]))
+```
+流水号到了 123,复制出一张 `INV-2026-0123`:同一客户、同一订阅、同样 2392 元、同一天开票,状态强制为 `paid`。`row[6] or row[5]`:原发票如果还没付(`paid_at` 是 None),就用开票日当付款日,保证这张重复发票「确实扣了钱」。
+
+现在 `C007` 有两张 10 月 8 日、各 2392 元的已付发票,0026 和 0123。发票总数 123。
+
+**造 40 张随机工单**
+
+```python
+    for t in range(1, 41):
+        cid = f"C{rng.randint(1, 30):03d}"
+        subject, body = rng.choice(TICKET_TEMPLATES)
+```
+随机挑一个客户、一个模板。`subject, body = (...)` 是元组解包,一次给两个变量赋值。
+
+```python
+        inv = conn.execute("SELECT id FROM invoices WHERE customer_id=? ORDER BY issued_at DESC LIMIT 1",
+                           (cid,)).fetchone()[0]
+        sub = conn.execute("SELECT plan, seats FROM subscriptions WHERE customer_id=?", (cid,)).fetchone()
+        company = conn.execute("SELECT company FROM customers WHERE id=?", (cid,)).fetchone()[0]
+```
+查出这个客户最近的发票号、套餐和席位、公司名,准备填进模板。`(cid,)` 末尾的逗号不能省,只有一个元素的元组必须这么写。
+
+```python
+        text = body.format(inv=inv, seats=max(1, sub[1] - 2), company=company, plan=sub[0])
+```
+`.format()` 按名字填占位符,模板里没用到的参数会被忽略,所以每个模板都可以传同样四个参数。`seats=max(1, sub[1] - 2)` 故意比真实席位少报 2 个,对应「席位数量不对」这个投诉;`max(1, ...)` 保证不会出现 0 或负数。
+
+```python
+        created = today - timedelta(days=rng.randint(0, 14))
+        conn.execute("INSERT INTO tickets VALUES (?,?,?,?,?,?)",
+                     (f"T{1000 + t}", cid, subject, text, "open", created.isoformat()))
+```
+工单号 `T1001` 到 `T1040`,都是最近两周内提的,全部 `open`。真实的 `T1001`:客户 `C015`,「导出报表报错」,`2026-09-30`。
+
+40 张的标题分布:登录不了 9、重复扣款 8、导出报表报错 6、发票抬头修改 5、申请退款 5、升级套餐 4、取消订阅 3、席位数量不对 1。注意那 8 张「重复扣款」是随机客户提的,他们其实**没有**被重复扣款,只有 `C007` 是真的。这正好可以考 Agent:它得去查发票,不能客户说什么就信什么。
+
+**C007 的真工单**
+
+```python
+    conn.execute("INSERT INTO tickets VALUES (?,?,?,?,?,?)",
+                 ("T1041", "C007", "重复扣款",
+                  f"你好,10 月 8 号我被扣了两次款,{row[0]} 和 {dup_id} 金额一模一样,麻烦把多扣的那笔退给我。",
+                  "open", today.isoformat()))
+```
+这里用 f-string,因为 `row[0]` 和 `dup_id` 已经确定了。正文填好后是:「你好,10 月 8 号我被扣了两次款,INV-2026-0026 和 INV-2026-0123 金额一模一样,麻烦把多扣的那笔退给我。」后面几天的演示都围绕这张工单。
+
+**收尾**
+
+```python
+    conn.commit()
+```
+提交事务。Python 的 sqlite3 默认在第一条 INSERT 时自动开启事务,不 commit 就关闭连接,前面写的数据全部丢失。
+
+```python
+    counts = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+              for t in ["customers", "subscriptions", "invoices", "tickets"]}
+```
+字典推导式:对每个表名查一次行数,得到 `{'customers': 30, 'subscriptions': 30, 'invoices': 123, 'tickets': 41}`。表名不能用 `?` 占位(占位符只能用于值),所以这里用 f-string 拼。拼 SQL 一般是大忌,这里能接受,是因为表名来自代码里写死的列表,不是外部输入。
+
+```python
+    print(f"已生成 {DB_PATH.name}: {counts}")
+    conn.close()
+```
+`DB_PATH.name` 只取文件名 `cloudledger.db`。打印的就是上面那行输出。
+
 ## 第一个工具:一个普通函数加一个装饰器
 
 MCP Python SDK 2.x 写 server 的方式非常像 FastAPI。你写普通的 Python 函数,加上 `@mcp.tool()`,SDK 从函数身上读出三样东西:
