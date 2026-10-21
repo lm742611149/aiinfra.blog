@@ -202,6 +202,8 @@ const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 		<Footer />
 
 		<script>
+			import '../scripts/line-notes';
+
 			const bar = document.querySelector<HTMLElement>('[data-progress]');
 			const body = document.querySelector<HTMLElement>('.post-body');
 			const links = [...document.querySelectorAll<HTMLAnchorElement>('[data-toc]')];

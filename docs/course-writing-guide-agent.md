@@ -91,6 +91,30 @@ lang: 'zh'
 - 代码:能直接跑,标明文件路径、依赖(`uv add ...`)、环境变量;不调 API 的部分写完用 `python3 -c "import ast,sys;ast.parse(open(sys.argv[1]).read())"` 之类做语法检查(本机 python 3.10;用 3.12 新语法的代码可以只做肉眼检查)。**不能编造运行输出**:示例输出要写成「输出大致长这样」,并保证和代码逻辑一致。
 - 成本:涉及花钱的地方给估算算式(token 数 × 单价),价格注明查证日期和链接。
 
+### 3.1 逐行解释:挂在代码块上,悬停弹出
+
+完整代码块的逐行讲解不要另起一大段往下堆,写成紧跟在代码块后面的注释列表,读者把鼠标悬停在某一行上(手机上点一下),解释就会在这一行下面弹出来:
+
+````markdown
+```python
+DB_PATH = Path(os.environ.get(...))
+...
+```
+
+<div class="line-notes">
+
+- `DB_PATH = Path(` 从里往外读……代入真实值……
+- `with db() as conn:` 第二次出现的那一行也能单独解释
+
+</div>
+````
+
+- 每条开头的 inline code 是 key,会**按顺序**去匹配上面代码块里第一个包含它的行(从上一条匹配到的位置往后找),所以重复出现的行可以一处写一条。key 取那一行里有辨识度的一小段就行。
+- 代码块的 ``` 和 `<div class="line-notes">` 之间空一行,div 内首尾也各空一行,否则 markdown 不渲染。
+- 正文支持 inline code、加粗、`<br>` 换行。按「逐行讲+代入真实数据」写,数据要实跑得来。
+- `python3 scripts/check-course.py` 会检查每个 key 都能在代码块里按顺序找到;浏览器控制台里 `[line-notes]` 开头的警告也表示有 key 没挂上。没有 JS 时注释列表会直接显示在代码块下面。
+- 实现在 `src/scripts/line-notes.ts`,样式在 `global.css` 的 Line notes 段。
+
 ## 4. 图、视频、链接
 
 ### 4.1 图:内联 SVG,每篇 1–3 张

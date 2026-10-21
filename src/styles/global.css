@@ -297,6 +297,139 @@ pre > code {
 	font-family: inherit;
 }
 
+/* ---------- Line notes: hover a code line to read its explanation (src/scripts/line-notes.ts) ---------- */
+
+.line-notes {
+	font-size: 0.92rem;
+	border-left: 2px solid var(--mem);
+	padding-left: 1rem;
+	margin: -1rem 0 1.8rem;
+}
+
+.line-notes > ul > li > code:first-child {
+	color: var(--mem);
+}
+
+.line-notes-hint {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.4rem 0.75rem;
+	font-family: var(--font-display);
+	font-size: 0.8rem;
+	color: var(--ink-faint);
+	margin: 1.8rem 0 -1.3rem;
+}
+
+.line-notes-hint button {
+	font: inherit;
+	color: var(--mem);
+	background: none;
+	border: 0;
+	padding: 0;
+	cursor: pointer;
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+
+.line-notes-dot {
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--mem);
+	margin-right: -0.35rem;
+}
+
+pre.has-line-notes {
+	padding-left: 1.6rem;
+}
+
+pre.has-line-notes .line[data-note-html] {
+	display: inline-block;
+	min-width: 100%;
+	position: relative;
+	cursor: help;
+	border-radius: 2px;
+	outline: none;
+}
+
+pre.has-line-notes .line[data-note-html]::before {
+	content: '';
+	position: absolute;
+	left: -0.95rem;
+	top: calc(0.8em - 3px);
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--mem);
+	opacity: 0.75;
+}
+
+pre.has-line-notes .line[data-note-html]:hover,
+pre.has-line-notes .line[data-note-html]:focus-visible,
+pre.has-line-notes .line.is-open {
+	background: rgba(240, 185, 11, 0.14);
+}
+
+pre.has-line-notes .line.is-open::before {
+	opacity: 1;
+}
+
+.line-note-pop {
+	position: absolute;
+	z-index: 50;
+	box-sizing: border-box;
+	max-height: min(22rem, 60vh);
+	overflow-y: auto;
+	padding: 0.75rem 1rem;
+	background: var(--paper-raised);
+	color: var(--ink);
+	border: 1px solid var(--mem);
+	border-radius: 4px;
+	box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+	font-family: var(--font-body);
+	font-size: 0.92rem;
+	line-height: 1.7;
+	overflow-wrap: anywhere;
+}
+
+.line-note-pop[hidden] {
+	display: none;
+}
+
+.line-note-pop::before {
+	content: '';
+	position: absolute;
+	top: -6px;
+	left: var(--arrow-x, 14px);
+	width: 10px;
+	height: 10px;
+	background: var(--paper-raised);
+	border-left: 1px solid var(--mem);
+	border-top: 1px solid var(--mem);
+	transform: rotate(45deg);
+}
+
+.line-note-pop > :first-child {
+	margin-top: 0;
+}
+
+.line-note-pop > :last-child {
+	margin-bottom: 0;
+}
+
+.line-note-pop p,
+.line-note-pop ul,
+.line-note-pop pre {
+	margin: 0.5rem 0;
+}
+
+.line-note-pop pre {
+	font-size: 0.78rem;
+	padding: 0.5rem 0.75rem;
+}
+
 /* Shiki css-variables theme, tuned to the palette */
 :root {
 	--astro-code-foreground: #d7dce6;

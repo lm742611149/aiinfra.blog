@@ -746,6 +746,82 @@ if __name__ == "__main__":
     mcp.run()  # 默认 stdio
 ```
 
+<div class="line-notes">
+
+- `"""CloudLedger 业务库` 模块 docstring,把这个 server 的权限边界写在最前面:读随便调,写只有一个口子,而且这个口子只能「提申请」,钱不会马上退出去。**给 Agent 的写权限要收窄到人能兜底的程度**,这是今天最重要的设计思想。
+- `import logging` 打日志用。stdio 模式下不能用 `print`,原因见下面 `log = ...` 那一行。
+- `from typing import Annotated` `Annotated[类型, 附加信息]` 给类型贴上额外信息,比如 `Annotated[str, Field(...)]` 的意思是:类型是 str,另外附带一份描述和校验规则。`Literal` 限定只能取几个固定值,生成 schema 时会变成 `enum`;`TypedDict` 声明「有固定 key 的 dict」。
+- `from pydantic import Field` `Field` 用来声明参数的说明(description)和约束(pattern、ge、le、min_length……)。SDK 会把它们翻译成 JSON Schema 交给模型,**模型就是看这份 description 决定该填什么值的**。
+- `from mcp.server import MCPServer` SDK 2.x 的高层 server 类(1.x 叫 `FastMCP`,用法基本一样)。
+- `import ToolError` 在工具里抛它,SDK 会把它转成 `isError: true` 的工具结果,把这段文字**原样交给模型**,server 不会崩。所以本文件里的错误信息都写成「告诉模型下一步该怎么做」。
+- `DB_PATH = Path(` 从里往外读:`Path(__file__)` 是 `server.py` 自己的路径 → `.with_name("cloudledger.db")` 换成同目录下的 `.../w4/cloudledger/cloudledger.db` → 外层的 `os.environ.get` 先看有没有设 `CLOUDLEDGER_DB`。没设就用同目录的库;运行 `CLOUDLEDGER_DB=/tmp/eval_1.db uv run python server.py` 就会用 `/tmp/eval_1.db`。评测时每个用例拷一份干净的库再指过去,上一个用例写进去的退款申请就不会影响下一个。
+- `log = logging.getLogger` 建一个名为 cloudledger 的 logger。**stdio 模式下 stdout 就是 JSON-RPC 通信线路**,随手 `print("hello")` 会把协议消息弄坏;logging 默认写 stderr,所以是安全的。在 Inspector 里调用退款工具时,能看到它打出 `refund request 1 created for INV-2026-0123`。
+- `mcp = MCPServer(` 第一个参数 `"cloudledger"` 是 server 名,host 里显示的就是它。
+- `instructions=` 握手(initialize)时发给 host,很多 host 会把它放进系统提示词。「对外用元、内部存分」是在提醒模型:库里的 `239200` 要说成 2392.00 元,不能直接念给客户。
+- `READ_ONLY = ToolAnnotations(` 三个只读工具共用的注解。`read_only_hint=True` 表示不改数据,host 可以据此不弹确认框;`open_world_hint=False` 表示只访问自己的库,不连外部系统。注意这些**只是提示,没有强制力**,真正兜底的是下面的代码里根本没写 UPDATE/DELETE。
+- `class Subscription(TypedDict):` 返回类型写成 TypedDict,SDK 才能生成 `outputSchema`,并把结果放进 `structured_content`。运行时它就是一个普通 dict:`Subscription(id="S007", ...)` 得到的就是 `{"id": "S007", ...}`,作用只体现在类型声明和 schema 上。
+- `class RefundRequest(TypedDict):` 退款工具的返回结构。
+- `amount_yuan: str` 金额用 str 不用 float,`"2392.00"` 会原样保留两位小数,不会变成 `2392.0`。
+- `def db() -> sqlite3.Connection:` 每个工具都通过它拿连接。
+- `if not DB_PATH.exists():` 先检查库文件存不存在。不检查的话,`sqlite3.connect` 遇到不存在的路径会**悄悄新建一个空库**,紧接着查询就会报 `no such table: customers`,模型看到这个错误也不知道怎么办。
+- `conn.row_factory = sqlite3.Row` 让查询结果从元组 `('C007', '刘静', ...)` 变成可以按列名取的 `row["name"]`,也能用 `dict(row)` 转成字典。
+- `return f"{cents / 100:.2f}"` 代入:`yuan(239200)` → `239200 / 100 = 2392.0` → `:.2f` 保留两位 → `"2392.00"`;`yuan(1999)` → `"19.99"`。
+- `@mcp.tool(annotations=READ_ONLY)` 装饰器把函数注册成 MCP 工具:函数名是工具名,docstring 是工具描述,参数生成 inputSchema。
+- `query: Annotated[str` 模型看到的 schema 是 `{"query": {"type": "string", "description": "客户邮箱、姓名……"}}`。没有默认值,所以是 required。
+- `"""按邮箱/姓名/公司/编号查找客户` 后半句「查订阅和发票前先用它拿到 customer_id」是**在给模型安排调用顺序**,对 Agent 选对工具帮助很大。
+- `like = f"%{query.strip()}%"` 代入 `query = " user007 "` → strip 去掉首尾空格 → `like = "%user007%"`。`%` 是 SQL LIKE 的通配符,表示任意多个字符。
+- `with db() as conn:` sqlite3 连接的 `with` **只管事务**:正常结束自动 commit,出异常 rollback,**但不会关闭连接**。练习规模下靠垃圾回收就够了,生产里会用连接池或 `contextlib.closing`。
+- `"SELECT id, name, email, company FROM customers "` 两个挨着的字符串字面量,Python 会自动拼成一个。
+- `"WHERE id = ? OR email LIKE ?` `?` 是参数占位符,值单独放在后面的元组里,**这样能防 SQL 注入**。千万别用 f-string 把 query 拼进 SQL。
+- `(query.strip().upper(), like, like, like),` 四个值依次填进四个 `?`。实测几种 query:<br>`"c007"` → `.upper()` 得到 `C007`,`id = ?` 精确命中,返回刘静;<br>`"user007"` → 编号没命中,email 命中,还是 C007;<br>`"刘"` → name 命中 4 个人:C001 刘伟、C007 刘静、C008 刘军、C030 刘霞;<br>`"咖啡"` → company 命中 C007 半岛咖啡和 C022 半岛咖啡二店。<br>用 `.upper()` 是因为 SQLite 的 LIKE 对英文本来就不区分大小写,但 `=` 区分。
+- `).fetchall()` 取出全部结果行,是一个列表,查不到时是 `[]`。
+- `if not rows:` 查「张三」时 `rows = []`,`not []` 为 True,进入报错。
+- `raise ToolError(f"没有找到匹配` 错误信息里带着下一步建议(换成邮箱或编号),模型读到会换个词重试,不会就此卡住。
+- `return [dict(r) for r in rows]` 列表推导式,把每个 `sqlite3.Row` 转成普通 dict。实测 `"c007"` 的结构化结果是 `{"result": [{"id": "C007", "name": "刘静", "email": "user007@example.com", "company": "半岛咖啡"}]}`。返回值是列表不是对象,所以 SDK 在外面包了一层 `result`。
+- `customer_id: Annotated[str` `pattern=r"^C\d{3}$"` 规定必须是大写 C 加 3 位数字(`r""` 是原始字符串,`\d` 不会被当成转义)。`"C007"` ✅,`"c007"`、`"刘静"`、`"C0007"` 都 ❌。实测传 `"c007"`,**函数体根本没执行**,pydantic 先拦了下来,返回 `String should match pattern '^C\d{3}$'`。模型想跳过 find_customer 直接传名字,在这里就走不通。
+- `row = conn.execute("SELECT * FROM subscriptions` `(customer_id,)` 末尾的逗号不能省,**单元素元组必须带逗号**,`("C007")` 只是加了括号的字符串。`fetchone()` 取第一行,没有就返回 None。代入 C007,拿到 S007 这一行。
+- `if row is None:` 代入 `"C099"`:格式合法,但库里只有 30 个客户,查不到,报错时顺便提示模型确认编号来源。
+- `return Subscription(**dict(row))` `**` 是字典解包,把 `{"id": "S007", "plan": "企业版", ...}` 展开成关键字参数。返回 `{"id": "S007", "customer_id": "C007", "plan": "企业版", "billing_cycle": "monthly", "seats": 8, "status": "active", "started_at": "2026-03-15", "current_period_end": "2026-11-01"}`。隐患:`SELECT *` 加 `**`,以后表里加一列,返回值就会多出 schema 里没有的 key。更稳妥的做法是把列名一个个写出来。
+- `customer_id: Annotated[str` 和 get_subscription 一样的编号校验。
+- `status: Literal[` schema 里会变成 `"enum": ["paid", "open", "void", "refunded"]`,模型传 `"已支付"` 会被直接拒掉。`X | None = None` 是 Python 3.10 的联合类型写法,表示可以不传。
+- `limit: Annotated[int, Field(ge=1, le=20)] = 6` 大于等于 1、小于等于 20,默认 6。传 100 会被拦下,防止一次拉几千行把上下文撑爆。
+- `sql = "SELECT id, amount_cents` 动态拼 SQL,但**拼进去的只有固定的 SQL 片段,值始终走 `?`**。
+- `args: list = [customer_id]` 和 sql 里的 `?` 一一对应的参数列表。
+- `if status:` 传了 status 才加这个条件。代入 `list_invoices("C007")`:最后 `args = ["C007", 6]`;代入 `list_invoices("C007", status="open", limit=3)`:`args = ["C007", "open", 3]`。
+- `sql += " ORDER BY issued_at DESC, id DESC LIMIT ?"` C007 有两张发票都是 2026-10-08 开的,日期相同时按 id 倒序,所以 INV-2026-0123 排在 INV-2026-0026 前面。加第二个排序键是为了**让结果顺序稳定**,评测才好写断言。
+- `return [{**dict(r), "amount_yuan"` `{**原字典, 新key: 值}` 是「复制一份再加一个字段」。实测 `limit=3` 的前两条:<br>`{"id": "INV-2026-0123", "amount_cents": 239200, "status": "paid", "issued_at": "2026-10-08", ..., "amount_yuan": "2392.00"}`<br>`{"id": "INV-2026-0026", "amount_cents": 239200, ..., "issued_at": "2026-10-08", "amount_yuan": "2392.00"}`<br>同一天两笔 2392 元,模型从这里就能看出重复扣款。查不到时返回 `[]` 而不是报错:「这个客户没有发票」是合法答案,和 find_customer「找不到人 = 输入有问题」不一样。
+- `@mcp.tool(annotations=ToolAnnotations(read_only_hint=False` 唯一的写工具。`read_only_hint=False`:会写库,host 一般会弹确认框;`destructive_hint=False`:只新增,不删不改,也不动钱;`idempotent_hint=False`:**不幂等**,同样的参数调两次就会插两条,host 和模型看到它就知道不能随便重试。
+- `amount_yuan: Annotated[float, Field(gt=0` `gt=0` 是严格大于 0,传 0 或负数会被拦。
+- `reason: Annotated[str, Field(min_length=4` 原因要 4~200 字。像「退款」这样两个字会被拦,逼着模型写出依据,审批的人也看得明白。
+- `"""提交一条退款申请` docstring 把业务规则提前告诉模型(只有 paid 能退、不能超额),模型就不太会拿 open 的发票来试。
+- `inv = conn.execute("SELECT * FROM invoices` 下面用一个真实场景走一遍:模型调用 `create_refund_request("INV-2026-0123", 2392, "同日重复扣款,与 INV-2026-0026 重复")`。这一行查到 0123,`amount_cents = 239200`,`status = "paid"`。
+- `if inv is None:` 传一个不存在的 `INV-2026-9999` 就会走到这里。
+- `if inv["status"] != "paid":` 传 C003 那张未付的 `INV-2026-0009` 会报「状态是 open,只有 paid 的发票能退款」。0123 是 paid,通过。注意 f-string 里用的是单引号 `inv['status']`,因为外层已经是双引号(3.12 之前不能嵌套同一种引号)。
+- `already = conn.execute(` 统计这张发票已经申请了多少钱。
+- `"SELECT COALESCE(SUM(amount_cents), 0)` 没有任何行时 `SUM` 返回 NULL,`COALESCE(x, 0)` 把 NULL 换成 0。
+- `"WHERE invoice_id = ? AND status != 'rejected'"` 被驳回的申请不算占用,待审批和已通过的都算。
+- `).fetchone()[0]` 取第一行第一列。第一次调用时表是空的 → `already = 0`。
+- `cents = round(amount_yuan * 100)` `round(2392 * 100) = 239200`。为什么用 `round` 不用 `int`?浮点数有误差:`19.99 * 100` 等于 `1998.9999999999998`,`int` 截断得 1998,**少了 1 分**;`round` 得 1999。
+- `left = inv["amount_cents"] - already` `239200 - 0 = 239200`,还能申请 2392 元。
+- `if cents > left:` 第一次:`239200 > 239200` 为 False,放行。**同样参数再调一次**(`idempotent_hint=False` 要防的就是这个):`already = 239200`,`left = 0`,`239200 > 0` 为 True,报错。
+- `raise ToolError(f"最多还能申请` 第二次调用的实测报错:`最多还能申请 0.00 元(发票 2392.00 元,已申请 2392.00 元)。`额度校验顺带挡住了重复提交,模型看错误信息也知道是怎么回事。隐患:「先查 already 再 INSERT」不是原子操作,两个请求同时进来可能都读到 0,合起来就超额了。单人 stdio 场景基本碰不到,真要防可以用 `BEGIN IMMEDIATE` 先拿写锁。
+- `"VALUES (?, ?, ?, 'pending_approval', ?)"` status **在 SQL 里写死成 `'pending_approval'`**,不是参数,模型没有任何办法直接写出 approved。「人审批」这个设计就落在这一行。
+- `datetime.now().isoformat(timespec="seconds")` 得到 `"2026-10-22T14:30:05"` 这种格式,精确到秒,不带微秒。
+- `log.info("refund request %s created for %s"` `cur.lastrowid` 是刚插入那行的自增 id,第一次是 1。日志用 `%s` 占位、参数分开传,而不是 f-string:这样日志级别关掉时就不用做字符串格式化,这是 logging 的惯用写法。写到 stderr,不影响 stdio。with 块到这里结束,没有异常,**自动 commit**。
+- `return RefundRequest(refund_request_id=cur.lastrowid` 实测返回 `{"refund_request_id": 1, "status": "pending_approval", "amount_yuan": "2392.00"}`。`cur` 在 with 块外面还能用,with 只是结束了事务,cursor 对象还在。
+- `@mcp.resource("cloudledger://policy/refund")` resource 是「一份可以读的资料」,通常由用户或 host 决定挂进上下文;tool 则由模型自己决定什么时候调用。`cloudledger://` 这个 scheme 是自定义的,随你起名。
+- `"1. 重复扣款` 对应 T1041:C007 的 0123 和 0026 是重复扣款,按第 1 条应该全额退还重复的那一笔。几个相邻的字符串会自动拼起来,`\n` 是换行。
+- `"3. 月付` C007 的订阅是 monthly。如果客户说「下个月不用了,把这个月退给我」,按这条应该拒绝,不该提申请。这个金额该不该退、退多少,代码不判断,**它只管不超额**,对不对靠模型读政策加主管审批兜底。
+- `"4. 所有退款需客服主管审批后执行。"` 和上面写死的 `pending_approval` 对应。
+- `@mcp.prompt()` prompt 是第三种原语:**用户主动选用的提示词模板**,在 host 里通常显示成斜杠命令。
+- `t = conn.execute("SELECT * FROM tickets` 代入 `"T1041"` → 查到 C007 的重复扣款工单。
+- `raise ToolError(f"工单 {ticket_id} 不存在")` 代入 `"T9999"` 走到这里。严格说 prompt 不是工具,这里借用了 ToolError,SDK 一样会把它转成错误返回。
+- `f"你是云簿的客服。请处理工单` 代入 T1041,生成:<br>`你是云簿的客服。请处理工单 T1041(客户 C007):`<br>`标题:重复扣款`<br>`内容:你好,10 月 8 号我被扣了两次款,INV-2026-0026 和 INV-2026-0123 金额一模一样,麻烦把多扣的那笔退给我。`<br>后面是固定的那句指令。模型拿到之后的理想路径:list_invoices 核实两笔 → 按政策第 1 条 → create_refund_request 提申请 → 回复客户「已提交,主管审批后 3 个工作日内原路退回」。
+- `if __name__ == "__main__":` 直接 `python server.py` 时才启动;被测试文件 import 时不启动。
+- `mcp.run()` 默认走 stdio:host 把它当子进程拉起来,通过 stdin/stdout 收发 JSON-RPC。
+
+</div>
+
 几处细节解释一下:
 
 - `with db() as conn:` 是 sqlite3 的事务写法,块结束自动 commit。注意它不会关闭连接,学习项目无所谓,生产里你会用连接池。

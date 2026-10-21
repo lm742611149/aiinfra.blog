@@ -128,6 +128,19 @@ def main() -> int:
             problems.append(f'{p.name}: <details> answer lacks blank line after summary (offset {bad.start()})')
             break
 
+        # line-notes keys must match the code block right above, in order (same rule as src/scripts/line-notes.ts).
+        for block in re.finditer(r'```[^\n]*\n((?:(?!```).)*?)\n```\n\n<div class="line-notes">\n(.*?)\n</div>', text, re.S):
+            lines = block.group(1).split('\n')
+            start = 0
+            for key in re.findall(r'^- `([^`]+)`', block.group(2), re.M):
+                idx = next((i for i in range(start, len(lines)) if key in lines[i]), None)
+                if idx is None:
+                    problems.append(f'{p.name}: line-notes key not found after code line {start + 1}: {key!r}')
+                else:
+                    start = idx + 1
+        if text.count('<div class="line-notes">') != len(re.findall(r'```\n\n<div class="line-notes">', text)):
+            problems.append(f'{p.name}: <div class="line-notes"> must follow a code block after one blank line')
+
         if info['figures'] < 1:
             problems.append(f'{p.name}: only {info["figures"]} figure(s)')
         if info['videos'] < 2:
