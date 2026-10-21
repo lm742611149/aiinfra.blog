@@ -991,6 +991,251 @@ if __name__ == "__main__":
 
 跑一下,你大致会看到:第一个问题(谢谢)不调用任何工具直接回复;第二个问题会调用两次 `search_kb`,一次查发票抬头,一次查退款;第三个问题可能先用「外币」查一次,再换成「多币种」查一次。具体行为取决于你用的模型,能力弱一些的模型可能会对寒暄也去检索一次,这就是要用评估集量化的东西。
 
+**`agentic_rag.py` 逐行讲解。** 数据来自一次真实运行(DeepSeek deepseek-flash,hybrid 检索),你那边模型查的词可能略有不同,结构是一样的。
+
+**导入和常量**
+
+```python
+import json
+import sys
+from pathlib import Path
+```
+`json` 用来解析模型给的工具参数(字符串 → dict);`sys` 用来读命令行参数;`Path` 是面向对象的路径,比拼字符串安全。
+
+```python
+from llm import chat_raw
+from mem_retriever import MemRetriever
+```
+`chat_raw` 是上面刚加的、返回完整 message 对象的函数;`MemRetriever` 是 Day 19 的内存检索器,不依赖 Postgres,四种检索模式都有。
+
+```python
+DATA = Path(__file__).resolve().parent.parent / "data" / "helpcenter"
+```
+从右往左拆:`__file__` 是当前文件路径;`.resolve()` 变成绝对路径 `/Users/you/agent-60-lab/w3/agentic_rag.py`;第一个 `.parent` 是 `.../w3`,第二个是 `.../agent-60-lab`;`Path` 重载了 `/` 运算符,`/ "data" / "helpcenter"` 就是拼路径,结果 `.../agent-60-lab/data/helpcenter`。相当于 Node 的 `path.join(__dirname, "..", "data", "helpcenter")`。这样写,不管你在哪个目录运行脚本都能找到文件。
+
+```python
+RETRIEVER = MemRetriever()
+```
+模块加载时就建好检索器:读 20 篇文章、切块、建 BM25 索引。向量是懒加载的,**第一次** `search` 才会把所有块送去 embedding,所以第一个要检索的问题会慢一两秒,后面就快了。放在模块顶层是为了全程只建一次,而不是每次调用工具都重建。
+
+```python
+MAX_STEPS = 6
+```
+最多和模型来回 6 轮,防止死循环。
+
+**`SYSTEM`**
+
+四条规则各管一件事:必须先查(防幻觉)、多件事分别查、寒暄不查(省钱)、标出处+查不到就转人工。这几条就是下面三个演示问题要验证的行为。
+
+**`TOOLS`**
+
+```python
+TOOLS = [
+    {"type": "function", "function": {
+        "name": "search_kb",
+        "description": "...query 用帮助中心的说法写...",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "检索用的查询"},
+        }, "required": ["query"]},
+    }},
+    ...
+]
+```
+Day 8 讲过的工具定义格式:`name` 是函数名,`description` 是给模型看的说明书,`parameters` 是 JSON Schema,写法和 TS 里用 zod/JSON Schema 描述参数一样。模型只看得到这些文字,看不到你的 Python 代码,所以 description 写得好不好,直接决定它会不会调、怎么调。`get_article` 同理,参数只有一个 `doc_id`。
+
+**`search_kb`**
+
+```python
+def search_kb(query: str) -> str:
+    chunks = RETRIEVER.search(query, mode="hybrid", k=4)
+```
+向量 + BM25 用 RRF 融合,取前 4 块。`chunks` 是 `Chunk` 对象列表,每个有 `.id`(如 `kb-007#1`)和 `.text`。
+
+```python
+    return "\n\n".join(f"[{c.id}] {c.text}" for c in chunks) or "没有找到相关内容。"
+```
+每块前面加上 `[id]`,块之间空一行。真实数据,`query="发票抬头写错 如何修改"` 时返回(截前两块):
+
+```text
+[kb-007#1] 修改发票抬头 > 开错了怎么办
+发票开具后 30 天内,可以在「账单 → 发票」里申请红冲并重新开具,每张发票只能重开一次。
+超过 30 天的,需要联系客服,并提供加盖公章的情况说明。
+
+[kb-012#2] 错误码 E2017:发票识别失败 > 解决办法
+...
+```
+
+一共 414 字。`or` 的用法:左边是空字符串(没检索到任何块)就是假值,返回右边那句。工具返回值必须是字符串,因为它要原样塞进 `tool` 消息的 `content`。
+
+**`get_article`**
+
+```python
+def get_article(doc_id: str) -> str:
+    path = DATA / f"{doc_id}.md"
+```
+`doc_id="kb-020"` → `.../data/helpcenter/kb-020.md`。
+
+```python
+    if not path.exists():
+        return f"没有 id 为 {doc_id} 的文章。可用的 id 形如 kb-001 到 kb-020。"
+```
+模型传错 id(比如传了 `kb-020#2`,带了块号)时不抛异常,而是返回一句它能看懂的话,它下一轮就能自己改对。
+
+```python
+    return path.read_text(encoding="utf-8").split("---", 2)[-1].strip()
+```
+去掉文件头的 front matter。`kb-020.md` 的原文是:
+
+```text
+---
+id: kb-020
+title: 多币种记账
+category: ...
+---
+
+# 多币种记账
+...
+```
+
+`.split("---", 2)` 最多切 2 刀,得到 3 段:`["", "\nid: kb-020\ntitle: ...\n", "\n\n# 多币种记账\n..."]`。`[-1]` 取最后一段(正文),`.strip()` 去掉首尾空行。限制成 2 刀,是为了正文里如果也出现 `---`(Markdown 分隔线)不会被继续切开。真实返回 95 字:
+
+```text
+# 多币种记账
+
+## 支持范围
+专业版和企业版支持多币种记账,共支持 30 种货币。
+
+## 汇率
+汇率每天早上 8 点更新,数据来源是中国银行外汇牌价。你也可以在单笔流水上手动修改汇率。
+```
+
+```python
+FUNCS = {"search_kb": search_kb, "get_article": get_article}
+```
+工具名 → 函数的映射表,相当于 TS 的 `const FUNCS: Record<string, Function> = { search_kb, get_article }`。模型返回的是工具名字符串,靠这个表找到真正要调的函数。
+
+**`run`:Agent 循环**
+
+```python
+def run(question: str, history: list[dict] | None = None) -> str:
+    messages = [{"role": "system", "content": SYSTEM}, *(history or []), {"role": "user", "content": question}]
+```
+`*` 是列表展开,相当于 TS 的 `...`。`history or []`:没传历史(None)就用空列表,展开后什么都不加。演示里 `history` 都是 None,所以 `messages` 一开始是 2 条:`[system, user]`。
+
+```python
+    for step in range(1, MAX_STEPS + 1):
+```
+`range(1, 7)` 是 1 到 6(不含 7)。
+
+```python
+        msg = chat_raw(messages, tools=TOOLS, temperature=0)
+```
+把整个对话和工具清单发给模型。`msg` 是 openai 的 `ChatCompletionMessage` 对象,要么有 `content`(直接回答),要么有 `tool_calls`(要调工具),有时两者都有。
+
+```python
+        if not msg.tool_calls:
+            return msg.content or ""
+```
+`tool_calls` 是 `None` 或空列表时,说明模型不想再查了,它的 `content` 就是最终答案,直接返回。`or ""` 是兜底,防止 content 是 None 时返回值类型不对。**这是循环唯一的正常出口。**
+
+```python
+        messages.append({"role": "assistant", "content": msg.content,
+                         "tool_calls": [tc.model_dump() for tc in msg.tool_calls]})
+```
+先把模型「我要调这些工具」的那条消息原样记进历史。`tc.model_dump()` 把 pydantic 对象转成普通 dict,真实数据是:
+
+```python
+{"id": "call_00_tYrLT5Va4Wi1AA92YqWj7916",
+ "type": "function",
+ "function": {"name": "search_kb", "arguments": "{\"query\": \"发票抬头写错 如何修改\"}"},
+ "index": 0}
+```
+
+注意 `arguments` 是**字符串**,不是 dict。这条 assistant 消息必须在 tool 消息之前,否则 API 报 400(Day 8 练习踩过)。
+
+```python
+        for tc in msg.tool_calls:
+```
+模型一次可能要调好几个工具(并行工具调用),逐个执行。
+
+```python
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+```
+字符串 → dict:`'{"query": "发票抬头写错 如何修改"}'` → `{"query": "发票抬头写错 如何修改"}`。`or "{}"` 防止 arguments 是空串。
+
+```python
+                result = FUNCS[tc.function.name](**args)
+```
+两步:`FUNCS["search_kb"]` 取到函数;`**args` 把 dict 拆成关键字参数,等价于 `search_kb(query="发票抬头写错 如何修改")`。TS 里没有完全对应的语法,最接近的是 `fn(args)` 后在函数里解构 `{ query }`。
+
+```python
+            except Exception as e:  # noqa: BLE001
+                result = f"工具调用失败:{e}"
+```
+三种常见错误都会落到这里:模型编了一个不存在的工具名(`KeyError`)、参数名写错(`TypeError: got an unexpected keyword argument`)、arguments 不是合法 JSON(`JSONDecodeError`)。把错误当结果告诉模型,它下一轮能自己改;要是直接抛出去,整个对话就崩了。`# noqa: BLE001` 是告诉 Ruff「我是故意抓所有异常的」,别报警告。
+
+```python
+            print(f"  [step {step}] {tc.function.name}({tc.function.arguments}) → {len(result)} 字")
+```
+打日志:第几步、调了什么、返回多长。跑的时候你看到的 `[step 1] search_kb(...) → 414 字` 就是这行。
+
+```python
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+```
+把结果作为 `tool` 消息追加。`tool_call_id` 必须和上面那条 assistant 消息里的 `id` 对上,模型靠它知道这个结果是哪次调用的。
+
+```python
+    return "这个问题我处理得不太顺利,已经帮你转给人工客服。"
+```
+6 轮用完还没给出答案,优雅降级。
+
+**三个问题的真实运行轨迹**
+
+问题一「谢谢你,上次的问题解决了」:
+
+| 轮 | 发出去的 messages | 模型返回 | 走向 |
+| --- | --- | --- | --- |
+| step 1 | system, user(2 条) | 无 tool_calls,content=「不客气……」 | `return`,0 次工具 |
+
+问题二「发票抬头写错了,而且我想退款,怎么弄」:
+
+| 轮 | 发出去的 messages | 模型返回 | 执行后 messages |
+| --- | --- | --- | --- |
+| step 1 | system, user(2 条) | 2 个 tool_calls:`search_kb("发票抬头写错 如何修改")`、`search_kb("退款流程 申请退款")` | + assistant + tool(414 字)+ tool(358 字)= 5 条 |
+| step 2 | 上面 5 条 | 无 tool_calls,带 `[kb-007#1]` `[kb-003#2]` 等出处的完整回答 | `return` |
+
+一句话两件事,模型在**同一轮**发了两个查询,所以两行日志都是 `[step 1]`。查询词也被改写过了(「退款流程 申请退款」不是用户原话),这就是 description 里那句「用帮助中心的说法写」在起作用。
+
+问题三「外币的账怎么记」:
+
+| 轮 | 发出去的 messages | 模型返回 | 执行后 messages |
+| --- | --- | --- | --- |
+| step 1 | 2 条 | `search_kb("外币记账 汇率")`、`search_kb("多币种 外币业务 汇兑损益")` | 5 条 |
+| step 2 | 5 条 | `get_article("kb-020")`:片段太碎,读全文 | + assistant + tool(95 字)= 7 条 |
+| step 3 | 7 条 | 无 tool_calls,回答里说清「帮助中心没有更细的步骤,建议转人工」 | `return` |
+
+这一题把 SYSTEM 里的规则基本都用上了:用户说「外币」,帮助中心叫「多币种」,模型自己换了说法;片段信息不全就读整篇;确实没有的内容如实说、建议转人工,不瞎编。
+
+**入口**
+
+```python
+if __name__ == "__main__":
+    for q in (sys.argv[1:] and [" ".join(sys.argv[1:])]) or [ ...三个默认问题... ]:
+```
+这行用 `and` / `or` 的短路返回值代替 if/else,拆开看:
+
+- 不带参数运行 `uv run python w3/agentic_rag.py`:`sys.argv[1:]` 是 `[]`,假值,`[] and X` 直接返回 `[]`;再 `[] or [三个问题]` 返回默认的三个问题。
+- 带参数运行 `uv run python w3/agentic_rag.py 年付 怎么 退`:`sys.argv[1:]` 是 `["年付", "怎么", "退"]`,真值,`and` 返回右边 `["年付 怎么 退"]`(用空格拼回一句话);非空列表是真值,`or` 不再看右边。于是只问你给的这一句。
+
+相当于 TS 的 `const qs = args.length ? [args.join(" ")] : DEFAULTS`。
+
+```python
+        print(f"\n问:{q}")
+        print("答:" + run(q))
+```
+逐个问,打印答案。工具日志是在 `run` 里面打的,所以会夹在「问」和「答」中间。
+
 ### 固定 RAG 还是 Agentic RAG
 
 | | 固定流程 RAG | Agentic RAG |
