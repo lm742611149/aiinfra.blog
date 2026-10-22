@@ -121,8 +121,9 @@ def main() -> int:
                 problems.append(f'{p.name}: 学习资料 missing `### {g}`')
         if 'player.bilibili.com' not in text:
             problems.append(f'{p.name}: no Bilibili embed')
-        if heads and not heads[0].startswith('今天要解决的问题'):
-            problems.append(f'{p.name}: first section is `{heads[0]}`, expected 今天要解决的问题')
+        first = heads[1] if SERIES == 'agent-zero' and heads and heads[0].startswith('上一课回顾') and len(heads) > 1 else (heads[0] if heads else '')
+        if heads and not first.startswith('今天要解决的问题'):
+            problems.append(f'{p.name}: first section is `{first}`, expected 今天要解决的问题 (agent-zero 可在前面加 上一课回顾)')
 
         # <details> blocks need blank lines around their content for markdown to render inside.
         for bad in re.finditer(r'<summary>答案</summary>\n(?!\n)', text):
