@@ -15,13 +15,13 @@ Day 9 你用 100 行代码写了一个 Agent 循环,Day 13 又写了五种 workf
 
 LangGraph 的做法是把控制流画成一张图:每一步是一个节点,步骤之间的跳转是边,所有步骤共享一份状态。今天学完,你应该能:
 
-1. 说清 LangGraph 里 State、节点、边、条件边、reducer 这五个概念各自是什么。
+1. 说清 LangGraph 里 State、节点、边、条件边、reducer 这五个概念各自是什么,并且每个都亲手用一个小脚本跑过(包括并行、循环、Command 和 Send)。
 2. 用 LangGraph 把 Day 9 的 Agent 循环重写一遍,并且能指着图说出它和 while 循环一一对应在哪。
 3. 写一个没有循环的工作流图:工单分类后按类别走不同分支,再汇合。
 4. 用结构化输出驱动路由,知道兼容 OpenAI 协议的国产模型该用哪种结构化输出方式。
 5. 回答「什么时候用 LangGraph、什么时候手写循环就够」。
 
-预计用时 4–5 小时。前置:Day 6(结构化输出)、Day 9(Agent 循环)、Day 13(workflow 模式)。
+预计用时 6–7 小时,其中「先慢下来」那一节的十一个小脚本约 2 小时,觉得概念吃力就先做它。前置:Day 6(结构化输出)、Day 9(Agent 循环)、Day 13(workflow 模式)。
 
 ## 先说清楚 LangChain 和 LangGraph 的关系
 
@@ -60,6 +60,718 @@ def call_llm(state: State) -> dict:
 这里是新手最常踩的坑:忘了加 `add_messages`,每个节点返回的消息就会把整个列表覆盖掉,模型只看得到最后一条,完全不记得前面问了什么,而程序不会报任何错。动手练习第 2 题会让你亲手制造一次这个问题。所以:**凡是要累积的字段,一定要配 reducer**。除了 `add_messages`,常见的还有 `operator.add`(列表拼接、数字相加)。
 
 用后端的经验类比:State 像一个请求上下文对象,节点像中间件或处理器,边像路由表,reducer 像合并策略。区别是这个「请求」可能要跑几十步、中途停下来等人、第二天再接着跑,所以状态需要能完整保存下来,明天我们讲 checkpoint 时就会看到这一点。
+
+## 先慢下来:十一个小脚本,一次只学一个零件
+
+如果你看了下面「用图重写 Day 9」那段 260 行的代码觉得一下子接不住,先做这一节。尚硅谷那套 LangGraph 课光是 state、边、循环就讲了四十集,我们不必那么细,但每个零件至少要亲手跑一次、看一次输出,后面的大代码才读得进去。
+
+这一节的脚本全都**不调模型**,节点就是普通 Python 函数,跑起来不花钱,一秒出结果。每个脚本只多一个新东西。建议的做法是:先看我写的那一两段话,再自己敲一遍(别复制),跑出来和我贴的输出对一下,对不上就停下来想为什么。
+
+准备工作只有一步。还没装 LangGraph 的话先装,然后建个目录放这些脚本:
+
+```bash
+cd agent-60-lab
+uv add langgraph langchain-openai python-dotenv
+mkdir -p w4/lg_steps
+```
+
+下面所有命令都在 `agent-60-lab` 根目录跑,形如 `uv run python w4/lg_steps/s01_one_node.py`。我用的是 langgraph 1.2.14,你装到更新的 1.x 版本,输出应该一样。
+
+### 第 1 步:只有一个节点的图
+
+先把骨架记住:定义 State → 建 `StateGraph` → 加节点 → 连边 → `compile()` → `invoke()`。不管多复杂的图都是这六步。
+
+```python
+# agent-60-lab/w4/lg_steps/s01_one_node.py
+from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+
+class State(TypedDict):
+    ticket: str
+    category: str
+
+
+def classify(state: State) -> dict:
+    print("classify 收到:", state)
+    text = state["ticket"]
+    return {"category": "billing" if "发票" in text else "other"}
+
+
+builder = StateGraph(State)
+builder.add_node("classify", classify)
+builder.add_edge(START, "classify")
+builder.add_edge("classify", END)
+graph = builder.compile()
+
+result = graph.invoke({"ticket": "上个月的发票开错了"})
+print("最终状态:", result)
+```
+
+<div class="line-notes">
+
+- `class State(TypedDict):` State 就是一张「表单」,写清楚整张图里有哪些字段。这里两个字段:`ticket` 是工单原文,`category` 是分类结果。TypedDict 只是类型提示,运行时它就是一个普通 dict。
+- `def classify(state: State) -> dict:` 节点就是一个函数:参数是当前 State,返回值是「我要改哪些字段」。
+- `print("classify 收到:", state)` 打印看看节点拿到的是什么。输出里是 `{'ticket': '上个月的发票开错了'}`,注意没有 `category`:你没传的字段,一开始就不存在。
+- `return {"category":` 只返回 `category` 一个字段。LangGraph 会把它合并进状态,`ticket` 原样保留。这就是「返回的是更新,不是整个状态」。
+- `builder = StateGraph(State)` 建一个图的「施工图纸」,告诉它状态长什么样。此时还不能跑。
+- `builder.add_node("classify", classify)` 登记一个节点,名字叫 `"classify"`,对应函数 `classify`。名字是给边用的。
+- `builder.add_edge(START, "classify")` `START` 是入口。这条边的意思是:一进图就先跑 classify。
+- `builder.add_edge("classify", END)` `END` 是出口。classify 跑完就结束。少了这条边,compile 会报节点没有出路。
+- `graph = builder.compile()` 把图纸编译成能执行的图。会检查有没有孤立节点、边指向不存在的节点之类的错。
+- `result = graph.invoke(` 传入初始状态,跑完整张图,返回最终状态。
+- `print("最终状态:", result)` 最终状态里多了 `category: 'billing'`,因为工单里有「发票」两个字。
+
+</div>
+
+输出(实跑,langgraph 1.2.14):
+
+```text
+classify 收到: {'ticket': '上个月的发票开错了'}
+最终状态: {'ticket': '上个月的发票开错了', 'category': 'billing'}
+```
+
+对应尚硅谷第 9–12 集(三要素、图运行过程、完成基础的 graph 流程)。
+
+### 第 2 步:两个节点串起来,用 stream 看每一步
+
+真实流程不会只有一步。这里加一个 `draft` 节点,并且换用 `stream` 代替 `invoke`:`invoke` 只给你最后的结果,`stream(..., stream_mode="updates")` 每跑完一个节点就吐出这个节点改了什么。调试的时候它比 print 好用得多。
+
+```python
+# agent-60-lab/w4/lg_steps/s02_sequence.py
+from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+
+class State(TypedDict):
+    ticket: str
+    category: str
+    reply: str
+
+
+def classify(state: State) -> dict:
+    return {"category": "billing" if "发票" in state["ticket"] else "other"}
+
+
+def draft(state: State) -> dict:
+    return {"reply": f"[{state['category']}] 已收到:{state['ticket']}"}
+
+
+builder = StateGraph(State)
+builder.add_sequence([classify, draft])  # 等于 add_node×2 + add_edge("classify","draft")
+builder.add_edge(START, "classify")
+builder.add_edge("draft", END)
+graph = builder.compile()
+
+for step in graph.stream({"ticket": "发票抬头写错了"}, stream_mode="updates"):
+    print(step)
+```
+
+<div class="line-notes">
+
+- `def draft(state: State) -> dict:` 第二个节点读了第一个节点写进去的 `category`。节点之间不直接传参,全靠共享的 State。
+- `builder.add_sequence([classify, draft])` 一次登记两个节点并按顺序连起来,节点名自动取函数名。等价于两次 `add_node` 加一条 `add_edge("classify", "draft")`,线性流程用它能少写几行。
+- `builder.add_edge(START, "classify")` 入口还是要自己连。
+- `for step in graph.stream(` `stream` 返回一个迭代器,每个元素是 `{节点名: 这个节点返回的更新}`。
+
+</div>
+
+输出(实跑,langgraph 1.2.14):
+
+```text
+{'classify': {'category': 'billing'}}
+{'draft': {'reply': '[billing] 已收到:发票抬头写错了'}}
+```
+
+两行输出就是两个节点各自的「改动记录」。后面调复杂的图,第一件事就是用这个模式看它到底走了哪些节点。对应尚硅谷第 28–29 集(边的简单使用、add_sequence)。
+
+### 第 3 步:State 的三种写法
+
+State 除了 TypedDict,还能用 dataclass 和 pydantic。区别主要在两点:节点里拿到的是 dict 还是对象;要不要在运行时校验类型。
+
+```python
+# agent-60-lab/w4/lg_steps/s03_state_styles.py
+from dataclasses import dataclass
+from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel
+
+
+class TDState(TypedDict):
+    amount: float
+
+
+@dataclass
+class DCState:
+    amount: float
+    currency: str = "CNY"
+
+
+class PDState(BaseModel):
+    amount: float
+
+
+def double(state) -> dict:
+    amount = state["amount"] if isinstance(state, dict) else state.amount
+    print("  节点里拿到的 state 类型:", type(state).__name__)
+    return {"amount": amount * 2}
+
+
+def build(schema):
+    b = StateGraph(schema)
+    b.add_node("double", double)
+    b.add_edge(START, "double")
+    b.add_edge("double", END)
+    return b.compile()
+
+
+print("TypedDict:", build(TDState).invoke({"amount": 10}))
+print("dataclass:", build(DCState).invoke({"amount": 10}))
+print("pydantic :", build(PDState).invoke({"amount": "10"}))
+try:
+    build(PDState).invoke({"amount": "十块"})
+except Exception as e:
+    print("pydantic 拦下了:", type(e).__name__)
+```
+
+<div class="line-notes">
+
+- `class TDState(TypedDict):` TypedDict:最常用,官方示例基本都用它。运行时不做任何检查。
+- `@dataclass` dataclass:可以给字段写默认值,比如 `currency` 默认 CNY,初始状态里不传也行。
+- `class PDState(BaseModel):` pydantic:运行时会校验和转换类型,Day 6 学过它。
+- `amount = state["amount"] if isinstance(state, dict) else state.amount` TypedDict 时节点拿到 dict,要用 `state["amount"]`;另外两种拿到的是对象,要用 `state.amount`。这行同时兼容两种,只是为了一个函数演示三种写法,自己写项目时选定一种就别混用。
+- `print("  节点里拿到的 state 类型:"` 输出依次是 `dict`、`DCState`、`PDState`,证实了上一条。
+- `print("pydantic :", build(PDState).invoke({"amount": "10"}))` 传入的是字符串 `"10"`,pydantic 自动转成了 10.0,所以结果是 `20.0`(注意是浮点)。
+- `build(PDState).invoke({"amount": "十块"})` 「十块」转不成数字,pydantic 直接抛 `ValidationError`,节点根本不会被执行。
+
+</div>
+
+输出(实跑,langgraph 1.2.14):
+
+```text
+  节点里拿到的 state 类型: dict
+TypedDict: {'amount': 20}
+  节点里拿到的 state 类型: DCState
+dataclass: {'amount': 20}
+  节点里拿到的 state 类型: PDState
+pydantic : {'amount': 20.0}
+pydantic 拦下了: ValidationError
+```
+
+本课后面统一用 TypedDict,因为官方文档和大多数开源项目都这么写,读别人代码时不用切换。外部输入不可信、想在入口就拦住脏数据时,再考虑 pydantic。对应尚硅谷第 14–15 集。
+
+### 第 4 步:不加 reducer,列表会被覆盖
+
+这一步专门演示一个坑。两个节点都往 `notes` 里写一条记录,你可能以为最后会有三条。
+
+```python
+# agent-60-lab/w4/lg_steps/s04_overwrite.py
+from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+
+class State(TypedDict):
+    notes: list[str]
+    steps: int
+
+
+def a(state: State) -> dict:
+    return {"notes": ["a 查了客户"], "steps": state["steps"] + 1}
+
+
+def b(state: State) -> dict:
+    return {"notes": ["b 查了发票"]}  # 没返回 steps,steps 保持原值
+
+
+builder = StateGraph(State)
+builder.add_sequence([a, b])
+builder.add_edge(START, "a")
+builder.add_edge("b", END)
+graph = builder.compile()
+
+print(graph.invoke({"notes": ["用户来信"], "steps": 0}))
+```
+
+<div class="line-notes">
+
+- `notes: list[str]` 普通字段,没有任何合并规则。
+- `return {"notes": ["a 查了客户"], "steps": state["steps"] + 1}` a 返回了一个只有一条的新列表。
+- `return {"notes": ["b 查了发票"]}` b 也返回一个新列表,并且没返回 `steps`。
+- `print(graph.invoke(` 结果 `notes` 只剩 `['b 查了发票']`:初始的「用户来信」和 a 写的都被覆盖了。`steps` 是 1,因为 b 没提它,保留了 a 写的值。
+
+</div>
+
+输出:
+
+```text
+{'notes': ['b 查了发票'], 'steps': 1}
+```
+
+规则就一句:**没有 reducer 的字段,谁最后写谁说了算**。这正是开头说的「忘了 add_messages,模型只记得最后一条」那个坑,而且程序不报错。
+
+### 第 5 步:用 reducer 让字段累积
+
+给字段配上合并函数,写法是 `Annotated[类型, 合并函数]`。`operator.add` 对列表是拼接,对数字是相加;`add_messages` 是专门给消息列表用的,多一个本事:id 相同的消息会被替换而不是重复追加。
+
+```python
+# agent-60-lab/w4/lg_steps/s05_reducer.py
+import operator
+from typing import Annotated, TypedDict
+
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+
+
+class State(TypedDict):
+    notes: Annotated[list[str], operator.add]
+    cost: Annotated[float, operator.add]
+    messages: Annotated[list[AnyMessage], add_messages]
+
+
+def a(state: State) -> dict:
+    return {"notes": ["a 查了客户"], "cost": 0.01,
+            "messages": [AIMessage("草稿 v1", id="draft")]}
+
+
+def b(state: State) -> dict:
+    return {"notes": ["b 查了发票"], "cost": 0.02,
+            "messages": [AIMessage("草稿 v2", id="draft")]}  # 同 id:替换而不是追加
+
+
+builder = StateGraph(State)
+builder.add_sequence([a, b])
+builder.add_edge(START, "a")
+builder.add_edge("b", END)
+graph = builder.compile()
+
+out = graph.invoke({"notes": ["用户来信"], "cost": 0.0,
+                    "messages": [HumanMessage("发票开错了", id="q1")]})
+print("notes:", out["notes"])
+print("cost :", round(out["cost"], 2))
+print("messages:", [(m.id, m.content) for m in out["messages"]])
+```
+
+<div class="line-notes">
+
+- `notes: Annotated[list[str], operator.add]` `notes` 的合并规则是 `旧值 + 新值`,也就是列表拼接。
+- `cost: Annotated[float, operator.add]` 数字也能累加。用来统计整次运行的花费很方便:每个节点只报自己这一步花了多少。
+- `messages: Annotated[list[AnyMessage], add_messages]` 消息列表用 `add_messages`。
+- `"messages": [AIMessage("草稿 v1", id="draft")]}` a 写了一条 id 为 `draft` 的消息。
+- `"messages": [AIMessage("草稿 v2", id="draft")]}` b 写了同一个 id 的消息。`add_messages` 看到 id 重复,就用 v2 替换 v1,而不是追加成两条。
+- `print("notes:", out["notes"])` 三条都在:`['用户来信', 'a 查了客户', 'b 查了发票']`。
+- `print("cost :", round(out["cost"], 2))` 0 + 0.01 + 0.02 = 0.03。用 round 是因为浮点相加会出现 0.030000000000000002 这种尾巴。
+- `print("messages:"` 只有两条:用户的 `q1` 和最终版 `draft`(内容是「草稿 v2」)。
+
+</div>
+
+输出(实跑,langgraph 1.2.14):
+
+```text
+notes: ['用户来信', 'a 查了客户', 'b 查了发票']
+cost : 0.03
+messages: [('q1', '发票开错了'), ('draft', '草稿 v2')]
+```
+
+`add_messages` 按 id 替换这个特性,后面做「改写上一条回复」「人工修改草稿后放回去」时会用到。对应尚硅谷第 16–18 集(reducer)和第 26–27 集(预定义状态、MessagesState)。
+
+### 第 6 步:两个节点同时跑,这时 reducer 是必需的
+
+客服 Agent 常见的需求:查知识库和查订单库互不依赖,应该同时做。LangGraph 里让 START 连出两条边,两个节点就会在同一步并行执行;再用 `add_edge([a, b], c)` 表示「a 和 b 都跑完才进 c」。
+
+```python
+# agent-60-lab/w4/lg_steps/s06_parallel.py
+import operator
+from typing import Annotated, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+
+class Bad(TypedDict):
+    found: list[str]
+
+
+class Good(TypedDict):
+    found: Annotated[list[str], operator.add]
+
+
+def search_kb(state) -> dict:
+    return {"found": ["kb-003 退款政策"]}
+
+
+def query_db(state) -> dict:
+    return {"found": ["INV-0042 已付款"]}
+
+
+def merge(state) -> dict:
+    print("  merge 看到:", state["found"])
+    return {}
+
+
+def build(schema):
+    b = StateGraph(schema)
+    b.add_node("search_kb", search_kb)
+    b.add_node("query_db", query_db)
+    b.add_node("merge", merge)
+    b.add_edge(START, "search_kb")
+    b.add_edge(START, "query_db")          # START 连两条边 = 两个节点同时跑
+    b.add_edge(["search_kb", "query_db"], "merge")  # 两个都跑完才进 merge
+    b.add_edge("merge", END)
+    return b.compile()
+
+
+print("有 reducer:")
+build(Good).invoke({"found": []})
+print("没有 reducer:")
+try:
+    build(Bad).invoke({"found": []})
+except Exception as e:
+    print(" ", type(e).__name__, str(e).splitlines()[0])
+```
+
+<div class="line-notes">
+
+- `class Bad(TypedDict):` 不带 reducer 的版本,用来演示报错。
+- `class Good(TypedDict):` 带 `operator.add` 的版本。
+- `print("  merge 看到:", state["found"])` 有 reducer 时两个结果都在。顺序是 `INV-0042` 在前,这一次的合并顺序不代表谁先跑完,别依赖它。
+- `b.add_edge(START, "search_kb")` 入口连出第一条边。
+- `b.add_edge(START, "query_db")` 入口再连出第二条边。一个节点后面连了两条普通边,两个目标就在同一步一起跑。
+- `b.add_edge(["search_kb", "query_db"], "merge")` 第一个参数是列表:等两个都完成才进 merge,这叫扇入。只写两条单独的 `add_edge("search_kb", "merge")` 也能跑,但语义变成「谁先完成谁触发」,在更复杂的图里会让 merge 跑两次。
+- `build(Bad).invoke({"found": []})` 同一步里两个节点都想写 `found`,又没有合并规则,LangGraph 不知道听谁的,直接抛 `InvalidUpdateError`。
+
+</div>
+
+输出(实跑,langgraph 1.2.14):
+
+```text
+有 reducer:
+  merge 看到: ['INV-0042 已付款', 'kb-003 退款政策']
+没有 reducer:
+  InvalidUpdateError At key 'found': Can receive only one value per step. Use an Annotated key to handle multiple values.
+```
+
+对比第 4 步:串行时没 reducer 是**静悄悄地覆盖**,并行时没 reducer 是**直接报错**。报错反而是好事。错误信息里那句 `Use an Annotated key` 就是在提示你加 reducer。对应尚硅谷第 21 集(节点的并行执行)、第 30–31 集和第 38 集(静态扇入)。
+
+### 第 7 步:条件边,按状态走不同分支
+
+普通边是写死的,条件边是「跑完这个节点后,调一个函数决定下一站」。这就是工单分流的核心。
+
+```python
+# agent-60-lab/w4/lg_steps/s07_conditional.py
+from typing import Literal, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+
+class State(TypedDict):
+    ticket: str
+    category: str
+    reply: str
+
+
+def classify(state: State) -> dict:
+    t = state["ticket"]
+    cat = "billing" if "发票" in t else "refund" if "退款" in t else "other"
+    return {"category": cat}
+
+
+def billing(state: State) -> dict:
+    return {"reply": "转账单组"}
+
+
+def refund(state: State) -> dict:
+    return {"reply": "走退款审批"}
+
+
+def human(state: State) -> dict:
+    return {"reply": "转人工"}
+
+
+def route(state: State) -> Literal["billing", "refund", "other"]:
+    return state["category"]
+
+
+builder = StateGraph(State)
+for fn in (classify, billing, refund, human):
+    builder.add_node(fn.__name__, fn)
+builder.add_edge(START, "classify")
+builder.add_conditional_edges(
+    "classify", route,
+    {"billing": "billing", "refund": "refund", "other": "human"},  # path_map:返回值 → 节点名
+)
+for n in ("billing", "refund", "human"):
+    builder.add_edge(n, END)
+graph = builder.compile()
+
+for t in ["发票开错了", "我要退款", "怎么改密码"]:
+    print(t, "→", graph.invoke({"ticket": t})["reply"])
+```
+
+<div class="line-notes">
+
+- `def classify(state: State) -> dict:` 用关键词粗分三类,真实项目里换成模型分类(本篇后面「第二张图」就是这么做的)。
+- `def route(state: State) -> Literal["billing", "refund", "other"]:` 路由函数:只读状态、返回一个字符串,**不要在这里改状态**,它的返回值不会写进 State。返回类型标成 Literal,LangGraph 画图时能知道有哪几条出路。
+- `for fn in (classify, billing, refund, human):` 四个节点用循环登记,名字取函数名。
+- `builder.add_conditional_edges(` 三个参数:从哪个节点出发、路由函数、path_map。
+- `{"billing": "billing", "refund": "refund", "other": "human"},` path_map 把路由函数的返回值翻译成节点名。`other` 被映射到 `human` 节点,这样路由函数里可以用业务词,节点名可以另起。不需要翻译时可以只传节点名列表。
+- `for n in ("billing", "refund", "human"):` 三个分支各自连到 END。
+- `print(t, "→", graph.invoke({"ticket": t})["reply"])` 三张工单走了三条不同的路。
+
+</div>
+
+输出(实跑,langgraph 1.2.14):
+
+```text
+发票开错了 → 转账单组
+我要退款 → 走退款审批
+怎么改密码 → 转人工
+```
+
+对应尚硅谷第 32–34 集(条件分支、path_map、映射多节点)。
+
+### 第 8 步:循环,以及怎么防死循环
+
+Agent 循环本质上就是一条指回自己(或指回上一个节点)的边。下面的 `write` 节点每次多加一个感叹号,`check` 看够不够三个,不够就回去重写。第二段故意写一个永远不满意的路由,看 LangGraph 怎么兜底。
+
+```python
+# agent-60-lab/w4/lg_steps/s08_loop.py
+from typing import TypedDict
+
+from langgraph.errors import GraphRecursionError
+from langgraph.graph import END, START, StateGraph
+
+
+class State(TypedDict):
+    draft: str
+    tries: int
+
+
+def write(state: State) -> dict:
+    tries = state["tries"] + 1
+    return {"draft": "您好" + "!" * tries, "tries": tries}
+
+
+def check(state: State) -> str:
+    return "done" if state["tries"] >= 3 else "again"
+
+
+def broken_check(state: State) -> str:
+    return "again"  # 永远不满意:故意写出一个死循环
+
+
+def build(route):
+    b = StateGraph(State)
+    b.add_node("write", write)
+    b.add_edge(START, "write")
+    b.add_conditional_edges("write", route, {"again": "write", "done": END})
+    return b.compile()
+
+
+print(build(check).invoke({"draft": "", "tries": 0}))
+
+try:
+    build(broken_check).invoke({"draft": "", "tries": 0}, config={"recursion_limit": 5})
+except GraphRecursionError as e:
+    print("死循环被拦下:", str(e).splitlines()[0])
+```
+
+<div class="line-notes">
+
+- `tries = state["tries"] + 1` 每进一次节点计数加一。业务里的「最多重试几次」就靠这种计数字段。
+- `def check(state: State) -> str:` 正常的退出条件:写够 3 次就结束。
+- `def broken_check(state: State) -> str:` 故意的 bug:永远返回 again。
+- `b.add_conditional_edges("write", route, {"again": "write", "done": END})` `again` 指回 `write` 自己,这就是循环;`done` 指向 END。
+- `print(build(check).invoke(` 跑了 3 次 write 后正常结束,`draft` 是「您好!!!」。
+- `config={"recursion_limit": 5}` `recursion_limit` 是整张图最多跑多少步(一个节点执行一次算一步)。设成 5,跑到第 5 步还没结束就抛错。
+- `except GraphRecursionError as e:` 抛的是 `GraphRecursionError`。前面说过 1.2.14 的默认上限已经是 10007,真遇到失控的 Agent 基本等于没拦,所以业务层要有自己的计数(像 `check` 那样),recursion_limit 只当最后一道保险。
+
+</div>
+
+输出(实跑,langgraph 1.2.14):
+
+```text
+{'draft': '您好!!!', 'tries': 3}
+死循环被拦下: Recursion limit of 5 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config key.
+```
+
+对应尚硅谷第 40–47 集(循环结构、限制循环步数、主动退出和被动退出)。
+
+### 第 9 步:Command,在节点里同时改状态和指定下一站
+
+条件边要写两个东西:节点改状态,路由函数选去向。有时候判断逻辑和改状态是一回事,拆成两处反而别扭。`Command` 让节点一次返回两样:`update` 是要改的字段,`goto` 是下一个节点。
+
+```python
+# agent-60-lab/w4/lg_steps/s09_command.py
+from typing import Literal, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
+
+
+class State(TypedDict):
+    amount: float
+    reply: str
+
+
+def check(state: State) -> Command[Literal["auto_refund", "need_approval"]]:
+    if state["amount"] <= 100:
+        return Command(update={"reply": "小额,自动退"}, goto="auto_refund")
+    return Command(update={"reply": "大额,要审批"}, goto="need_approval")
+
+
+def auto_refund(state: State) -> dict:
+    return {"reply": state["reply"] + " → 已退款"}
+
+
+def need_approval(state: State) -> dict:
+    return {"reply": state["reply"] + " → 已提交审批"}
+
+
+builder = StateGraph(State)
+builder.add_node("check", check)
+builder.add_node("auto_refund", auto_refund)
+builder.add_node("need_approval", need_approval)
+builder.add_edge(START, "check")
+builder.add_edge("auto_refund", END)
+builder.add_edge("need_approval", END)
+graph = builder.compile()
+
+print(graph.invoke({"amount": 59, "reply": ""})["reply"])
+print(graph.invoke({"amount": 6578, "reply": ""})["reply"])
+```
+
+<div class="line-notes">
+
+- `def check(state: State) -> Command[Literal["auto_refund", "need_approval"]]:` 返回类型写成 `Command[Literal[...]]`,列出可能去的节点。LangGraph 靠这个标注知道图的形状,能画出来,也能在 compile 时检查节点名。
+- `return Command(update={"reply": "小额,自动退"}, goto="auto_refund")` 100 元以内:写一句说明,直接去自动退款。
+- `return Command(update={"reply": "大额,要审批"}, goto="need_approval")` 超过 100 元去审批。明天 Day 25 的人工审批就会接在这种节点后面。
+- `builder.add_edge(START, "check")` 注意 `check` 后面**没有**连任何边,去向全由它返回的 Command 决定。
+- `print(graph.invoke({"amount": 59, "reply": ""})["reply"])` 59 元走了自动退款。
+- `print(graph.invoke({"amount": 6578, "reply": ""})["reply"])` 6578 元(Day 23 里 C023 年付降级的退款额)走了审批。
+
+</div>
+
+输出(实跑,langgraph 1.2.14):
+
+```text
+小额,自动退 → 已退款
+大额,要审批 → 已提交审批
+```
+
+什么时候用条件边、什么时候用 Command?我的习惯是:路由只看状态、和节点逻辑无关时用条件边,图结构一眼能看清;路由判断本身就是这个节点的主要工作时用 Command。两种别在同一个节点上混用。对应尚硅谷第 37 集。
+
+### 第 10 步:Send,数量不固定的并行
+
+第 6 步的并行是写死的两条边。如果要并行检查的发票有 3 张还是 30 张,运行时才知道,就用 `Send`:路由函数返回一组 `Send(节点名, 给这个节点的输入)`,每个 Send 起一个独立的任务。这就是 map-reduce。
+
+```python
+# agent-60-lab/w4/lg_steps/s10_send.py
+import operator
+from typing import Annotated, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
+
+
+class State(TypedDict):
+    invoices: list[str]
+    checked: Annotated[list[str], operator.add]
+
+
+class OneInvoice(TypedDict):
+    invoice: str
+
+
+def fan_out(state: State) -> list[Send]:
+    return [Send("check_one", {"invoice": inv}) for inv in state["invoices"]]
+
+
+def check_one(state: OneInvoice) -> dict:
+    return {"checked": [f"{state['invoice']} ok"]}
+
+
+builder = StateGraph(State)
+builder.add_node("check_one", check_one)
+builder.add_conditional_edges(START, fan_out, ["check_one"])
+builder.add_edge("check_one", END)
+graph = builder.compile()
+
+print(graph.invoke({"invoices": ["INV-1", "INV-2", "INV-3"], "checked": []}))
+```
+
+<div class="line-notes">
+
+- `checked: Annotated[list[str], operator.add]` 多个任务的结果要汇总到这里,所以必须配 reducer,第 6 步学过。
+- `class OneInvoice(TypedDict):` `check_one` 节点用的是另一个更小的状态,只有一张发票。Send 允许给目标节点传任意形状的输入。
+- `return [Send("check_one", {"invoice": inv}) for inv in state["invoices"]]` 有几张发票就生成几个 Send。这里 3 张,就并行跑 3 次 `check_one`。
+- `builder.add_conditional_edges(START, fan_out, ["check_one"])` Send 是通过条件边发出去的。第三个参数列出可能的目标节点,用于画图。
+- `print(graph.invoke(` 3 个任务的结果都进了 `checked`。
+
+</div>
+
+输出(实跑,langgraph 1.2.14):
+
+```text
+{'invoices': ['INV-1', 'INV-2', 'INV-3'], 'checked': ['INV-1 ok', 'INV-2 ok', 'INV-3 ok']}
+```
+
+这一步属于选学,今天用不到,Day 92 做 Deep Research 时要并行查一批子问题,会再见到它。对应尚硅谷第 36 集(动态分支)和第 39 集(动态扇入)。
+
+### 第 11 步:把图画出来
+
+最后一个小工具:`graph.get_graph().draw_mermaid()` 输出 Mermaid 格式的图,贴到 [mermaid.live](https://mermaid.live) 就能看到。图一复杂,先画出来对一眼结构,比读代码快。
+
+```python
+# agent-60-lab/w4/lg_steps/s11_draw.py
+from s07_conditional import builder
+
+graph = builder.compile()
+print(graph.get_graph().draw_mermaid())
+```
+
+<div class="line-notes">
+
+- `from s07_conditional import builder` 直接复用第 7 步的图纸。注意 import 会把 s07 整个文件执行一遍,所以输出最前面会先出现那三行分流结果。这是 Python import 的正常行为,真实项目里会把「建图」和「运行」分到不同文件,或者用 `if __name__ == "__main__":` 包住运行部分。
+- `print(graph.get_graph().draw_mermaid())` 输出 Mermaid 文本。实线箭头是普通边,虚线是条件边;`other` 那条虚线上标着 path_map 里的名字。
+
+</div>
+
+运行时要在 `w4/lg_steps` 目录里跑(`cd w4/lg_steps && uv run python s11_draw.py`),因为它要 import 同目录的 s07。输出的后半段(实跑,省略了开头三行和样式行):
+
+```text
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	classify(classify)
+	billing(billing)
+	refund(refund)
+	human(human)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> classify;
+	classify -.-> billing;
+	classify -. &nbsp;other&nbsp; .-> human;
+	classify -.-> refund;
+	billing --> __end__;
+	human --> __end__;
+	refund --> __end__;
+```
+
+在 Jupyter 里可以直接 `graph.get_graph().draw_mermaid_png()` 出图片,不过那个方法默认要联网调 mermaid.ink 的接口渲染。对应尚硅谷第 13 集。
+
+### 十一步走完,回头对一下
+
+| 你刚跑过的 | 下面 Agent 循环里对应哪一段 |
+| --- | --- |
+| 第 1–2 步的骨架和 stream | 从 `builder = StateGraph(State)` 到 `compile()` 那几行,以及「图编译之后是什么」里的 `stream` 打印 |
+| 第 5 步的 `add_messages` | `messages: Annotated[list[AnyMessage], add_messages]` |
+| 第 7 步的条件边 | `add_conditional_edges("llm", route, ["tools", END])` |
+| 第 8 步的循环和计数 | `tools → llm` 那条边,以及 `llm_calls < MAX_LLM_CALLS` |
+| 第 6、10 步的并行 | 下面的 `tools` 节点用 for 循环一个个执行工具调用;想让多个工具调用真并行,就用第 10 步的 Send 每个调用发一个任务(今天不要求) |
+
+带着这张表往下读,260 行的代码就只是把这些零件拼在一起,再把「节点函数」从玩具换成真的调模型和调工具。
 
 ## 用图重写 Day 9 的 Agent 循环
 
