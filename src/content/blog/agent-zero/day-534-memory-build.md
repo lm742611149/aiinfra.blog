@@ -412,8 +412,8 @@ class MemoryStore:
              None if ttl is None else now + ttl, imp)).lastrowid
         if cur:
             self.db.execute("UPDATE facts SET superseded_by=? WHERE id=?", (new_id, cur.id))
-            return "UPDATE"
-        return "ADD"
+        self.db.commit()
+        return "UPDATE" if cur else "ADD"
 
     def _current(self, tenant: str, customer_id: str, key: str, now: float) -> Fact | None:
         row = self.db.execute(
@@ -454,7 +454,7 @@ class MemoryStore:
 - `COLS = "id,customer_id,kind,key,value,source,created_at,expires_at,importance"` 两个查询都要取这 9 列,顺序必须和下面 `Fact` 的字段顺序一致,因为后面是 `Fact(*row)` 按位置填的。
 - `@dataclass` 自动生成 `__init__`,`Fact(1, "C007", ...)` 就能建对象(Day 50)。
 - `expires_at: float | None` 过期时间戳,None 表示不过期。
-- `def __init__(self, path: str = ":memory:"):` 默认在内存里,传一个文件路径就会落盘,比如 `MemoryStore("part10/memory.db")`。
+- `def __init__(self, path: str = ":memory:"):` 默认在内存里,进程一结束就没了。传一个文件路径就用那个文件,比如 `MemoryStore("part10/memory.db")`,文件不存在会自动建。但光传路径还不够:sqlite3 的改动要 `commit` 以后才真正写进文件,没提交的改动在连接关闭时会被丢掉([Day 93](/blog/agent-zero/day-093-python-sqlite-2/))。所以下面的 `write` 每次写完都会提交;`forget_customer` 没有提交,用文件库时删完要自己调一次 `m.db.commit()`。
 - `source TEXT, created_at REAL, expires_at REAL, importance REAL,` 比前几步多了过期时间和重要性两列。
 - `superseded_by INTEGER, deleted INTEGER DEFAULT 0)""")` 多了一列删除标记,默认 0。SQLite 没有布尔类型,用 0 和 1。
 - `source: str = "extracted", importance: float | None = None,` 默认来源是最低的 `extracted`,忘了传来源时宁可低估。
@@ -463,6 +463,9 @@ class MemoryStore:
 - `ttl = TTL[kind]` 按 kind 取有效期。如果 kind 不在 dict 里,这一行会抛 `KeyError`,下面「常见误区」里有真实报错,练习 1 会修它。
 - `imp = DEFAULT_IMPORTANCE[kind] if importance is None else importance` 条件表达式,相当于 JS 的 `importance ?? DEFAULT_IMPORTANCE[kind]`。
 - `None if ttl is None else now + ttl, imp)).lastrowid` 过期时间 = 写入时间 + 有效期;不过期就存 NULL(Python 的 None 存进 SQLite 就是 NULL)。
+- `self.db.execute("UPDATE facts SET superseded_by=? WHERE id=?", (new_id, cur.id))` 有旧值就把旧值标记成「被新行替代」。
+- `self.db.commit()` 插入新行和标记旧行一起提交,要么两件都写进文件,要么都没写。少了这一行,在 `:memory:` 下测试照样全过,换成文件库就会出现「`write` 返回了 ADD,进程退出后记忆却没了」。
+- `return "UPDATE" if cur else "ADD"` 有旧值是 UPDATE,没有是 ADD。
 - `" AND superseded_by IS NULL AND deleted=0 AND (expires_at IS NULL OR expires_at>?)"` 「当前值」的三个条件:没被替代、没删除、没过期。过期的值不算当前值,所以过期以后写入一个新值是 ADD 而不是 UPDATE。
 - `return Fact(*row) if row else None` `*row` 把元组拆开按位置传参,相当于 JS 的 `new Fact(...row)`。
 - `" AND created_at<=?", (tenant, customer_id, now, now)).fetchall()` 第四步说的「未来的记忆」在这里挡掉。两个 `?` 都填 now。
@@ -932,7 +935,7 @@ for q in ["退款到账了吗", "怎么通知这个客户"]:
 
 <div class="line-notes">
 
-- `def cosine(a: list[float], b: list[float]) -> float:` 余弦相似度,第四部分 Day 213 学过。这里用纯 Python 写,四条记忆不需要 numpy。
+- `def cosine(a: list[float], b: list[float]) -> float:` 余弦相似度,[Day 215](/blog/agent-zero/day-215-cosine/) 手算过。这里用纯 Python 写,四条记忆不需要 numpy。
 - `dot = sum(x * y for x, y in zip(a, b))` `zip` 把两个列表按位置配对,相当于 JS 里 `a.map((x, i) => [x, b[i]])`。
 - `facts = store.recall(tenant, customer_id, k=50, now=now)  # 先按规则拿到所有还活着的` 关键顺序:先用规则过滤掉过期、被替代、被删除的,再算相关性。反过来做,过期的记忆可能因为相关性高而被捞回来。
 - `vecs = embed([query] + [f"{f.key}: {f.value}" for f in facts])` 问题和所有记忆一次发过去,只调一次接口。把 key 也拼进文字里,「contact: 只接受邮件」比单独的「只接受邮件」语义更完整。

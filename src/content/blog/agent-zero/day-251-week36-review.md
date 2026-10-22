@@ -162,15 +162,15 @@ uv run python -m part04.review36_deps
 uv run python -m part04.review36_deps part04/kg_triples.py
 ```
 
-我的输出(这时我的 `part04/` 里只有本周的 20 个文件;你的 `part04/` 里还有 Day 212 以来的其他文件,条数会更多,但这几行应该都在):
+我的输出(这时我的 `part04/` 里只有 Day 249、Day 250 的 17 个文件加上刚写的 `review36_deps.py`,一共 18 个;你的 `part04/` 里还有 Day 212 以来的其他文件,条数会更多,但这几行应该都在。做完下面的练习 3、4 再跑,`review36_why.py` 和 `review36_common.py` 各自导入了 `review36_deps.py`,会变成 14 条):
 
 ```text
-13 条导入关系,例如:('part04/kg_direction.py', '导入', 'part04/kg_triples.py', '第 2 行')
+12 条导入关系,例如:('part04/kg_direction.py', '导入', 'part04/kg_triples.py', '第 2 行')
 改了 part04/repl_demo.py,会影响:
   1 步  part04/rlm_budget.py
   1 步  part04/rlm_mini.py
   2 步  part04/rlm_define.py
-13 条导入关系,例如:('part04/kg_direction.py', '导入', 'part04/kg_triples.py', '第 2 行')
+12 条导入关系,例如:('part04/kg_direction.py', '导入', 'part04/kg_triples.py', '第 2 行')
 改了 part04/kg_triples.py,会影响:
   1 步  part04/kg_direction.py
   1 步  part04/kg_ex1.py
@@ -256,8 +256,8 @@ uv run python -m part04.review36_chunks part04/kg_hops.py
 ```
 
 ```text
-part04/rlm_mini.py:23        llm_query  3 行
-part04/rlm_mini.py:27        rlm        24 行
+part04/rlm_mini.py:24        llm_query  3 行
+part04/rlm_mini.py:28        rlm        24 行
 part04/kg_hops.py:11         walk       17 行
 ```
 
@@ -306,7 +306,7 @@ for hop in range(1, 4):
 
 - `from part04.review36_deps import import_triples` 复用小项目抽三元组的函数。注意这一行本身又给图加了一条边:`review36_why.py` 导入 `review36_deps.py`。
 - `frontier = [(changed, changed)]` 和 Day 250 练习 2 一样,每个点带着「从它到目标」的那串文字。
-- `for h, _r, t, src in triples:` 这次没建入边表,直接扫全部三元组找「尾等于当前点」的。13 条边扫一遍很快,文件多了再换成 dict。
+- `for h, _r, t, src in triples:` 这次没建入边表,直接扫全部三元组找「尾等于当前点」的。这时一共 13 条边(多了本文件导入 `review36_deps.py` 那一条),扫一遍很快,文件多了再换成 dict。
 - `line = f"{h}({src})-> {chain}"` 新的一跳加在链条左边,括号里是这一跳的 import 在第几行。
 
 </div>
@@ -429,9 +429,9 @@ for hop, f in affected("common/llm.py", triples):
 
 - [Python 文档 · ast](https://docs.python.org/zh-cn/3/library/ast.html):今天用到的 `ImportFrom`、`walk`、`get_source_segment` 都在这一页,中文版,查节点类型时用。
 - [aider · Repository map](https://aider.chat/docs/repomap.html):Day 248 的出处,复习时再看一遍,对比它的「按图排序」和今天的「按依赖走」。
-- [Recursive Language Models(arXiv 2512.24601)](https://arxiv.org/abs/2512.24601):Day 249 的论文,复习时把第 4 节的成本分析读完。
+- [Recursive Language Models(arXiv 2512.24601)](https://arxiv.org/abs/2512.24601):Day 249 的论文,复习时把实验部分的成本对比读完。
 - [ColPali(arXiv 2407.01449)](https://arxiv.org/abs/2407.01449):Day 247 讲的直接检索页面图片的方法,读摘要和图 1。
-- [From Local to Global: A Graph RAG Approach(arXiv 2404.16130)](https://arxiv.org/abs/2404.16130):明天开始的 GraphRAG 三天都基于这篇,今天先读第 1、2 节。
+- [From Local to Global: A Graph RAG Approach(arXiv 2404.16130)](https://arxiv.org/abs/2404.16130):明天开始的 GraphRAG 三天都基于这篇,今天先读引言和方法概述。
 
 ### B 站视频
 
@@ -447,7 +447,7 @@ for hop, f in affected("common/llm.py", triples):
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1qgGgzzEcd&autoplay=0&high_quality=1" title="深度解析和实战ColPali: RAG告别OCR和布局、从0开始多模态RAG" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
-<figcaption>模鱼日记 · 深度解析和实战ColPali:RAG告别OCR和布局、从0开始多模态RAG · 近 2 小时,复习 Day 247 时只看前 30 分钟的原理部分就够。</figcaption>
+<figcaption>模鱼日记 · 深度解析和实战ColPali:RAG告别OCR和布局、从0开始多模态RAG · 近 2 小时,复习 Day 247 时只看开头讲原理的部分就够,后面的实战可以跳过。</figcaption>
 </figure>
 
 ### 其他经典视频

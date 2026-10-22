@@ -522,7 +522,7 @@ return frontier 里分数最高的
 
 **规划步和执行步可以分开定强度。** [Day 176](/blog/agent-zero/day-176-plan-execute/) 的 plan-and-execute 里,列计划那一次决定了整个任务的方向,值得开思考或者用投票;后面每一步把工具结果整理成一句话,关思考就够了。`LLMClient.chat` 每次都可以传不同的 `extra_body` 和 `reasoning_effort`,改起来就是在 planner 那次调用里多传两个参数。
 
-**开思考时要原样回传思考内容。** DeepSeek 在带工具的对话里,历史上每一轮 assistant 消息的 `reasoning_content` 都必须带回去,少了就 400。[Day 163](/blog/agent-zero/day-163-tool-choice/) 踩过这个坑。`LLMClient.chat` 返回的 `r.message` 是 SDK 消息原样 `model_dump` 出来的,里面带着 `reasoning_content`,追加进 messages 时用它,别自己只拼 `content`。
+**开思考时要原样回传思考内容。** DeepSeek 在带工具的对话里,历史上每一轮 assistant 消息的 `reasoning_content` 都必须带回去,少了就 400。[Day 163](/blog/agent-zero/day-163-tool-choice/) 讲思考模式的坑时提过这条规则。`LLMClient.chat` 返回的 `r.message` 是 SDK 消息原样 `model_dump` 出来的,里面带着 `reasoning_content`,追加进 messages 时用它,别自己只拼 `content`。
 
 **思考内容和投票明细都不是给用户看的。** 思考过程里有被否定的错思路、system prompt 里的规则原文;投票明细里有错误金额。给用户看的只有最终答案,置信度低的时候说一句「这笔我帮您转给账务同事确认」。
 

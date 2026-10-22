@@ -646,12 +646,12 @@ print("写反的图:", check(wrong))
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1zoKuzoENM&autoplay=0&high_quality=1" title="AI知识图谱 GraphRAG 是怎么回事？" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
-<figcaption>隔壁的程序员老王 · AI知识图谱 GraphRAG 是怎么回事? · 14 分钟,前半段讲知识图谱和向量检索的区别,正好对应今天;后半段的 GraphRAG 留到 Day 252 再看。</figcaption>
+<figcaption>隔壁的程序员老王 · AI知识图谱 GraphRAG 是怎么回事? · 14 分钟,播放量 15 万。今天先看讲知识图谱本身的部分,讲 GraphRAG 的部分留到 Day 252 再看。</figcaption>
 </figure>
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1wN411X7Gw&autoplay=0&high_quality=1" title="什么是知识图谱？" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
-<figcaption>算法猪立业 · 什么是知识图谱? · 9 分钟,从三元组讲到图谱的应用,播放量高,适合入门。</figcaption>
+<figcaption>算法猪立业 · 什么是知识图谱? · 9 分钟,播放量 5 万多,入门科普,和第一个视频互相补充。</figcaption>
 </figure>
 
 ### 其他经典视频

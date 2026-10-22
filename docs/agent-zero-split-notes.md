@@ -11,3 +11,27 @@
 - Day 109 超概念(窗口/截断/长上下文),建议把「窗口大≠用得好」拆一天。Day 108 实测:DeepSeek 分词下中文比英文省 22%,cl100k 下中文贵 35%(标题回答改为分情况)。分词器存 data/deepseek_v4_tokenizer/。大纲「要实跑」列里残留旧路径 w1/ 等,以规范 partNN/ 为准。
 - Day 143 偏重(标签分隔+注入实验+预填,5 道练习),建议拆「标签分隔与注入」「预填与固定开头」。提示词文件命名 refund_cot_v1.md 格式(Day 145 要知道)。Day 142–144 假设 part02/ 存在。
 - Day 358 超概念,建议拆「标注与三指标」「对齐迭代与修正通过率」。Day 356–358 假设:Day 350 判题器 part06/oracle.py 的 expected_refund(大纲写 judge.py);LLM 评分器 part06/llm_judge.py;Day 280 建 cloudledger/seed.py→cloudledger/cloudledger.db;Day 346 有 Streamlit 标注页;.env 有 LLM_EXTRA_BODY。
+- Day 533 四个库建议拆(mem0+Letta / Zep+LangGraph store);Day 534 建议拆「建库」「评测」。mem0 2.2.1 设 embedding_dims 会被硅基 400。Day 533–535 假设 Day 532 讲四种记忆+四个设计问题,代码 part10/。
+- Day 569 最满,建议把「量化」拆一天。Day 569–571 假设 Day 568 在 localhost:8000 起 vLLM;Day 476 评测集 supportpilot/evals/datasets/tickets_v1.jsonl(subject/body)。实测:分类零样本 12/12,错的都在紧急度;MinHash 对短问题去重不灵。
+- Day 179 太重,建议拆(投票/验证器/全角冒号坑 | 思维树/LATS/在循环里用)。Day 178 给 LLMClient 加了 reasoning_tokens 字段(需在 Day 135–137 或 178 正式讲)。Day 180 假设 part03/agent_loop.py 有 ToolRegistry + run_agent(registry, system, user, max_steps)->(回答, llm),写 Day 168–170 时对齐。全角冒号「：」坑:答案正则要兼容。
+- Day 40 的 part01/ticket_model.py 用了 main guard,导出 Ticket/TicketError/ticket_from_dict,Day 44 要沿用这些名字。Day 39 借用了 typing.Any、Day 40 借用了 list[str]|None(都链到 Day 46)。
+- Day 463 偏重,建议拆「假件+单测」「10 张端到端+问题清单」;Day 464 可把 Postgres checkpoint(含工单号复用 bug)拆一天。Day 462–464:Settings 加 llm_extra_body(Day 442 要知道)、make seed 先清 checkpoint(Day 446)、after_check(deps)→make_after_check(max_revisions)、memory/turns.py 的 render_turns(Day 465 复用)。SupportState total=False 导致 state["ticket"] 红线,Day 457/460 要定。
+- Day 217 最长,末节「索引和查询用同一个模型」可挪到 Day 219 开头。Day 216 假设 Day 211 有 guard.py hook。embed 模块放 common/embed.py(已写进规范 5.1)。旧课 rm -rf 正则漏 rm -fr/-Rf。
+- Day 320–322 假设 part05/lgdemo/{llm.py(get_llm),refund_approval.py,checkpoints.db}、part05/lg_steps/ 玩具图(Day 317)。Day 322 练习 2 给 execute_refund 加了「发票退过就跳过」,Day 323+ 以此版为准。
+- **10-22 事故**:Day 605 写手第一版 coding agent 无沙箱,读了 ~/Documents/nue 下的目录列表、git log/status 和 ruby-pricing-calculation 一个源文件,内容作为工具结果发给了 DeepSeek(只读未写)。已在规范第 6 节加「安全红线」。收尾时全量 grep /Users/minliu、Documents/nue 并替换。
+- Day 605 建议拆 2–3 天(OpenHands+卡死检测 / Codex+沙箱 / SWE-bench 判分+定位);Day 606 拆「2026 接口+Retina 坐标」「浏览器 Agent 实跑」。
+- Day 645 四块内容,建议拆「一页纸+回应质疑」「推平台+带新人」。Day 643–645 直接导入 640–642 的 roi.py/tool_permission.py/doc_lint.py。
+- Day 427 建议拆「CI+actionlint」「CD+回滚」;Day 429 拆「自建对比+custom tool」「厂商盘点+成本+决策表」。Day 427–429 假设 Day 136 LLMClient 读 LLM_EXTRA_BODY、Day 422 Dockerfile 在根、Day 423 compose 服务名 api、Day 420 服务器用户 deploy。Day 428 写手在本机装了 Ollama 0.40.8 + Qwen3 0.6B(收尾告诉用户可删)。
+- Day 285 可拆「Inspector UI」「Inspector CLI+冒烟脚本」。MCP 工具名统一 find_customer/get_subscription/list_invoices/create_refund_request(已写进规范);mcp 2.3.0 里 prompt 抛 ToolError 客户端只见 Internal server error,改用 MCPError(INVALID_PARAMS)。
+- Day 112 偏满,可拆「为什么不确定+工程应对」。DeepSeek 关思考后 top_p 被忽略、temperature=0 五次五种回答。Day 110–112 假设 Day 106 讲概率表、Day 30 lambda、Day 32 __name__。
+- Day 392 建议拆「asyncio/httpx/SDK 超时」「arq job_timeout+超时≠没执行+截止时间传递」。Day 391–393 假设 Day 389 is_retryable+10/40 秒、Day 385 Postgres checkpointer、part07/retry.py、tools_refund.py。arq WorkerSettings 不能继承。
+- 收尾清理:scratchpad 里有写手起的 Redis 7.4.6 进程;Postgres.app 里写手建的库(如 agentzero_w56)。
+- Day 3–5 终端课输出里显示 /Users/minliu(写手说文中注明了),收尾统一改 /Users/你。练习目录 ~/terminal-practice 与 tickets.txt(8 张,练习后 9 张)留给 Day 6 复习日。
+- Day 74 建议拆「假对象」「monkeypatch」;Day 75 偏多(logger 层级/caplog)。Day 70 天气 CLI 接口已写进规范 5.1。Day 74–76 新建 tests/fakes.py、part01/weather_run.py、air_cli.py、air_run.py、tests/test_air.py。
+- **待修 Day 534**:MemoryStore.write 没 commit,文件路径时记忆存不下来,要加 self.db.commit() 并改「传路径就落盘」的说法(Day 538 错题里已实测写出)。Day 537 建议把 Saga 补偿拆一天。
+- Day 43 三概念(__repr__/__str__、property、类方法),建议拆类方法出去。Day 43 改了 ticket_model.py:amount→property、is_closed、__repr__/__str__、Ticket.from_dict(ticket_from_dict 转发)。Day 44 引入 sys.argv/sys.exit。
+- Day 676 重,建议拆「README+ADR+发布前检查」「视频+案例页+简历+面试讲法」;Day 675 可拆「演练+前端」「后端+清单」;Day 677 要教 Decimal/date 算三概念。Day 675–677 假设 Day 674 guard.py/redact.py/seed_demo.py、Day 660 prices.json(USD/百万 token)+fill_costs、Day 663 gen_synthetic.py、run_tags 表、Decimal 在 Day 680 正式教。
+- Day 572 建议拆「LoRA 原理与显存账」「Unsloth 笔记本逐格讲」。发现 Day 570 的 tickets_v1 评测集和训练集同模板(12/12),Day 574 加了 tickets_hard.jsonl;plan_change 划分后只剩 26 条,Day 570 的警告在划分前统计所以漏了(Day 570 待修)。Day 572–574 假设 Day 567 KV 公式 144KB/token、Day 568 T4 --dtype half。
+- Day 501 建议把「英文版简历」拆一天;Day 502 拆「自测工具+4 实验」「17 道题」。实测 Chrome 用苹方打印的 PDF 抽文本变康熙部首(⼯程师),STHeiti 正常。
+- Day 182 六条原则 1.3 万字,建议拆「原则 1–3」「原则 4–6」。Day 181–183 假设 ToolRegistry 支持 Annotated/Literal、ChatResult 有 reasoning_tokens。
+- Day 252/254 偏长(252「同代码不同结果」、254「存储与成本」可挪)。Day 252–254 假设 Day 240 part04/retrieve.py 的 retrieve(q,k)->(chunk,score)、Day 231 pg_sync.py、Day 222 data/kb/、Day 250 part04/kg_triples.py。Postgres 库 w252kg(收尾清理)。

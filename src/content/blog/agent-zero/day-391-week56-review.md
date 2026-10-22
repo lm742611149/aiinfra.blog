@@ -213,7 +213,7 @@ for name, exc in cases.items():
 
 <div class="line-notes">
 
-- `import httpx2` 这是今天踩到的一个新坑:openai SDK 到 3.x 以后底层换成了 HTTPX2(pydantic 团队维护的 httpx 分支),装 openai 时它会被自动装上,不用单独 `uv add`。SDK 的异常要求传 `httpx2.Request`,传 `httpx.Request` 运行时不报错,但 basedpyright 会标红:`"httpx._models.Request" is not assignable to "httpx2._models.Request"`。
+- `import httpx2` 这是今天写检查脚本时碰到的:我装到的 openai 3.36.1 在依赖里写的是 `httpx2>=2.12.0`(一个 httpx 分支,源码仓库在 GitHub 的 pydantic 组织下,作者一栏还是 httpx 的作者 Tom Christie),装 openai 时它会被自动装上,不用单独 `uv add`。SDK 的异常要求传 `httpx2.Request`,传 `httpx.Request` 运行时不报错,但 basedpyright 会标红:`"httpx._models.Request" is not assignable to "httpx2._models.Request"`。
 - `req = httpx2.Request("POST", "https://api.deepseek.com/chat/completions")` 造异常需要一个请求对象,随便填一个地址就行,不会真的发出去。
 - `def status_error(cls, code: int):` 一个小工厂函数,给定异常类和状态码,造出一个和真实 HTTP 错误长得一样的异常对象。
 - `return cls(f"HTTP {code}", response=httpx2.Response(code, request=req), body=None)` openai 的状态码异常构造时要三样东西:消息、响应对象、响应体。
@@ -442,7 +442,7 @@ if __name__ == "__main__":
 - `async def refund_job(ctx, ticket_id: str, invoice_id: str) -> str:` 任务函数,第一个参数固定是 `ctx`,后面是入队时传的参数。
 - `raise PermanentError(f"发票 {invoice_id} 不存在")` 业务上确定重试没用,直接抛永久错误。实测 T1043 走的就是这条。
 - `r = await create_refund_request(` 先写库。这一步在每次执行里都会跑,靠幂等键保证只生效一次。
-- `print(f"[{ticket_id}] try {ctx['job_try']} refund {r}", flush=True)` `flush=True` 让输出立刻写出去,不然 worker 的输出被重定向时会攒着,和 arq 自己的日志顺序对不上。我第一次没加,三张工单的 print 全挤在日志最后面。
+- `print(f"[{ticket_id}] try {ctx['job_try']} refund {r}", flush=True)` `flush=True` 让输出立刻写出去。Python 的标准输出在接管道或写文件时是整块缓冲的,不加的话这些 print 会攒着,和 arq 自己走 stderr 的日志顺序对不上。
 - `await notify_customer(ctx, ticket_id)` 写库之后的一步。它失败时退款已经建好了,这是今天实验的关键。
 - `except Exception as exc:` 所有异常先到这里分类。
 - `if is_retryable(exc) and ctx["job_try"] < 3:` 两个条件都满足才重试:错误是临时的,而且还没到第 3 次。第二个条件很要紧,练习 2 会演示去掉它的后果。
@@ -530,15 +530,15 @@ Day 385 的会话锁和 Day 386 的并发闸门在 API 进程那一侧,这个 wo
 
 ## 本周错题与坑清单
 
-下面这些是这一周(加上今天复习时)真正踩过的,按出现的频率排。
+下面这些是本周内容里最容易出错的地方。能用今天的代码复现的,我都在本机复现过,结果写在对应的练习里。
 
-**同一个 job id 一小时内入队返回 None,后面接着 `job.result` 就炸。** Day 388 的 `demo_arq.py` 第一次跑时如果 worker 没起来,任务留在 Redis 里;重跑脚本时连第一次入队都返回 None,紧接着报 `'NoneType' object has no attribute 'result'`。原因是 arq 默认把结果保留 3600 秒,这期间同一个 id 再入队都算重复。做实验就每次换 id(今天的 `run` 前缀就是这么来的),或者用 `redis-cli flushdb` 清空练习用的库。
+**同一个 job id 一小时内入队返回 None,后面接着 `job.result` 就炸。** 假设你写了个入队脚本,入队后紧接着 `await job.result()`。第一次跑时 worker 没起来,任务留在了 Redis 里;改好再跑,这回入队直接返回 None(今天小项目前六行的「重复,跳过」就是这个),下一行就是 `AttributeError: 'NoneType' object has no attribute 'result'`。原因是 arq 默认把结果保留 3600 秒,这期间同一个 id 再入队都算重复。做实验就每次换 id(今天的 `run` 前缀就是这么来的),或者用 `redis-cli flushdb` 清空练习用的库。
 
 **重试次数用完以后,任务「完成」了,但没人知道它失败了。** 练习 2 会实跑出来:不写 `job_try < 3` 这个判断,第 3 次执行时 arq 打出 `max retries 3 exceeded`,任务结束,数据库里没有任何「转人工」的记录。更迷惑的是,事后用 `Job(...).status()` 查,状态是 `complete`,要看 `result_info()` 的 `success` 才知道是 False。
 
 **幂等键写成随机数。** 练习 1 实跑:表里从 2 行变成 4 行,每张工单退了两次钱。
 
-**以为 openai SDK 底层还是 httpx。** 今天写检查脚本时踩的。openai 3.x 换成了 HTTPX2,SDK 异常要 `httpx2.Request`。运行时传错类型也能跑,但编辑器里一片红。我们自己写的工具照样用 httpx,`is_retryable` 里认的 `httpx.ConnectError` 不受影响,因为 SDK 的网络错误早就被包成 `openai.APIConnectionError` 了。
+**以为 openai SDK 底层还是 httpx。** 今天写检查脚本时碰到的。我装到的 openai 3.36.1 依赖的是 httpx2,SDK 异常要 `httpx2.Request`。运行时传错类型也能跑,但编辑器里一片红。我们自己写的工具照样用 httpx,`is_retryable` 里认的 `httpx.ConnectError` 不受影响,因为 SDK 的网络错误早就被包成 `openai.APIConnectionError` 了。
 
 **print 和日志顺序对不上。** worker 的标准输出被重定向(比如 `| grep` 或者写进文件)时,Python 会攒一批再输出,arq 的日志走 stderr 不攒,两者就错位了。`print(..., flush=True)` 或者干脆用 `logging`。
 
@@ -751,18 +751,21 @@ call 6 开始 1.0s
 
 预测:job id 是新的,三张工单都会入队并执行;但幂等键只看工单号和发票号,和 job id 无关,所以退款不会新建。
 
-我在实验过程中真的这么跑过一次(当时批次号是 `r2`,表里已经有 `r1` 留下的两行),worker 的输出里关键的几行:
+我实跑时表里已经有上一批留下的两行(`R-fad24c92` 和 `R-fb4b4a8a`,单号每次实验都不一样,你的会不同),不清表,批次号用 `r4`,worker 打出来的工单那几行:
 
 ```text
-[T1041] try 1 refund {'refund_id': 'R-d7e2add3', 'deduplicated': True}
+[T1043] try 1 PermanentError: 发票 INV-404 不存在 -> 转人工
+[T1042] try 1 refund {'refund_id': 'R-fad24c92', 'deduplicated': True}
+[T1042] try 1 ConnectError -> 重试
+[T1041] try 1 refund {'refund_id': 'R-fb4b4a8a', 'deduplicated': True}
 [T1041] try 1 ConnectError -> 重试
-[T1042] try 1 refund {'refund_id': 'R-3b663bd6', 'deduplicated': True}
-[T1041] try 2 refund {'refund_id': 'R-d7e2add3', 'deduplicated': True}
+[T1042] try 2 refund {'refund_id': 'R-fad24c92', 'deduplicated': True}
+[T1041] try 2 refund {'refund_id': 'R-fb4b4a8a', 'deduplicated': True}
 ```
 
-第一次执行就已经是 `deduplicated: True`,拿到的是上一批留下的单号;表里还是 2 行。
+第一次执行就已经是 `deduplicated: True`,拿到的是上一批留下的单号;跑完再 `SELECT count(*)`,T1041、T1042 加起来还是 2 行。
 
-这个实验说明了一件事:job id 去重有时效(结果过期就失效),也和批次绑在一起;幂等键是业务层面的,永久有效。真实场景里,运营第二天手动「重新处理」一批工单,靠的就是后者。
+这个实验说明了一件事:job id 去重有时效(结果过期就失效),也和批次绑在一起;幂等键是业务层面的,永久有效。设想运营第二天手动「重新处理」一批工单,那时 job id 早过期了,能拦住重复退款的只有幂等键。
 
 </details>
 
@@ -776,7 +779,7 @@ call 6 开始 1.0s
 | `--burst` | arq 命令行参数,worker 把队列里的任务做完就退出,适合做实验,上线不用 |
 | `result_info()` | arq `Job` 对象的方法,返回任务结果详情:`success`、`job_try`、`result` 等,没跑完是 None |
 | `JobExecutionFailed` | arq 在重试次数超限时放进结果里的异常,消息是 `max 3 retries exceeded` |
-| HTTPX2 | pydantic 团队维护的 httpx 分支,openai Python SDK 3.x 的默认 HTTP 客户端 |
+| httpx2 | httpx 的一个分支包,源码在 GitHub 的 pydantic 组织下;今天装到的 openai 3.36.1 就依赖它发 HTTP 请求 |
 | `flush=True` | `print` 的参数,立刻把输出写出去,不在缓冲区里攒着 |
 | 两层去重 | 队列层的 job id 去重(防重复入队)加业务层的幂等键(防重复生效),各防一类重复 |
 
@@ -805,24 +808,24 @@ call 6 开始 1.0s
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV193hyzrEuE&autoplay=0&high_quality=1" title="怎么保证消息的幂等性?" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
-<figcaption>程序员回家养猪 · 怎么保证消息的幂等性? · 2 分多钟,2025 年的视频。用 Java 后端的面试语境讲消费幂等,和我们的「至少执行一次 + 幂等键」是同一个道理,适合当复习的快速串讲。</figcaption>
+<figcaption>程序员回家养猪 · 怎么保证消息的幂等性? · 2 分 24 秒,2025 年 8 月发布。很短,适合复习时快速过一遍「消息重复消费怎么办」这个面试常问点,再对照我们的「至少执行一次 + 幂等键」。</figcaption>
 </figure>
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1CXarehE8k&autoplay=0&high_quality=1" title="跪求兄弟们了,写接口一定要支持幂等呀!" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
-<figcaption>程序员知正 · 跪求兄弟们了,写接口一定要支持幂等呀! · 约 12 分钟。从一个前端重复提交的场景讲起,前端出身看这个特别有共鸣,后半段讲的唯一约束方案就是我们用的那个。</figcaption>
+<figcaption>程序员知正 · 跪求兄弟们了,写接口一定要支持幂等呀! · 约 12 分钟,2024 年 8 月发布。讲接口为什么要支持幂等,看的时候留意它提到的几种做法里哪一种和我们的唯一约束方案对应。</figcaption>
 </figure>
 
 ### 其他经典视频
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/XAccGbtl3Z8" title="Idempotency - What it is and How to Implement it" loading="lazy" allow="accelerometer; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
-<figcaption>Alex Hyett · Idempotency - What it is and How to Implement it · 英文,画图讲 HTTP 方法的幂等性和幂等键的实现,和 Day 390 的内容互相印证。</figcaption>
+<figcaption>Alex Hyett · Idempotency - What it is and How to Implement it · 英文。讲幂等是什么、怎么实现,可以拿来和 Day 390 的内容对照。</figcaption>
 </figure>
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/1fTUlTqm_Vk" title="How API Retries Cause Outages (Backoff & Jitter Explained)" loading="lazy" allow="accelerometer; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
-<figcaption>CodeAnimated · How API Retries Cause Outages (Backoff & Jitter Explained) · 英文动画,讲重试怎么把上游打挂、退避和抖动怎么救场,复习 Day 389 正合适。</figcaption>
+<figcaption>CodeAnimated · How API Retries Cause Outages (Backoff & Jitter Explained) · 英文动画。标题就是它的主题:重试为什么会把上游打挂,退避(backoff)和抖动(jitter)怎么缓解,复习 Day 389 用。</figcaption>
 </figure>
 
 ### 书籍

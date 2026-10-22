@@ -721,7 +721,7 @@ uv run python refund_approval.py approve T1041 "我改主意了"
 ```
 
 ```text
-已暂停,等待审批: {'question': '是否批准这笔退款?', ...}
+已暂停,等待审批: {'question': '是否批准这笔退款?', 'invoice_id': 'INV-2026-0123', 'amount_yuan': 2392.0, 'reason': '与 INV-2026-0026 为 2026-10-08 同日同额重复扣款，INV-2026-0123 为较晚生成的一张，退还该笔重复款项'}
 已驳回,转人工跟进。原因:金额不对
 已驳回,转人工跟进。原因:金额不对
 ```
@@ -767,12 +767,12 @@ def human_approval(state: RefundState) -> dict:
 
 ```text
 已通知主管
-已暂停,等待审批: {'question': '是否批准这笔...
+已暂停,等待审批: {'question': '是否批准这笔退款?', 'invoice_id': 'INV-2026-0123', 'amount_yuan': 2392.0, 'reason': '与 INV-2026-0026 为 2026-10-08 同额重复扣款，INV-2026-0123 为较晚生成的一张，退还该笔重复扣款'}
 已通知主管
 已批准:INV-2026-0123 退 2392.00 元。审批备注:ok
 ```
 
-(方案那一行太长,我截掉了后半段。)打印了两次,start 一次、approve 一次。真发消息的话主管会收到两条。
+打印了两次,start 一次、approve 一次。真发消息的话主管会收到两条。
 
 第二个版本,print 挪到 draft 末尾,`human_approval` 恢复原样:
 
@@ -799,7 +799,7 @@ def draft_proposal(state: RefundState) -> dict:
 
 ```text
 已通知主管
-已暂停,等待审批: {'question': '是否批准这笔...
+已暂停,等待审批: {'question': '是否批准这笔退款?', 'invoice_id': 'INV-2026-0123', 'amount_yuan': 2392.0, 'reason': '与 INV-2026-0026 同为 2026-10-08 扣款、金额相同，属重复扣款，且该张为较晚生成的发票，退此一笔'}
 已批准:INV-2026-0123 退 2392.00 元。审批备注:ok
 ```
 
@@ -825,17 +825,23 @@ graph = builder.compile(checkpointer=InMemorySaver())
 
 </div>
 
-实跑输出(方案那行截掉了后半段,traceback 中间几十行省略):
+实跑输出。traceback 一共 30 多行,中间是 langgraph 自己的 `pregel/main.py`、`_runner.py`、`_retry.py` 几层内部调用,和我们的代码无关,我只留了第一行和最后指向我们文件的几行:
 
 ```text
-已暂停,等待审批: {'question': '是否批准这笔...
+已暂停,等待审批: {'question': '是否批准这笔退款?', 'invoice_id': 'INV-2026-0123', 'amount_yuan': 2392.0, 'reason': '与 INV-2026-0026 为 2026-10-08 同日同额重复扣款，INV-2026-0123 为较晚生成的一张，退还该笔重复款项'}
 下一步要执行的节点: ()
 当前方案: None
 Traceback (most recent call last):
-...
+  File ".../part05/lgdemo/ex2_memory.py", line 142, in main
+    result = graph.invoke(Command(resume={"approved": action == "approve", "note": note}), config)
+  File ".../part05/lgdemo/ex2_memory.py", line 61, in load_ticket
+    t = conn.execute("SELECT * FROM tickets WHERE id = ?", (state["ticket_id"],)).fetchone()
+                                                            ~~~~~^^^^^^^^^^^^^
 KeyError: 'ticket_id'
-During task with name 'load' and id '7fc5fb7f-4b76-8413-f4c2-9229aacf9214'
+During task with name 'load' and id 'fe62a86f-5323-4555-3d20-05c8a237086a'
 ```
+
+读 traceback 的办法和前端看报错栈一样:从下往上找第一行属于自己文件的。这里是 `ex2_memory.py` 第 61 行,`load_ticket` 里取 `state["ticket_id"]`。
 
 start 那个进程退出时,内存里的状态跟着没了。status 是新进程,`refund-T1041` 在它的内存里不存在,所以 `next` 是空的、方案是 `None`。approve 更糟:没有可恢复的中断,LangGraph 把它当成一次全新的执行从 START 开始跑,而 `Command` 不带任何输入,`load` 节点读 `state["ticket_id"]` 就 KeyError 了。一句话:InMemorySaver 的状态活不过进程,跨进程审批必须用落盘的 checkpointer。
 
@@ -944,10 +950,14 @@ uv run python ex4_amount.py approve T1041 "只退一半" 1196
 sqlite3 ../../cloudledger/cloudledger.db "select id, invoice_id, amount_cents, status from refund_requests"
 ```
 
+第一条命令的 traceback 很长,下面只留了不是代码帧的几行(去掉了 `File ...` 和代码行),中间那句 pydantic 文档链接 `For further information visit https://errors.pydantic.dev/2.14/v/greater_than` 也删了:
+
 ```text
+Traceback (most recent call last):
 pydantic_core._pydantic_core.ValidationError: 1 validation error for Decision
 amount_yuan
   Input should be greater than 0 [type=greater_than, input_value=-5.0, input_type=float]
+During task with name 'approval' and id 'b213366b-90d5-ca7c-df32-3b9314cfcad2'
 已批准:INV-2026-0123 退 1196.00 元。审批备注:只退一半
 1|INV-2026-0123|119600|approved
 ```

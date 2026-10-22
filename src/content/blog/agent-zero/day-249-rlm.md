@@ -25,7 +25,7 @@ draft: true
 3. 读懂并跑通一个 60 行的最小 RLM(`part04/rlm_mini.py`),能指出它每一轮在干什么、花了多少钱。
 4. 面对一个具体需求,能说出该用 RAG、直接塞长上下文还是 RLM,理由是什么。
 
-预计用时 2.5 小时。今天所有实跑我一共花了约 ¥0.36(DeepSeek 高峰价,算式在后面),其中大头是两次「整份日志塞进 prompt」的对照实验。
+预计用时 2.5 小时。今天文中贴出的实跑加起来约 ¥0.37(按 DeepSeek 高峰价记账,算式在后面),其中大头是两次「整份日志塞进 prompt」的对照实验。
 
 前置:[Day 109](/blog/agent-zero/day-109-context-window/) 的上下文窗口,[Day 124](/blog/agent-zero/day-124-cost/) 的算钱和缓存价,[Day 136](/blog/agent-zero/day-136-llm-client-2/) 的 `common/llm.py`(`LLMClient`),[Day 166](/blog/agent-zero/day-166-agent-min/) 的 Agent 循环,[Day 186](/blog/agent-zero/day-186-codeact-1/) 和 [Day 187](/blog/agent-zero/day-187-codeact-2/) 的「代码即动作」(CodeAct),以及 [Day 221](/blog/agent-zero/day-221-why-rag/) 起的 RAG。
 
@@ -184,7 +184,7 @@ e3001_cancel: 模型答 32,标准答案 112
 2 次调用 | 输入 143735 / 输出 2 tokens | 约 ¥0.1470
 ```
 
-两题都错,而且错得离谱:22 答成 8,112 答成 32。
+两题都错,而且错得离谱:22 答成 8,112 答成 32。隔了一段时间我又原样跑了一次,这次答的是 3 和 34,还是错,而且和上一次错得不一样(那次两条前缀都命中了缓存,两次加起来只花了 ¥0.0065)。
 
 花钱的账也看一下。第一次 71867 × 2 / 1000000 ≈ ¥0.1437,全是未命中。第二次前缀和第一次一样,几乎全部命中缓存,71868 × 0.04 / 1000000 ≈ ¥0.003。Day 124 讲的缓存价在这里一眼就能看出来值多少钱。
 
@@ -428,7 +428,7 @@ if __name__ == "__main__":
 uv run python -m part04.rlm_mini ent_e1043_q3
 ```
 
-下面是我第一次跑的轨迹。代码是模型写的原样,每轮输出脚本只打前 300 字,我又删掉了一些重复的行,用 `...` 标出:
+下面是我跑的轨迹。代码是模型写的原样,每轮输出脚本只打前 300 字,我又删掉了一些重复的行,用 `...` 标出:
 
 ```text
 --- 第 1 轮代码:
@@ -442,79 +442,69 @@ T-00003 | 2026-08-26 | C-0248 | 免费版 | CSV 导入报 E1043。谢谢。
 ...
 
 --- 第 2 轮代码:
-lines = [l for l in context.split("\n") if l.strip()]
-print(len(lines))
-print(lines[-3:])
-# 检查格式是否统一
 import re
-bad = [l for l in lines if not re.match(r"^T-\d{5} \| \d{4}-\d{2}-\d{2} \| C-\d{4} \| .+? \| ", l)]
-print(len(bad))
-print(bad[:5])
---- 输出:
-2000
-['T-01998 | 2026-02-07 | C-0328 | 专业版 | ...', ...]
-0
-[]
-
---- 第 3 轮代码:
-import re
-cnt = 0
+lines = [l for l in context.splitlines() if l.strip().startswith("T-")]
+print("总行数", len(lines))
 hits = []
 for l in lines:
     parts = [p.strip() for p in l.split("|")]
-    tid, date, cid, plan, text = parts[0], parts[1], parts[2], parts[3], parts[4]
-    y, m, d = date.split("-")
-    if y == "2026" and m in ("07","08","09") and plan == "企业版" and "E1043" in text:
-        cnt += 1
+    if len(parts) < 5: 
+        print("异常行:", l); continue
+    tid, date, cid, ver, desc = parts[0], parts[1], parts[2], parts[3], parts[4]
+    if ver == "企业版" and "E1043" in desc and "2026-07" <= date[:7] <= "2026-09":
         hits.append(l)
-print(cnt)
-for h in hits[:20]:
-    print(h)
+print(len(hits))
+for h in hits: print(h)
 --- 输出:
+总行数 2000
 22
 T-00039 | 2026-08-25 | C-0090 | 企业版 | CSV 导入报 E1043。谢谢。
+T-00276 | 2026-07-12 | C-0308 | 企业版 | CSV 导入报 E1043。谢谢。
 ...
 
---- 第 4 轮代码:
-# 检查是否有其他形式的 E1043 提及(如 E-1043、e1043、全角等),以及是否有工单正文跨行
+--- 第 3 轮代码:
 import re
-alt = [l for l in lines if re.search(r"1043", l) and "E1043" not in l]
-print(len(alt))
-print(alt[:10])
-# 检查企业版+日期范围内但正文含1043变体
-print(sum(1 for l in lines if "1043" in l))
-print(sum(1 for l in lines if "E1043" in l))
+lines = [l for l in context.splitlines() if l.strip().startswith("T-")]
+# 检查日期格式
+bad_date = [l for l in lines if not re.match(r"^T-\d+ \| \d{4}-\d{2}-\d{2} \|", l)]
+print("日期异常行数:", len(bad_date))
+for b in bad_date[:10]: print(b)
+# 检查所有含1043的写法
+variants = set()
+for l in lines:
+    for m in re.findall(r"E[-\s]?1043|Ｅ1043|e1043", l):
+        variants.add(m)
+print("1043写法:", variants)
+# 企业版取值
+vers = set(l.split("|")[3].strip() for l in lines if len(l.split("|"))>=5)
+print("版本取值:", vers)
+# 日期范围
+dates = sorted(l.split("|")[1].strip() for l in lines if len(l.split("|"))>=5)
+print(dates[0], dates[-1])
 --- 输出:
-1
-['T-01043 | 2026-03-13 | C-0032 | 专业版 | 付款失败 E3001。先不取消,等你们修好。']
-389
-388
+日期异常行数: 0
+1043写法: {'E1043'}
+版本取值: {'企业版', '免费版', '专业版'}
+2026-01-01 2026-09-28
 
---- 第 5 轮代码:
-# 确认无跨行/无其他字段干扰;统计各月分布
-from collections import Counter
-c = Counter()
-for h in hits:
-    p = [x.strip() for x in h.split("|")]
-    c[p[1][5:7]] += 1
-print(c, len(hits))
-answer["content"] = "2026 年 7 到 9 月,企业版客户提到 E1043 的工单共有 22 张。"
+--- 第 4 轮代码:
+answer["content"] = "2026 年 7 到 9 月，企业版客户提到 E1043 的工单共 22 张。"
 answer["ready"] = True
 print(answer)
 --- 输出:
-Counter({'07': 10, '08': 8, '09': 4}) 22
-{'content': '2026 年 7 到 9 月,企业版客户提到 E1043 的工单共有 22 张。', 'ready': True}
+{'content': '2026 年 7 到 9 月，企业版客户提到 E1043 的工单共 22 张。', 'ready': True}
 
-最终答案:2026 年 7 到 9 月,企业版客户提到 E1043 的工单共有 22 张。  标准答案:22
-根模型: 5 次调用 | 输入 7332 / 输出 527 tokens | 约 ¥0.0096
+最终答案:2026 年 7 到 9 月，企业版客户提到 E1043 的工单共 22 张。
+标准答案:22
+根模型: 4 次调用 | 输入 6498 / 输出 1027 tokens | 约 ¥0.0114
 子模型: 0 次调用 | 输入 0 / 输出 0 tokens | 约 ¥0.0000
 ```
 
-答对了,22。几个细节很像一个靠谱的工程师。第 1 轮先看前 3000 个字符了解格式(我们只回传 1500 字,它看到的是前一半)。第 2 轮用正则验证 2000 行格式全都统一,这一步是在确认第 3 轮按 `|` 切字段不会出错。第 4 轮还去查有没有 `e1043`、`E-1043` 这种变体写法,结果只找到一张编号恰好是 T-01043 的工单,不是变体。第 5 轮交答案。
+答对了,22。几个细节很像一个靠谱的工程师。第 1 轮先看前 3000 个字符了解格式(我们只回传 1500 字,它看到的是前一半)。第 2 轮就按 `|` 切字段筛出了 22 张,而且切之前留了一手:字段不够 5 段的行会被打印成「异常行」,结果一行都没有。第 3 轮它没急着交卷,先复核三件事:日期格式是不是都统一、有没有 `E-1043`、`e1043`、全角 `Ｅ1043` 这种变体写法、套餐字段到底有哪几种取值。三项都干净,第 4 轮交答案。
 
-花钱:5 次根模型调用,一共 7332 个输入 token,比对照组单次的 71867 少了一个数量级,花了 ¥0.0096。子模型一次没用,因为这道题纯靠代码就能做,根本不需要「理解语气」。这正是好的行为:能用代码算的,别交给模型。
+花钱:4 次根模型调用,一共 6498 个输入 token,比对照组单次的 71867 少了一个数量级,花了 ¥0.0114。子模型一次没用,因为这道题纯靠代码就能做,根本不需要「理解语气」。这正是好的行为:能用代码算的,别交给模型。
 
-我重跑过一次,那次是 4 轮交卷,¥0.0122,答案也是 22。模型每次写的代码不完全一样,轮数和花费会有浮动。
+我又重跑了一次,那次是 5 轮交卷,输入 9937 token,¥0.0159,答案还是 22。模型每次写的代码不完全一样,轮数和花费会有浮动。
 
 再跑问题 B:
 
@@ -522,17 +512,19 @@ Counter({'07': 10, '08': 8, '09': 4}) 22
 uv run python -m part04.rlm_mini e3001_cancel
 ```
 
-关键的一轮和结果(第 1、2 轮和问题 A 差不多,先看格式、再筛出 387 张 E3001 工单):
+关键的两轮和结果(第 1、2 轮和问题 A 差不多,先看格式、再筛出 387 张 E3001 工单):
 
 ```text
 --- 第 3 轮代码:
-import re
-# 提取每条工单的正文(最后一个 | 之后)
-def body(l):
-    return l.split("|")[-1].strip()
-# 先看所有 E3001 工单的正文去重
+lines = [l for l in context.split("\n") if l.strip()]
+e3 = [l for l in lines if "E3001" in l]
 from collections import Counter
-c = Counter(body(l) for l in e3)
+c = Counter()
+for l in e3:
+    parts = l.split("|")
+    msg = parts[-1].strip()
+    # 去掉 E3001 相关前缀
+    c[msg] += 1
 for k,v in c.most_common():
     print(v, "|", k)
 --- 输出:
@@ -541,13 +533,41 @@ for k,v in c.most_common():
 31 | 续费扣不了款,报 E3001。请问怎么处理?
 ...
 
-(第 4 轮它把 10 种「想走」的正文列成一个集合去数,输出 112、275、20;第 5 轮复核「先不取消」没被算进去;第 6 轮交答案)
+--- 第 4 轮代码:
+lines = [l for l in context.split("\n") if l.strip()]
+e3 = [l for l in lines if "E3001" in l]
+from collections import Counter
+c = Counter()
+for l in e3:
+    c[l.split("|")[-1].strip()] += 1
 
-最终答案:提到 E3001 的工单共 387 张。其中客户明确表示要取消、退订、停用或不再续费的有 112 张。
-...另有 57 张明确写"先不取消,等你们修好",不计入;其余为普通咨询/致谢类。  标准答案:112
-根模型: 6 次调用 | 输入 12047 / 输出 844 tokens | 约 ¥0.0133
+cancel_kw = ["取消掉", "退订吧", "准备停用", "不续费了", "换别家"]
+total = 0
+for k,v in c.items():
+    if any(w in k for w in cancel_kw):
+        print(v, "|", k)
+        total += v
+print("TOTAL", total)
+print("E3001 total", len(e3))
+--- 输出:
+12 | 付款失败 E3001。请直接帮我把订阅取消掉。
+15 | 续费扣不了款,报 E3001。再这样我就不续费了。
+...
+5 | 续费扣不了款,报 E3001。请直接帮我把订阅取消掉。
+TOTAL 112
+E3
+
+(第 5 轮交答案)
+
+最终答案:提到 E3001 的工单共 387 张,其中客户明确表示取消/退订/停用/不再续费的有 112 张。
+...
+注:另有 57 张明确写“先不取消,等你们修好”,未计入。
+标准答案:112
+根模型: 5 次调用 | 输入 9348 / 输出 789 tokens | 约 ¥0.0125
 子模型: 0 次调用 | 输入 0 / 输出 0 tokens | 约 ¥0.0000
 ```
+
+注意第 4 轮的关键词:它用的是「取消掉」「退订吧」,不是「取消」「退订」。这是看过第 3 轮那张去重表之后挑的,刚好绕开了「先不取消」。最后那行 `E3` 不是写错了,是脚本只打印前 300 字,截在了这里。
 
 又对了,112,还顺手指出了 57 张「先不取消」。但子模型还是一次没用。原因是我的数据造得太规整:387 张 E3001 工单的正文去重后只有 20 种,模型在第 3 轮用 `Counter` 去重,一眼看完 20 种说法,自己就分好了类。
 
@@ -683,8 +703,8 @@ print("总计:", total)
 
 | 做法 | 问题 A(22) | 问题 B(112) | 乱序版 B(120) | 输入 token | 花费 |
 | --- | --- | --- | --- | --- | --- |
-| 全塞进 prompt | 8 | 32 | 128 / 34 / 34(连跑三次) | 每次约 7 万 | 首次约 ¥0.14,之后命中缓存约 ¥0.003 |
-| 最小 RLM | 22 | 112 | 108(问题定义模糊)/ 120(写清定义) | 每题 7 千到 2.3 万 | 每题 ¥0.01–0.02 |
+| 全塞进 prompt | 8 / 3(跑两次) | 32 / 34(跑两次) | 128 / 34 / 34(连跑三次) | 每次约 7 万 | 首次约 ¥0.14,之后命中缓存约 ¥0.003 |
+| 最小 RLM | 22 | 112 | 108(问题定义模糊)/ 120(写清定义) | 每题 6 千到 2.3 万 | 每题 ¥0.01–0.02 |
 
 对照组在乱序版上我连跑了三次,温度都是 0,答案是 128、34、34(练习 1 的参考答案里有代码)。一次比真值多,两次少了一大半。
 
@@ -772,7 +792,7 @@ print(client.ledger)
 3 次调用 | 输入 197094 / 输出 3 tokens | 约 ¥0.1373
 ```
 
-三次答案不一样,温度 0 也不稳定;而且 34 和 120 差得太远,不是「差一点」的问题。第一次 128 看起来接近,只是碰巧。这个例子说明,长上下文直接回答计数题时,你连它错多少都预测不了。
+三次答案不一样,温度 0 也不稳定;而且 34 和 120 差得太远,不是「差一点」的问题。第一次 128 看起来接近,只是碰巧。后来我又连跑了一组三次,这回是 34、34、67(三次都命中缓存,一共 ¥0.0089)。这个例子说明,长上下文直接回答计数题时,你连它错多少都预测不了。
 
 </details>
 
@@ -875,7 +895,7 @@ if __name__ == "__main__":
 根模型: 2 次调用 | 输入 1317 / 输出 422 tokens | 约 ¥0.0043
 ```
 
-两轮花了 ¥0.0043,第三轮开始前被拦下。真实系统里预算一般按「这类查询平均花费的三到五倍」来定,停下时最好不是返回一句话,而是让模型用最后一轮交一个「目前为止的最佳答案」,官方 `rlm` 库的系统提示词里也有类似的要求。
+两轮花了 ¥0.0043,第三轮开始前被拦下。真实系统里预算一般按「这类查询平均花费的三到五倍」来定,停下时最好不是返回一句话,而是让模型用最后一轮交一个「目前为止的最佳答案」。官方 `rlm` 库就是这么做的:轮数用完还没交卷时,`_default_answer()` 会带着全部历史再调一次模型,让它根据已有信息给个最终答案;它另有一个 `max_budget` 参数(按美元算),超了直接抛 `BudgetExceededError`。
 
 </details>
 
@@ -883,7 +903,21 @@ if __name__ == "__main__":
 
 <details><summary>参考答案</summary>
 
-这题我没有实跑,给一个示范思路。把 `data/kb/*.md` 用 `"\n\n".join(...)` 拼成一个字符串(20 篇约 8800 个字符),传给 `rlm("E1043 怎么解决?", kb_text)`。你会看到它至少要两轮:第一轮 print 开头看结构,第二轮用 `context.find("E1043")` 定位、切出那一段、交答案。而 RAG 一次检索加一次回答。在这种「答案集中在一块、问题高频」的场景里,RLM 多花的轮数没有换来任何准确率,纯粹是浪费。再想一步,8800 个字符直接塞进 prompt 也就 5000 多个 token,连检索都可以不要。资料小到这个程度,三种做法里最简单的那个最好。
+RLM 这一半我实跑了,RAG 那一半要用 Day 226 的检索脚本,我这里没有现成的,没跑。把 `data/kb/*.md` 用 `"\n\n".join(...)` 拼成一个字符串(20 篇一共 4108 个字符),传给 `rlm("E1043 怎么解决?", kb_text)`:
+
+```text
+--- 第 1 轮代码:
+print(context[:2000])
+...
+--- 第 2 轮代码:
+print(context[2000:4108])
+...
+(第 3 轮交答案:把 CSV 另存为 UTF-8 编码再导入,或者直接上传 XLSX)
+耗时 3.2s
+根模型: 3 次调用 | 输入 3240 / 输出 220 tokens | 约 ¥0.0060
+```
+
+三轮往返,而且你看它干了什么:资料只有 4108 个字符,它分两段直接 print 出来用眼睛读完了,代码执行环境完全没派上用场,只是绕了个远路。RAG 一次检索加一次回答,答案集中在一篇文章、问题又高频的场景里,RLM 多花的轮数没有换来任何准确率。再想一步,4108 个字符直接塞进 prompt 也就两千多个 token(按今天测的 1.66 字符一个 token 算约 2500),连检索都可以不要。资料小到这个程度,三种做法里最简单的那个最好。
 
 </details>
 
@@ -925,7 +959,7 @@ if __name__ == "__main__":
 
 ### 文档与文章
 
-- [Recursive Language Models(arXiv 2512.24601)](https://arxiv.org/abs/2512.24601):今天的出处。先读摘要和第 2 节的方法描述,再看第 4 节里那几张「轮数、子调用次数、成本」的图,1 小时。英文,配合浏览器翻译读就行。
+- [Recursive Language Models(arXiv 2512.24601)](https://arxiv.org/abs/2512.24601):今天的出处。先读摘要和讲方法的那一节,再看实验部分的结果表和成本对比,1 小时。英文,配合浏览器翻译读就行。
 - [Alex Zhang 的 RLM 博客](https://alexzhang13.github.io/blog/2025/rlm/):作者写在论文之前的博客版本,有轨迹截图,比论文好读,30 分钟。
 - [alexzhang13/rlm README](https://github.com/alexzhang13/rlm):官方实现的用法和支持的沙箱环境,看完对照今天的 60 行代码,10 分钟。
 - [Chroma · Context Rot](https://www.trychroma.com/research/context-rot):上下文越长模型越差的系统测试,看图就够,20 分钟。
@@ -952,7 +986,7 @@ if __name__ == "__main__":
 <figcaption>MIT CSAIL · MIT CSAIL Explains: Recursive Language Models · 实验室官方频道的讲解,英文,开自动字幕。</figcaption>
 </figure>
 
-- Latent Space《Recursive Language Models — Alex Zhang, MIT PhD》(YouTube ID `kog7mwsDqnk`):作者本人的长访谈,讲了为什么递归只做一层、为什么要后训练小模型,想深入再看。
+- Latent Space《Recursive Language Models — Alex Zhang, MIT PhD》(YouTube ID `kog7mwsDqnk`):作者本人的长访谈,英文,想深入再看。
 
 ### 书籍
 
@@ -960,7 +994,7 @@ if __name__ == "__main__":
 
 ### 开源项目与代码
 
-- [alexzhang13/rlm](https://github.com/alexzhang13/rlm):官方实现,PyPI 包 `rlms`。重点看 `rlm/utils/prompts.py` 里的系统提示词,和今天的 `SYSTEM` 对比,你会发现它多写了批量子调用 `llm_query_batched`、每次子调用约 10 万字符的预算提醒,还有「别在没做完时交答案」。
+- [alexzhang13/rlm](https://github.com/alexzhang13/rlm):官方实现,PyPI 包 `rlms`。重点看 `rlm/utils/prompts.py` 里的系统提示词,和今天的 `SYSTEM` 对比,你会发现它多写了批量子调用 `llm_query_batched`、「子模型大约能吃 50 万字符,别怕多给」的提示,还有「别在没做完时交答案」。
 
 ## 自测
 

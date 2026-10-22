@@ -425,7 +425,36 @@ uv run python title_approval.py pending
 待审批 title-T1039 C005 启明科技有限公司
 ```
 
-已经批完的 T1008、驳回的 T1039 又回到了待审批列表。我又写了几行代码看 T1008 和 T1019 的状态:
+已经批完的 T1008、驳回的 T1039 又回到了待审批列表。再写几行代码看看 T1008 和 T1019 的状态:
+
+```python
+# agent-zero-lab/part05/review46/peek.py
+import sqlite3
+
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+from title_approval import CKPT_DB, builder, cfg
+
+with sqlite3.connect(CKPT_DB, check_same_thread=False) as conn:
+    graph = builder.compile(checkpointer=SqliteSaver(conn))
+    for tid in ["T1008", "T1019"]:
+        snap = graph.get_state(cfg(tid))
+        n = len(list(graph.get_state_history(cfg(tid))))
+        print(tid, snap.next, snap.values.get("outcome"), n)
+```
+
+<div class="line-notes">
+
+- `from title_approval import CKPT_DB, builder, cfg` 复用小项目里的库路径、图和 thread_id 拼法。`title_approval.py` 末尾有 `if __name__ == "__main__":`,导入时不会执行 `main()`。
+- `snap = graph.get_state(cfg(tid))` 只读最新快照,不跑任何节点。
+- `n = len(list(graph.get_state_history(cfg(tid))))` 这条线上一共存了几张快照。
+- `print(tid, snap.next, snap.values.get("outcome"), n)` 四列:工单号、`next`、`outcome`、快照数。
+
+</div>
+
+```bash
+uv run python peek.py
+```
 
 ```text
 T1008 ('approval',) 已重开:C005 新抬头「启明科技有限公司」 8

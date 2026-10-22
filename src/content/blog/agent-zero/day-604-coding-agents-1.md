@@ -485,7 +485,7 @@ src/minisweagent/__init__.py:__version__ = "2.4.6"
 
 **执行**在 `environments/local.py` 的 `execute()`,最终调 `_run()`,用 `subprocess.Popen(command, shell=True, ...)` 跑命令,默认 30 秒超时,超时就把整个进程组杀掉。
 
-还有一个 2026 年读这个仓库要注意的变化。README 说「它甚至不需要模型的 tool calling 接口」,那是 v1 的做法:模型在回复正文里写一个 bash 代码块,程序用正则抠出来。现在的 v2(README 顶部有提示)默认改成了走 tool calling,只注册一个叫 `bash` 的工具,定义在 `src/minisweagent/models/utils/actions_toolcall.py` 的 `BASH_TOOL`;老的文本方式还在,换成 `mini_textbased.yaml` 配置就是,正则是 `` ```mswea_bash_command\s*\n(.*?)\n``` ``。也就是说「只有 bash」没变,「不用 tool calling」变成了可选项。
+还有一个 2026 年读这个仓库要注意的变化。README 说「它甚至不需要模型的 tool calling 接口」,那是 v1 的做法:模型在回复正文里写一个 bash 代码块,程序用正则抠出来。现在的 v2(README 顶部有提示)默认改成了走 tool calling,只注册一个叫 `bash` 的工具,定义在 `src/minisweagent/models/utils/actions_toolcall.py` 的 `BASH_TOOL`;老的文本方式还在,换成 `mini_textbased.yaml` 配置就是,模型要把命令写在一个语言标记为 `mswea_bash_command` 的 markdown 代码块里,程序用正则抠出来(正则写在 `litellm_textbased_model.py` 的 `action_regex`)。也就是说「只有 bash」没变,「不用 tool calling」变成了可选项。
 
 ### 自己写一个只有 bash 的 Agent
 

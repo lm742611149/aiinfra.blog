@@ -156,7 +156,7 @@ print("标准答案", gold, "| 两次合计", llm.ledger)
 - `{"role": "system", "content": RULES + "\n最后一行只写「答案:金额」。"},` 规则放进 system,要求最后一行固定格式,方便后面程序判卷。
 - `off = llm.chat(msgs)  # .env 里 LLM_EXTRA_BODY 默认关思考` 课程 `.env` 里 `LLM_EXTRA_BODY={"thinking": {"type": "disabled"}}`,不传任何参数就是关着的。
 - `on = llm.chat(msgs, extra_body={"thinking": {"type": "enabled"}}, reasoning_effort="high")` 这次传的 `extra_body` 会和 `.env` 里的合并,同名的 `thinking` 以这里为准(Day 136 写 `_kwargs` 时就是这么设计的),所以思考被打开。
-- `print("  输入", r.prompt_tokens, "(缓存命中"` 实跑第二次:关思考输入 301、命中 128;开思考输入 326、命中 128。开思考的输入多了 25 个 token,问题和规则一个字没变,多出来的是服务端在思考模式下自己加的东西。命中 128 是因为第二次调用和第一次开头一样,DeepSeek 的硬盘缓存(Day 124)接住了前 128 个 token。
+- `print("  输入", r.prompt_tokens, "(缓存命中"` 实跑第二次:关思考输入 301、命中 128;开思考输入 326、命中 128。开思考的输入多了 25 个 token,问题和规则一个字没变,多出来的应该是服务端在思考模式下自己加的内容。命中 128 是因为第二次调用和第一次开头一样,DeepSeek 的硬盘缓存(Day 124)接住了前 128 个 token。
 - `print("  思考内容", len(r.reasoning or ""), "字 | 正文", len(r.content), "字")` `r.reasoning` 关思考时是 `None`,`or ""` 把它变成空串再取长度。
 - `print("  最后一行:", r.content.strip().splitlines()[-1])` `strip()` 去掉首尾空白,`splitlines()` 按行切成列表,`[-1]` 取最后一个,相当于 JS 的 `text.trim().split("\n").at(-1)`。
 - `print(f"  花费 ¥{r.cost:.5f}  耗时 {r.latency:.1f}s")` `:.5f` 保留 5 位小数。

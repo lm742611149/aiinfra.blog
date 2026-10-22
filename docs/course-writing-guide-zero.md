@@ -75,6 +75,9 @@ draft: true
 ### 5.1 共享模块的接口约定(所有写手必须一致)
 
 - `common/llm.py` 在 Day 135–137 建,**唯一蓝本是旧课 `~/Documents/agent-60-lab/common/llm.py`**(只读参考,复制到自己的 scratchpad 用):`LLMClient(env_file=None, **overrides)`;`chat(messages, **kw) -> ChatResult`(kw 透传给 openai,如 `tools`、`response_format`、`temperature`);`stream(messages, **kw)` 逐段产出文本;`ChatResult` 字段 `content / reasoning / finish_reason / message / prompt_tokens / completion_tokens / cache_hit_tokens / cost(元) / latency / ttft`;`client.ledger` 是 `Ledger(calls, prompt_tokens, completion_tokens, cost)`;同文件还有 `Conversation(system, max_turns)`。Day 135 之前的课不能用它,直接用 openai SDK 或纯 Python。后面某天要给它加东西(大纲写了的,如 Day 457),就在那天讲清加了什么。
+- `common/embed.py`(Day 217 建):`embed(texts)`、`embed_one(text)`、`cosine(a, b)`、模块级 `usage` 字典;import 它的脚本在 `agent-zero-lab` 根目录用 `uv run python -m partNN.xxx` 跑。
+- CloudLedger MCP server(第五部分):`agent-zero-lab/cloudledger/server.py`(和 `seed.py` 同目录),四个工具名固定为 `find_customer`、`get_subscription`、`list_invoices`、`create_refund_request`(和旧课一致;大纲里写 `get_customer` 的以此为准)。
+- 天气 CLI(Day 70 建,Day 74–76 依赖):`part01/weather_cli.py` 含 `GEO_URL`、`FORECAST_URL`、`WeatherError`、`geocode(...)`、`current_temp(...)`、`get_weather(client, city)`、`main(cities)`,用 Open-Meteo 免费接口;Day 74 再把 client 参数改成 `HttpClient` Protocol、超时读 `WEATHER_TIMEOUT`。
 - 环境变量统一 `LLM_BASE_URL / LLM_API_KEY / LLM_MODEL`(embedding 用 `EMB_*`),放在 `agent-zero-lab/.env`。
 - 不要把共享模块写进 scratchpad 里别人的目录;每个写手只在自己的子目录(如 `w216/agent-zero-lab/`)里放一份副本。
 
@@ -82,6 +85,7 @@ draft: true
 ## 6. 怎么实跑
 
 - 在自己的 scratchpad 里建一份 `agent-zero-lab` 来跑,**不要写用户的任何真实目录**(`~/Documents/agent-60-lab` 等)。需要 API key 时从 `~/Documents/agent-60-lab/.env` 复制一份到 scratchpad(DeepSeek,已充值);每天的实跑花费控制在 ¥1 以内,文中写出算式。
+- **安全红线**:凡是让模型执行命令、读写文件、操作浏览器的 Agent(coding agent、shell 工具、computer use 等),实跑时必须把它关在你自己的 scratchpad 子目录里(macOS `sandbox-exec` 限制读写范围,或工具层把路径限定在工作目录并拒绝 `..`/绝对路径),并且第一版就要有这个限制。**绝不能让它读到用户家目录、`~/Documents/nue`(公司代码)或任何真实仓库**,因为工具结果会发给第三方模型厂商。演示「没有沙箱会怎样」只用伪造的目录和假数据。
 - 本机是 2019 款 Intel MacBook Pro,没有 GPU、没有 Docker、只有 JDK 8;需要这些的写明没实跑。本机 Postgres.app(5432,用户 minliu 无密码)可用,只能在自己新建的库里操作。
 - 类型检查:可用 basedpyright standard 档检查 scratchpad 里的代码,读者用 Zed 会看到红线,文章里的代码要 0 报错。
 
