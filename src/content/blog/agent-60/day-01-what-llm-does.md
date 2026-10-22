@@ -170,6 +170,100 @@ Agent 场景下的经验：需要稳定、可复现的步骤（分类、抽取�
 </figure>
 
 
+## Transformer、注意力和 MoE，面试够用版
+
+前面一直说「模型猜下一个 token」，没说里面是什么。做 Agent 不需要会推公式，但国内面试几乎必问「讲讲 Transformer」「注意力是干什么的」「MoE 为什么快」，而且这几件事能直接解释你后面会碰到的成本和延迟现象。这里只讲直觉，够答题、够做工程判断就行。
+
+现在主流的大模型，几乎都是 2017 年论文《Attention Is All You Need》提出的 Transformer 的一个变体，叫 **decoder-only Transformer**。它的结构说白了就是同一种「层」叠几十次。每一层做两件事：先让每个 token 去看前面的 token（注意力），再让每个 token 自己过一个大的前馈网络（FFN）消化一下。输入的 token 先变成向量，一层层往上传，最后一层的输出再变成「下一个 token 的概率分布」，就是上一节那张表。
+
+### 注意力：每个 token 决定该看谁
+
+读这句话：「客户说发票开错了，它的金额少了 20 元」。人一看就知道「它」指的是发票。模型怎么知道？靠注意力。处理到「它」这个位置时，模型会给前面每个 token 打一个相关度分数，然后按分数加权把那些 token 的信息拿过来。「发票」的分数高，「客户」「说」的分数低，所以「它」的表示里主要混进了「发票」的信息。
+
+<figure>
+<svg viewBox="0 0 640 260" role="img" aria-label="左边：处理「它」时对前面各 token 的注意力权重，发票最高；右边：MoE 层里路由器只选两个专家">
+<rect x="0" y="0" width="640" height="260" fill="var(--paper-raised)" rx="6"/>
+<g font-family="var(--font-mono)" font-size="12">
+<text x="20" y="28" fill="var(--ink-soft)">注意力：算「它」时看谁</text>
+<path d="M270 150 Q155 30 40 150" fill="none" stroke="var(--mem)" stroke-width="4"/>
+<path d="M270 150 Q178 70 86 150" fill="none" stroke="var(--rule)" stroke-width="1"/>
+<path d="M270 150 Q201 90 132 150" fill="none" stroke="var(--rule)" stroke-width="1.5"/>
+<path d="M270 150 Q224 105 178 150" fill="none" stroke="var(--rule)" stroke-width="1"/>
+<path d="M270 150 Q247 120 224 150" fill="none" stroke="var(--rule)" stroke-width="1"/>
+<text x="140" y="80" fill="var(--mem)">0.71</text>
+<rect x="20" y="150" width="40" height="26" rx="4" fill="var(--mem-wash)" stroke="var(--mem)"/>
+<text x="40" y="168" text-anchor="middle" fill="var(--ink)">发票</text>
+<rect x="66" y="150" width="40" height="26" rx="4" fill="none" stroke="var(--rule)"/>
+<text x="86" y="168" text-anchor="middle" fill="var(--ink)">开</text>
+<rect x="112" y="150" width="40" height="26" rx="4" fill="none" stroke="var(--rule)"/>
+<text x="132" y="168" text-anchor="middle" fill="var(--ink)">错</text>
+<rect x="158" y="150" width="40" height="26" rx="4" fill="none" stroke="var(--rule)"/>
+<text x="178" y="168" text-anchor="middle" fill="var(--ink)">了</text>
+<rect x="204" y="150" width="40" height="26" rx="4" fill="none" stroke="var(--rule)"/>
+<text x="224" y="168" text-anchor="middle" fill="var(--ink)">，</text>
+<rect x="250" y="150" width="40" height="26" rx="4" fill="var(--compute-wash)" stroke="var(--compute)"/>
+<text x="270" y="168" text-anchor="middle" fill="var(--ink)">它</text>
+<text x="20" y="206" fill="var(--ink-faint)">只能往前看，看不到后面的 token</text>
+<text x="20" y="226" fill="var(--ink-faint)">前面的 K、V 存起来复用 = KV cache</text>
+<line x1="320" y1="20" x2="320" y2="240" stroke="var(--rule)"/>
+<text x="340" y="28" fill="var(--ink-soft)">MoE 层：每个 token 只走 2 个专家</text>
+<rect x="350" y="50" width="40" height="26" rx="4" fill="var(--compute-wash)" stroke="var(--compute)"/>
+<text x="370" y="68" text-anchor="middle" fill="var(--ink)">它</text>
+<line x1="390" y1="63" x2="430" y2="63" stroke="var(--rule)"/>
+<rect x="430" y="50" width="90" height="26" rx="4" fill="var(--mem-wash)" stroke="var(--mem)"/>
+<text x="475" y="68" text-anchor="middle" fill="var(--ink)">路由器</text>
+<line x1="475" y1="76" x2="448" y2="110" stroke="var(--mem)" stroke-width="2"/>
+<line x1="475" y1="76" x2="584" y2="145" stroke="var(--mem)" stroke-width="2"/>
+<rect x="350" y="110" width="60" height="24" rx="4" fill="none" stroke="var(--rule)"/>
+<text x="380" y="127" text-anchor="middle" fill="var(--ink-faint)">专家1</text>
+<rect x="418" y="110" width="60" height="24" rx="4" fill="var(--mem-wash)" stroke="var(--mem)"/>
+<text x="448" y="127" text-anchor="middle" fill="var(--ink)">专家2</text>
+<rect x="486" y="110" width="60" height="24" rx="4" fill="none" stroke="var(--rule)"/>
+<text x="516" y="127" text-anchor="middle" fill="var(--ink-faint)">专家3</text>
+<rect x="554" y="110" width="60" height="24" rx="4" fill="none" stroke="var(--rule)"/>
+<text x="584" y="127" text-anchor="middle" fill="var(--ink-faint)">专家4</text>
+<rect x="350" y="145" width="60" height="24" rx="4" fill="none" stroke="var(--rule)"/>
+<text x="380" y="162" text-anchor="middle" fill="var(--ink-faint)">专家5</text>
+<rect x="418" y="145" width="60" height="24" rx="4" fill="none" stroke="var(--rule)"/>
+<text x="448" y="162" text-anchor="middle" fill="var(--ink-faint)">专家6</text>
+<rect x="486" y="145" width="60" height="24" rx="4" fill="none" stroke="var(--rule)"/>
+<text x="516" y="162" text-anchor="middle" fill="var(--ink-faint)">专家7</text>
+<rect x="554" y="145" width="60" height="24" rx="4" fill="var(--mem-wash)" stroke="var(--mem)"/>
+<text x="584" y="162" text-anchor="middle" fill="var(--ink)">专家8</text>
+<line x1="448" y1="134" x2="475" y2="196" stroke="var(--mem)"/>
+<line x1="584" y1="169" x2="475" y2="196" stroke="var(--mem)"/>
+<rect x="420" y="196" width="110" height="26" rx="4" fill="none" stroke="var(--rule)"/>
+<text x="475" y="214" text-anchor="middle" fill="var(--ink)">加权合并</text>
+<text x="340" y="244" fill="var(--ink-faint)">总参数看全部专家，算力只花在被选中的</text>
+</g>
+</svg>
+<figcaption>左边是一个注意力头在处理「它」时的权重示意（数字是举例，不是实测），右边是 MoE 层：路由器给每个 token 挑少数几个专家，其余专家这一步不参与计算。</figcaption>
+</figure>
+
+几个面试常追问的细节，每个都对应一个工程现象：
+
+- **只能往前看。** 生成模型的注意力加了「因果遮罩」，每个位置只能看到它前面的 token，看不到后面的。所以它必须一个一个往外吐，这就是自回归。
+- **多头注意力。** 一层里有几十个注意力「头」并行，各自学不同的关系，有的盯指代，有的盯语法，有的盯位置。不用记细节，知道「多个角度同时看」就够了。
+- **位置信息要另外加。** 注意力本身不分先后，模型靠位置编码知道谁在前谁在后，现在多数模型用的是 RoPE（旋转位置编码）。上下文能不能从 128K 拉到 1M，很大程度上就是在这上面做文章。
+- **长度越长越贵。** 每个新 token 都要和前面所有 token 算一次相关度，所以处理一段长输入的计算量大约随长度的平方增长。这就是为什么长 prompt 的首 token 延迟明显变长。
+- **KV cache。** 注意力里每个 token 会算出一对「键（K）」和「值（V）」向量，前面 token 的 K、V 在生成后面的 token 时不会变，所以推理服务把它们存在显存里复用，这叫 KV cache。它解释了两件事：一是上下文越长占显存越多，同一张卡能同时服务的请求就越少；二是 prompt caching 能便宜，本质就是把相同前缀的 KV cache 存下来下次直接用，Day 38 会讲怎么利用它。
+
+还有一个容易被问的：注意力负责「token 之间交换信息」，那知识存在哪？一般的说法是大部分事实性知识存在每层的前馈网络（FFN）参数里，注意力更像是「在上下文里找相关的东西」。这也是 RAG 能起作用的直觉：把资料放进上下文，让注意力去找，而不是指望 FFN 里记住了。
+
+### MoE：参数很多，每次只用一小部分
+
+前面的本地模型表里出现过好几次 MoE（Mixture of Experts，混合专家）。它改的是每层里的 FFN：把一个大 FFN 换成几十到几百个小 FFN（叫「专家」），再加一个很小的路由器。每个 token 进来，路由器打分，只挑分数最高的几个专家（常见是 2 到 8 个）去算，其余专家这一步完全不动。
+
+所以 MoE 模型有两个参数量要分清：**总参数**和**激活参数**。DeepSeek-V3 总参数 671B，每个 token 激活约 37B；Qwen3-30B-A3B 名字里就写了，总 30B，激活 3B。对你的影响是：
+
+- **速度和单次计算成本看激活参数。** 每个 token 只算 37B 的量，所以它比同样总参数的稠密模型快得多，API 也能卖得便宜。
+- **显存看总参数。** 所有专家都要加载进内存，路由器随时可能选到任何一个。所以自己部署 DeepSeek 完整版仍然要多卡服务器，这是很多人第一次算错的地方。
+- **效果更接近总参数那一档。** 不同专家各自学到不同领域的东西，总的知识容量大。
+
+一句话版本：MoE 用更多显存换更快的速度和更低的单 token 成本。面试时能把「总参数 / 激活参数 / 显存 / 速度」这四个词的关系讲清楚，就比背定义强。
+
+想看动画讲解，3Blue1Brown 深度学习系列第 5、6 章（B 站官方号有双语版）讲 Transformer 和注意力讲得最直观，学习资料里有链接。
+
 ## 补充:哪些模型能本地部署?自己训一个要做什么?
 
 能下载到自己机器上跑的叫「开放权重」(open-weight)模型。截至 2026 年年中的主流系列:
@@ -387,6 +481,10 @@ for q in QUESTIONS:
 | 预训练 / SFT / RLHF | 模型训练的三个阶段：学续写、学对话格式、学人类偏好 |
 | 推理模型 / 思考模式 | 回答前先生成一段推理过程的模型或模式，思考 token 也计费 |
 | reasoning_content | DeepSeek 返回思考过程的字段，与最终回答 content 分开 |
+| Transformer | 现在大模型的基本结构，同一种层叠几十次，每层是注意力加前馈网络 |
+| 注意力（attention） | 每个 token 给前面的 token 打相关度分，按分数把它们的信息加权取过来 |
+| KV cache | 推理时把前面 token 的键、值向量存在显存里复用，上下文越长占得越多 |
+| MoE（混合专家） | 每层有很多个「专家」小网络，路由器每次只选少数几个算；分总参数和激活参数 |
 
 ## 常见误区
 
@@ -420,6 +518,7 @@ for q in QUESTIONS:
 - 卡帕西 3.5 小时深度讲解（上面正文里嵌的 BV16cNEeXEer）：今天看前 1 小时。
 - 【中英字幕】Andrej Karpathy 一小时大语言模型介绍（BV1kC4y1P7Lt）：2023 年那场经典讲座的中字版，和 YouTube 上的原版是同一个内容，二选一看。
 - 台大李宏毅：80 分钟快速了解大语言模型（BV1FM4m1Z7JZ，搬运合集）：李宏毅讲课节奏慢、例子好，适合喜欢中文讲解的人。
+- 3Blue1Brown 官方号《【官方双语】GPT是什么？直观解释Transformer | 深度学习第5章》（BV13z421U7cs，27 分钟）：配合上面的「Transformer、注意力和 MoE」一节看，看完在官方号里接着看第 6 章讲注意力的那一集。
 
 ### 其他经典视频
 
@@ -493,6 +592,14 @@ for q in QUESTIONS:
 <details><summary>答案</summary>
 
 模型看到的是 token 而不是字母，"strawberry" 可能被切成两三个 token，它没有直接看到每个字母。Agent 里遇到字符级、计算类任务，应该交给代码：给一个执行代码或字符串处理的工具，而不是让模型「看」出来。
+
+</details>
+
+7. （面试题）DeepSeek-V3 总参数 671B、激活参数约 37B。为什么它的 API 能卖得便宜，你自己部署却仍然要多卡服务器？
+
+<details><summary>答案</summary>
+
+它是 MoE 模型，每个 token 只经过路由器选中的少数专家，计算量按约 37B 算，所以单 token 的算力成本和速度接近一个 37B 的稠密模型，厂商能便宜卖。但所有专家都可能被选到，671B 的权重必须全部放进显存（量化后也要几百 GB），所以部署门槛按总参数算。再加上长上下文的 KV cache 也占显存，单机跑完整版不现实。
 
 </details>
 

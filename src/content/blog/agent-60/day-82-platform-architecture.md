@@ -232,6 +232,52 @@ def search_chunks(doc_id: str) -> list[tuple]:
 
 这里有个取舍:配置下发有延迟,比如你在控制面把某个租户的预算调成 0,数据面可能要过 30 秒才生效。对于紧急情况(Day 87 会讲的 kill switch),要么缩短拉取间隔,要么提供一条单独的「推送」通道。
 
+## 中间件放在哪:Redis、队列、检索库和对象存储
+
+国内 JD 里经常一口气列出「熟悉 Redis、Kafka、Milvus、ES」,第一次看会以为 Agent 平台要把这些全装上。其实每一样都对应一个具体的问题,问题没出现就不用引入。SupportPilot 一直只用 Postgres(加 pgvector)一个库,单租户、几十个并发完全够;到了多租户平台,下面这几样会陆续进来。先看它们在哪个位置:
+
+<figure>
+<svg viewBox="0 0 640 300" role="img" aria-label="Agent 平台里的中间件位置:请求经过网关和运行时,Redis 管限流计数、会话和缓存;队列连接 API 和后台 worker 以及 trace 管道;检索库服务知识库和记忆;对象存储放文件和大载荷;OLAP 存 trace 分析">
+<rect x="0" y="0" width="640" height="300" fill="var(--paper-raised)"/>
+<g font-family="var(--font-mono)" font-size="11">
+<rect x="20" y="30" width="110" height="40" rx="4" fill="none" stroke="var(--rule)"/><text x="75" y="55" text-anchor="middle" fill="var(--ink)">客户端/渠道</text>
+<line x1="130" y1="50" x2="170" y2="50" stroke="var(--ink-faint)"/>
+<rect x="170" y="30" width="120" height="40" rx="4" fill="var(--mem-wash)" stroke="var(--mem)"/><text x="230" y="55" text-anchor="middle" fill="var(--ink)">API / 模型网关</text>
+<line x1="290" y1="50" x2="330" y2="50" stroke="var(--ink-faint)"/>
+<rect x="330" y="30" width="130" height="40" rx="4" fill="var(--mem-wash)" stroke="var(--mem)"/><text x="395" y="55" text-anchor="middle" fill="var(--ink)">Agent 运行时 worker</text>
+<line x1="460" y1="50" x2="500" y2="50" stroke="var(--ink-faint)"/>
+<rect x="500" y="30" width="120" height="40" rx="4" fill="var(--compute-wash)" stroke="var(--compute)"/><text x="560" y="55" text-anchor="middle" fill="var(--ink)">工具 / MCP</text>
+<rect x="170" y="110" width="120" height="50" rx="4" fill="none" stroke="var(--ink-faint)"/><text x="230" y="131" text-anchor="middle" fill="var(--ink)">Redis</text><text x="230" y="148" text-anchor="middle" fill="var(--ink-soft)">限流 会话 缓存</text>
+<line x1="230" y1="70" x2="230" y2="110" stroke="var(--rule)"/>
+<rect x="20" y="110" width="130" height="50" rx="4" fill="none" stroke="var(--ink-faint)"/><text x="85" y="131" text-anchor="middle" fill="var(--ink)">队列</text><text x="85" y="148" text-anchor="middle" fill="var(--ink-soft)">Redis/RabbitMQ/Kafka</text>
+<path d="M170 60 Q120 85 100 110" fill="none" stroke="var(--rule)"/>
+<path d="M150 135 Q260 95 360 70" fill="none" stroke="var(--rule)" stroke-dasharray="4 3"/>
+<rect x="330" y="110" width="130" height="50" rx="4" fill="none" stroke="var(--ink-faint)"/><text x="395" y="131" text-anchor="middle" fill="var(--ink)">检索库</text><text x="395" y="148" text-anchor="middle" fill="var(--ink-soft)">pgvector/Milvus/ES</text>
+<line x1="395" y1="70" x2="395" y2="110" stroke="var(--rule)"/>
+<rect x="490" y="110" width="130" height="50" rx="4" fill="none" stroke="var(--ink-faint)"/><text x="555" y="131" text-anchor="middle" fill="var(--ink)">Postgres</text><text x="555" y="148" text-anchor="middle" fill="var(--ink-soft)">业务 配置 checkpoint</text>
+<line x1="440" y1="70" x2="520" y2="110" stroke="var(--rule)"/>
+<rect x="20" y="210" width="290" height="50" rx="4" fill="none" stroke="var(--ink-faint)"/><text x="165" y="231" text-anchor="middle" fill="var(--ink)">对象存储(S3/OSS/MinIO)</text><text x="165" y="248" text-anchor="middle" fill="var(--ink-soft)">上传文件 大工具结果 trace 原始事件</text>
+<rect x="330" y="210" width="290" height="50" rx="4" fill="none" stroke="var(--ink-faint)"/><text x="475" y="231" text-anchor="middle" fill="var(--ink)">OLAP(ClickHouse 等)</text><text x="475" y="248" text-anchor="middle" fill="var(--ink-soft)">trace 分析 成本看板 评测分数</text>
+<line x1="85" y1="160" x2="85" y2="210" stroke="var(--rule)" stroke-dasharray="4 3"/>
+<line x1="150" y1="150" x2="400" y2="210" stroke="var(--rule)" stroke-dasharray="4 3"/>
+<text x="20" y="288" fill="var(--ink-faint)">实线:请求路径上同步调用;虚线:异步事件流</text>
+</g>
+</svg>
+<figcaption>Agent 平台里常见中间件的位置。请求路径上只有网关、运行时、Redis、检索库和 Postgres;队列、对象存储和 OLAP 都在异步那一侧,出了问题不该直接卡住用户的请求。</figcaption>
+</figure>
+
+| 中间件 | 在 Agent 平台里干什么 | 什么时候引入 |
+| --- | --- | --- |
+| Redis(或 Valkey) | 按租户和 key 的限流计数、预算累计(上一节说的数据面实时数据);会话和短期状态缓存;语义缓存;分布式锁(同一张工单不能被两个 worker 同时处理);轻量任务队列 | 有了第二个应用实例就该上。单实例时内存里计数就行,多实例不共享计数,限流就形同虚设 |
+| 队列(Redis Streams/RabbitMQ/SQS,规模大了 Kafka) | API 收到请求后把长任务交给后台 worker(Day 37、Day 65);webhook、邮件这类事件触发;trace、用量、计费事件送到下游 | 有跑超过几十秒的任务,或者一个事件要被多个下游消费(计费、看板、告警)时。Kafka 的优势是多消费者、可回放、吞吐高,代价是运维重,事件量没到每秒几千条之前,Redis Streams 或云上托管队列更省事 |
+| 检索库(pgvector → Milvus/Qdrant/ES/OpenSearch) | 知识库检索、长期记忆检索、工具检索 | 先用 pgvector,和业务数据一个库、能用 RLS 做隔离。向量量级到千万级、检索 QPS 很高,或者要按租户分别扩容时,再考虑独立的向量库;公司本来就有 ES 集群而且要 BM25 加向量的混合检索,ES 是顺手的选择。门槛以你自己的压测为准,别照搬别人的数字 |
+| 对象存储(S3、阿里云 OSS、自建 MinIO) | 用户上传的 PDF 和图片;超大的工具结果(只在上下文里放摘要和引用,原文放这里,Day 63 讲过);trace 原始事件;评测快照和导出 | 一开始就该有。大文件塞 Postgres 或者塞进 trace 本身,库会很快膨胀 |
+| OLAP(ClickHouse 等) | trace、观测数据、评测分数、成本的分析查询 | trace 一天几百万条、按租户和模型聚合的看板查询开始拖慢 Postgres 时 |
+
+一个很好的参照是 Langfuse 的自托管架构(2026 年 10 月看的是 v4 文档):Postgres 放事务数据,ClickHouse 放 trace、observation 和评分,Redis/Valkey 兼做缓存和队列,S3 一类的对象存储放所有进来的原始事件、多模态输入和大导出,worker 从队列里取任务异步处理,队列里只放引用,数据本身在对象存储里。这正好是上面这张表的一个缩小版,而且它同样没用 Kafka。
+
+面试被问「你为什么用了 Kafka」时,最好的回答是讲出那个让你不得不用它的问题;最差的回答是「因为大家都用」。反过来,被问「为什么不用 Milvus」,能说出「数据量多少、QPS 多少、pgvector 压测结果怎样、隔离靠 RLS」就是加分项。
+
 ## 平台 API 设计
 
 平台对外的 API 决定了业务团队怎么用它。我建议资源模型从这几个开始,别一上来就设计二十个:
@@ -397,6 +443,8 @@ def test_cannot_write_into_other_tenant(conn):
 | 数据面(data plane) | 处理每一次请求的那部分系统:网关、运行时、工具调用、trace 管道 |
 | 最薄可用平台(thinnest viable platform) | Team Topologies 的概念,平台只做能让业务团队加速的最小那一层 |
 | 配置快照 | 控制面把当前配置打包成带版本号的只读副本下发,数据面本地缓存使用 |
+| OLAP | 面向分析查询的数据库(如 ClickHouse),适合对海量 trace 做按租户、模型的聚合 |
+| 对象存储 | S3、OSS、MinIO 这类按 key 存大文件的服务,便宜、容量几乎无限,不适合频繁小改 |
 
 ## 常见误区
 
@@ -422,6 +470,7 @@ def test_cannot_write_into_other_tenant(conn):
 - [InfoQ · Uber 的 GenAI Gateway](https://www.infoq.com/news/2024/09/uber-genai-gateway-llm-openai/):Uber 为什么在 60 多个用例之后做统一网关、网关管了哪些事、PII 脱敏和缓存之间的矛盾。15 分钟。原文在 Uber 工程博客,搜「Navigating the LLM Landscape: Uber's Innovation with GenAI Gateway」,需浏览器打开。
 - [ByteByteGo · The Evolution of LinkedIn's Generative AI Tech Stack](https://blog.bytebytego.com/p/the-evolution-of-linkedins-generative):LinkedIn GenAI 平台演进的长文整理,和上面的视频互补。30 分钟。
 - [Dify 文档](https://docs.dify.ai/):看一下工作空间、成员权限和模型供应商管理是怎么设计的,作为「现成多租户平台」的参照。30 分钟。
+- [Langfuse · Self-hosting](https://langfuse.com/self-hosting):看架构图那一节,Postgres、ClickHouse、Redis、对象存储各管什么,是「中间件放在哪」那一节的真实样板,20 分钟。
 
 ### B 站视频
 
@@ -502,6 +551,14 @@ def test_cannot_write_into_other_tenant(conn):
 <details><summary>答案</summary>
 
 答题要点是先找到最痛、最通用、最容易证明价值的那一块,而不是先设计完整的平台。第一个月访谈 5 个团队,把重复建设和事故列出来,量化成本(重复代码、重复修复、算不清的账单、安全事件)。通常模型网关是最好的切入点:接入成本低(改个 base_url),好处立刻可见(按团队分账、统一限流、故障切换)。第二个月上线网关并让 2 个团队接入,同时把租户模型和数据模型定下来(所有表带 tenant_id,默认 pool,留 silo 口子)。第三个月根据数据决定下一块是工具中心还是可观测。明确不做:可视化搭建界面、统一的 Agent DSL、强制迁移。要提到的指标:接入团队数、网关覆盖的调用比例、成本归因准确率、平台自身的可用性 SLO。还要说明怎么让团队主动迁移(接入就送看板和审计),以及控制面和数据面分离、平台自身 SLO 比业务更严这些架构原则。
+
+</details>
+
+7. (资深面试题)面试官问:「你的 Agent 平台为什么没用 Kafka?」你会怎么回答?
+
+<details><summary>答案</summary>
+
+从问题出发回答:平台里需要异步的地方是长任务交给 worker、trace 和用量事件送到下游。当前事件量(给出数字,比如每秒几十到几百条)、消费者数量(计费、看板两个)用 Redis Streams 或托管队列就能满足,运维成本低;Kafka 的价值在多消费者、可回放、高吞吐,等出现「事件量到每秒几千、需要回放历史事件重算账单、下游团队要独立消费」这些需求时再迁移,并且在设计里留了一层事件发布接口,换实现不影响业务代码。也可以举 Langfuse 自托管同样用 Redis 做队列、对象存储放原始事件的例子。
 
 </details>
 

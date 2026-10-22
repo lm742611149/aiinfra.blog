@@ -283,11 +283,38 @@ Claude Agent SDK 和前两个性质不同。官方文档的说法是,它给你�
 
 ### 其他几个名字
 
-**LlamaIndex** 起家于 RAG,数据接入(各种文档解析器、索引结构)是它的强项,后来也做了 Agent 和 Workflow。如果你的场景以「接入大量异构文档」为主,它比 LangChain 顺手。
+这个领域半年一个大版本,下面这张表是我 2026 年 10 月 22 日对着 PyPI 和各家官方页面查的,你读到的时候大概率又变了,用 `pip index versions <包名>` 或去 PyPI 看一眼最新版。
 
-**CrewAI** 主打「角色扮演式」多 Agent:给每个 Agent 定义角色、目标、背景故事,组成一个「团队」。上手快,演示效果好,但控制粒度比 LangGraph 粗,复杂生产场景用的人少一些。
+| 框架 | PyPI 包名 | 查到的最新版(日期) | 2026 年的大事 |
+| --- | --- | --- | --- |
+| LangChain / LangGraph | `langchain` / `langgraph` | 1.4.7(10-21)/ 1.2.16(10-16) | LangGraph 1.2:节点级超时和错误处理器、长线程省 checkpoint 开销的新 channel、v3 流式 API |
+| Deep Agents | `deepagents` | 0.7.30(10-22) | 0.7 把默认 harness 精简到基础输入 token 少 65% |
+| OpenAI Agents SDK | `openai-agents` | 0.24.0(10-15) | 4 月 15 日新版:模型原生 harness、内置沙箱执行 |
+| Claude Agent SDK | `claude-agent-sdk` | 0.2.171(10-21) | 子 Agent 深度和并发上限、fork 型子 Agent(见 Day 26) |
+| Google ADK | `google-adk` | 2.12.0(10-13) | 2.0 改成图执行引擎(Workflow Runtime),Python/Go/TS 先后 GA |
+| Microsoft Agent Framework | `agent-framework` | 1.22.0(10-15) | 4 月 3 日发布 1.0,接替 AutoGen 和 Semantic Kernel |
+| Pydantic AI | `pydantic-ai` | 2.59.0(10-21) | 6 月 23 日发布 v2,围绕 capability 重新设计 |
+| LlamaIndex | `llama-index` | 0.14.25(09-21) | 还在 0.x,重心是数据接入和 Workflows |
+| CrewAI | `crewai` | 1.15.28(10-14) | 1.x 系列,官方推荐生产用 Flows |
+| smolagents | `smolagents` | 1.26.0(05-29) | 更新放缓,但 CodeAgent 的思路被很多框架借走了 |
 
-**AutoGen** 是微软研究院出的多 Agent 框架,2023 年很火。2025 年底到 2026 年初,微软把 AutoGen 和 Semantic Kernel 合并成了 **Microsoft Agent Framework**,据报道 2026 年 4 月正式发布 1.0,AutoGen 和 Semantic Kernel 本身进入维护模式。看到 AutoGen 的老教程,知道这层关系就行;新项目如果在微软技术栈上,看 Agent Framework。
+几个值得单独说的:
+
+**LangGraph 1.2 和 Deep Agents 0.7。** 你明天的小项目用的就是 LangGraph,1.2 加的几样东西都是生产里真会碰到的:`add_node(..., timeout=)` 给单个节点设超时,重试用完以后还能挂一个节点级的错误处理器,不用在每个节点里自己写 try/except。Deep Agents 是 LangChain 在 LangGraph 上做的现成 harness(规划用的 todo、虚拟文件系统、子 Agent),定位和 Claude Agent SDK 类似但模型不绑定。它的 [0.7 版博客](https://www.langchain.com/blog/deep-agents-v0-7) 很值得读:他们把默认的系统提示词清空、把工具描述删短,一轮的基础输入从大约 6k token 降到 2k,效果基本不变。这个结论对你自己写 Agent 也成立:系统提示词和工具描述是每一轮都要付的钱,写长了不一定更好。
+
+**OpenAI Agents SDK 的 4 月新版和 Agent Builder 下线。** 4 月 15 日 OpenAI 发了 [The next evolution of the Agents SDK](https://openai.com/index/the-next-evolution-of-the-agents-sdk/)(这个页面对 curl 返回 403,需浏览器打开),主要是两件事:一个让 Agent 能在一台电脑上操作文件和工具的模型原生 harness,以及内置的沙箱执行,可以接几家第三方沙箱,也可以用自己的。同一时期 OpenAI 把 2025 年 10 月才推出的可视化搭建工具 Agent Builder 判了死刑:[官方弃用页](https://developers.openai.com/api/docs/deprecations)写着 2026 年 6 月 3 日通知弃用,11 月 30 日下线,ChatKit(嵌入式聊天界面)保留,建议迁到 Agents SDK 或 ChatGPT 的 Workspace Agents。从发布到下线一年多一点。这件事是一个很好的面试素材:平台型低代码工具的风险不只是表达力不够,还有厂商随时可能收掉它,而写在代码里的 Agents SDK 留下来了。
+
+**Google ADK 2.0。** ADK 是 Google 的 Agent 开发框架,2.0 最大的变化是把原来按层级调用子 Agent 的执行器,换成了图执行引擎(官方叫 Workflow Runtime):Agent、工具、函数都是图里的节点。听上去很像 LangGraph,确实是往同一个方向收敛了。[官方 2.0 页面](https://adk.dev/2.0/)写的 GA 日期是 Python 5 月 19 日、Go 6 月 30 日、TypeScript 8 月 21 日;Java 还没看到 2.0 的 GA 日期。ADK 和 Gemini、Vertex AI 结合最紧,用 Google Cloud 的团队会优先考虑它;它也能接别家模型。Go 版本对国内用 Go 写后端的团队有吸引力,专题篇 Day 141 会用到。
+
+**Microsoft Agent Framework 1.0。** AutoGen 是微软研究院出的多 Agent 框架,2023 年很火;Semantic Kernel 是微软面向企业的 LLM 编排库。2025 年 10 月微软把两者合并成 Microsoft Agent Framework,[1.0 在 2026 年 4 月 3 日发布](https://devblogs.microsoft.com/agent-framework/microsoft-agent-framework-version-1-0/),承诺 API 稳定和长期支持,支持 Python 和 .NET,内置顺序、并发、handoff、群聊和 Magentic-One 几种多 Agent 编排,原生支持 MCP 和 A2A。AutoGen 仓库的 README 现在写的是「正在转为归档,不建议生产使用」,新用户直接去 Agent Framework;Semantic Kernel 的 README 写的是「Semantic Kernel 现在就是 Microsoft Agent Framework」,并给了迁移指南。看到 AutoGen 的老教程,知道它已经停在原地就行。
+
+**Pydantic AI v2。** 你在 Day 6 用过 pydantic 做结构化输出,Pydantic AI 是同一个团队做的 Agent 框架,类型标注写得最严,用 basedpyright 的话体验很好。v2 在 [6 月 23 日发布](https://pydantic.dev/docs/ai/project/version-policy/),核心改动是把工具、钩子、指令、模型设置打包成一个个 capability 挂到 Agent 上;核心库保持很小,记忆、持久化这类能力放到官方的 Pydantic AI Harness 库里单独装(这个库还在 0.x,接口会变)。它也接了 Temporal、DBOS 这几种持久化执行后端,和 Day 65 讲的东西是一回事。
+
+**smolagents。** Hugging Face 出的极简框架,最出名的是 CodeAgent:模型不输出 JSON 工具调用,而是直接写一段 Python 来调工具。2026 年 5 月以后就没发新版了,但这个「让模型写代码来调工具」的思路被 Cloudflare、Anthropic、微软都借了过去,专题篇 Day 132 专门讲。
+
+**LlamaIndex** 起家于 RAG,数据接入(各种文档解析器、索引结构)是它的强项,后来也做了 Agent 和 Workflow。它到现在还是 0.x 版本号。如果你的场景以「接入大量异构文档」为主,它比 LangChain 顺手。
+
+**CrewAI** 主打「角色扮演式」多 Agent:给每个 Agent 定义角色、目标、背景故事,组成一个「团队」(crew)。上手快,演示效果好,但控制粒度比 LangGraph 粗。它后来补了 Flows,一种事件驱动、确定性的流程编排,官方文档现在的建议是生产应用从 Flow 开始搭,crew 放在流程里的某一步用。
 
 **Dify 和 Coze(扣子)** 是低代码平台。Dify 开源,可以私有部署,许可证是在 Apache 2.0 基础上加了限制条款的自定义协议(商用多租户有条件,用之前读一下);Coze 是字节的产品,2025 年 7 月开源了核心的 Coze Studio(Apache 2.0)。它们的价值是让业务同学自己拖出一个知识库问答或审批机器人,也适合工程师做快速验证。缺点是复杂逻辑表达力有限,版本管理、测试、评测都不如代码方便。很多公司的实际做法是:Dify 做原型和内部小工具,核心产品用代码写。面试时别贬低低代码,说清楚它适合什么就好。
 
@@ -486,6 +513,8 @@ JD 里「能讲清框架局限和何时不用框架」「理解 LangChain/LlamaI
 | allowed_tools | Claude Agent SDK 里「免确认自动执行」的工具列表,不限制可用范围 |
 | Agent Skills | 以 SKILL.md 为核心的能力包,包含说明、资料和脚本,按需加载;2025 年 12 月成为开放标准 |
 | 渐进式加载 | 先只加载元数据,触发时加载正文,用到时才读资源和执行脚本 |
+| Workflow Runtime(ADK) | Google ADK 2.0 的图执行引擎,Agent、工具、函数都是图里的节点 |
+| capability(Pydantic AI) | Pydantic AI v2 里把工具、钩子、指令、模型设置打成一个包挂到 Agent 上的单位 |
 | Agent Harness | 包在模型外面的运行框架:循环、工具/Skill 加载、上下文组装、沙箱权限、状态恢复、hooks |
 | Microsoft Agent Framework | 微软合并 AutoGen 与 Semantic Kernel 后的新框架 |
 | 低代码平台 | Dify、Coze 等,用可视化编排搭建 Agent 应用 |
@@ -610,6 +639,14 @@ Harness 是包在模型外面、让模型能可靠完成任务的运行框架。
 <details><summary>答案</summary>
 
 参考要点:先说用过,并说明用的是 1.x 的 `create_agent` 和底层的 LangGraph。实现:`create_agent` 构建一张 LangGraph 图,模型节点和工具节点之间用条件边形成循环,middleware 是插在模型和工具调用前后的钩子;工具 schema 由 pydantic 从函数签名生成;LangGraph 按超步执行,每步用 reducer 合并状态、写 checkpoint。可以补一句「我自己手写过同样结构的循环」。局限:抽象泄漏(框架注入的提示词看不见)、版本变化快(举 `create_react_agent` 弃用的例子)、兼容厂商的结构化输出要指定方式、调试依赖它自家的工具、多一层开销。不用的场景:简单的一问一答或固定两三步的流程;对延迟和 token 极度敏感;团队不熟又赶工期;框架抽象和业务模型不匹配。最后给出原则:先手写最小版本,出现明确需要持久化、人工介入、复杂分支的需求时再引入。
+
+</details>
+
+7. OpenAI 的 Agent Builder 2026 年 11 月 30 日下线,这件事对你做框架和平台选型有什么启示?
+
+<details><summary>答案</summary>
+
+它 2025 年 10 月推出,2026 年 6 月就宣布弃用,前后一年多,建在上面的工作流要迁到 Agents SDK(代码)或 ChatGPT Workspace Agents。启示有三点:托管的可视化平台除了表达力有限,还有厂商随时收掉的风险,核心业务逻辑最好写在自己能控制的代码里;选平台时看导出能力,流程能不能导出成代码或标准格式;依赖要有版本锁定和迁移预案,这个领域半年一个大版本。低代码仍然适合做原型和内部小工具,只是别把关键链路押在上面。
 
 </details>
 

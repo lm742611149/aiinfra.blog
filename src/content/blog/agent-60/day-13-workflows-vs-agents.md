@@ -433,6 +433,103 @@ if __name__ == "__main__":
 
 一定要有轮数上限。评估者有时会在两个版本之间来回挑刺,永远不给 PASS。三轮还过不了,通常说明标准本身有矛盾,或者任务超出了模型能力,该停下来让人看。
 
+### 评估者最好不是模型:用外部反馈做 reflection
+
+上面那个评估者也是一个 LLM。它挑出了字数超标和乱承诺,但你得承认,它说 PASS 的时候你心里还是有点虚:同一类模型给同一类模型打分,它漏掉的东西,优化者多半也意识不到。这类「生成完让模型自己反思一下再改」的做法,学术界叫 reflection(Reflexion、Self-Refine 这几篇论文都是这个思路)。后来大家在实践里发现,真正让反思管用的是反馈从哪来。模型自评只能发现它本来就知道的错;编译器报错、单元测试失败、SQL 执行结果、API 返回的 400,这些是**外部反馈**,它们不会客气,也不会和生成者犯同一种错。
+
+所以只要任务有能执行的东西,评估者那一格就优先放「真的去跑一下」。写代码就跑测试,写 SQL 就在只读库上执行,调接口就看返回码,填表就用 pydantic 校验。模型评审留给没法执行的部分,比如语气、有没有乱承诺。
+
+下面是一个能直接跑的小例子。表里的开票日期是从老系统导过来的 `2026/09/28` 这种斜杠格式,表结构注释里没说清楚,这在真实业务库里太常见了。模型第一次写 SQL 基本都会按 ISO 格式去过滤 9 月,语法完全正确,但结果是空的。模型自己读这条 SQL 是看不出问题的,得让数据库告诉它。
+
+```python
+# agent-60-lab/w2/wf5b_sql_feedback.py  评估者换成「真的去执行」:让数据库来挑刺
+import sqlite3
+
+from w2.wf_common import llm
+
+SCHEMA = """CREATE TABLE invoices (
+  id TEXT PRIMARY KEY, customer_id TEXT, amount_cents INTEGER,
+  status TEXT,          -- 'paid' / 'open' / 'void'
+  issued_at TEXT        -- 开票日期(老系统导过来的字符串)
+);"""
+ROWS = [
+    ("INV-1", "C001", 118800, "paid", "2026/09/28"),
+    ("INV-2", "C001", 118800, "paid", "2026/09/28"),
+    ("INV-3", "C002", 9900, "open", "2026/09/30"),
+    ("INV-4", "C003", 9900, "void", "2026/10/02"),
+]
+QUESTION = "9 月份每个客户已付款的总金额(元),按金额从高到低"
+
+
+def make_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(SCHEMA)
+    conn.executemany("INSERT INTO invoices VALUES (?,?,?,?,?)", ROWS)
+    return conn
+
+
+def check(conn: sqlite3.Connection, sql: str) -> str | None:
+    """返回 None 表示通过,否则返回一段给模型看的报错。"""
+    try:
+        rows = conn.execute(sql).fetchall()
+    except sqlite3.Error as e:
+        return f"SQL 执行报错:{e}"
+    if not rows:
+        sample = conn.execute("SELECT DISTINCT status, issued_at FROM invoices LIMIT 3").fetchall()
+        return f"SQL 能执行,但结果是空的。表里真实的 (status, issued_at) 长这样:{sample}"
+    if any(isinstance(v, int) and v > 100000 for row in rows for v in row):
+        return f"结果里有 {rows[0]} 这样的大整数,amount_cents 是分,题目要元。"
+    return None
+
+
+def sql_with_feedback(max_rounds: int = 3) -> tuple[str, list[str]]:
+    conn = make_db()
+    feedback: list[str] = []
+    prompt = f"表结构:\n{SCHEMA}\n\n问题:{QUESTION}\n只输出一条 SQLite SQL,不要解释,不要代码块。"
+    sql = llm(prompt).strip().strip("`")
+    for _ in range(max_rounds):
+        problem = check(conn, sql)
+        if problem is None:
+            break
+        feedback.append(problem)
+        sql = llm(f"{prompt}\n\n你上一次写的是:\n{sql}\n\n执行结果反馈:{problem}\n改正后只输出 SQL。").strip().strip("`")
+    print(conn.execute(sql).fetchall())
+    return sql, feedback
+
+
+if __name__ == "__main__":
+    final_sql, log = sql_with_feedback()
+    print(log)
+    print(final_sql)
+```
+
+<div class="line-notes">
+
+- `issued_at TEXT        -- 开票日期(老系统导过来的字符串)` 故意只写「字符串」不写格式。真实业务库里列注释经常就这么含糊,模型只能猜。
+- `("INV-1", "C001", 118800, "paid", "2026/09/28"),` 金额存的是分,118800 分 = 1188 元;日期是斜杠格式。C001 被扣了两笔 1188,对应前面工单里的重复扣款。
+- `QUESTION = "9 月份每个客户已付款的总金额(元),按金额从高到低"` 正确答案只有一行:`('C001', 2376.0)`。C002 是 open,C003 是 void,而且日期在 10 月。
+- `conn = sqlite3.connect(":memory:")` 内存库,跑完就没了,不用准备任何文件。
+- `def check(conn: sqlite3.Connection, sql: str) -> str | None:` 这就是外部评估者,一行模型调用都没有。返回 `None` 表示通过,返回字符串就是要喂回给模型的反馈。
+- `rows = conn.execute(sql).fetchall()` 真的执行。语法错、列名写错会在这里抛 `sqlite3.Error`。
+- `return f"SQL 执行报错:{e}"` 把数据库的原始报错原样交给模型,比如 `no such column: amount`,这种信息模型自己是想不出来的。
+- `if not rows:` 能执行但查不到东西,这是最隐蔽的一种错。我实跑的几次里,第一稿全部落在这里,模型写的是 `issued_at >= '2026-09-01'` 或 `LIKE '%-09-%'`。
+- `sample = conn.execute("SELECT DISTINCT status, issued_at FROM invoices LIMIT 3").fetchall()` 关键一行:不光说「空了」,还把表里真实的值拿给模型看。实跑时它拿到的是 `[('paid', '2026/09/28'), ('open', '2026/09/30'), ('void', '2026/10/02')]`。
+- `if any(isinstance(v, int) and v > 100000 for row in rows for v in row):` 第二道检查:结果里出现很大的整数,多半是忘了把分换成元。这是针对这张表的业务规则,换张表要换规则。
+- `sql = llm(prompt).strip()` 第一稿。后面那个 `` strip("`") `` 是防模型不听话给 SQL 包了反引号。
+- `for _ in range(max_rounds):` 和模式五一样要有上限,3 轮。
+- `feedback.append(problem)` 记下每次反馈,事后能看它是被什么纠正过来的。
+- `sql = llm(f"{prompt}\n\n你上一次写的是:` 把上一稿和执行反馈一起给回去重写。这一步和模式五里的优化者是同一个角色,区别只在反馈来自数据库。
+- `print(conn.execute(sql).fetchall())` 打印最终结果。实跑 5 次都是 `[('C001', 2376.0)]`。
+- `print(log)` 5 次里有 4 次 log 只有一条反馈(第二稿就对了),1 次有两条。每次总耗时 2.7 到 3 秒左右。
+
+</div>
+
+我在 DeepSeek `deepseek-flash` 上做了一个对照,很能说明问题。第一个版本的 `check` 在结果为空时只返回一句「结果是空的,检查过滤条件(日期格式、status 取值)」,不带样例数据。跑 3 次,只有 1 次改对了(它猜到用 `substr(issued_at, 6, 2) = '09'`);另外 2 次三轮用完还是空,其中一次越改越离谱,写出了八个 `LIKE '%-09-%'` 变体 OR 在一起,一直在猜横杠格式。换成上面这个带样例值的版本,跑 5 次全部改对,改法是 `replace(issued_at, '/', '-')` 或 `LIKE '%/09/%'`。
+
+这个对照想说的是,外部反馈管用的前提是它带着证据。「不对,再想想」这种反馈和模型自评差不多,模型只能继续猜;「报错原文 + 真实数据长什么样」才能让它改到点子上。你在 Day 12 写工具报错时其实已经做过同样的事:错误信息要写成模型能照着改的样子。
+
+真实项目里一般两种评估者叠着用:能执行的先执行,执行通过了再让模型评审看执行不了的那部分。Day 55 的代码审查 Agent 和专题篇 Day 138 的问数 Agent 都会用到这个结构。
+
 ## 什么时候才需要真正的 Agent
 
 五种 workflow 讲完,回到 agent。文中对 agent 的描述是:它从用户的指令或对话开始,任务明确后自主规划和执行,过程中可能需要回到人那里获取信息或判断;每一步都从环境获取「真实反馈」(工具结果、代码执行结果)来评估进展;可以在检查点或遇到阻碍时停下来等人;通常有停止条件,比如最大迭代次数。你会发现这正是 Day 9 到 Day 12 我们一路写下来的东西。
@@ -492,6 +589,8 @@ if __name__ == "__main__":
 | Evaluator-optimizer | 一个生成、一个按标准评估反馈,循环到达标 |
 | ACI | agent-computer interface,模型与工具之间的接口设计 |
 | Rubric | 评估标准,最好是可以逐条核对的具体规则 |
+| Reflection | 让模型看自己的输出和反馈后再改一版,Reflexion、Self-Refine 是代表论文 |
+| 外部反馈 | 来自模型之外的检查结果:编译器、测试、数据库执行、接口返回码,比模型自评可靠 |
 
 ## 常见误区
 
@@ -600,6 +699,14 @@ if __name__ == "__main__":
 <details><summary>答案</summary>
 
 Agent-computer interface,模型和工具之间的接口,类比人机交互的 HCI,强调要像设计用户界面一样用心设计工具接口。例子:Anthropic 做 SWE-bench agent 时发现模型用相对路径容易出错,就把工具改成必须使用绝对路径,问题随之消失。核心思想是改工具去适应模型,而不是让模型适应工具。
+
+</details>
+
+7. 让模型写 SQL 后「自己检查一遍再改」,和「拿去只读库执行、把结果反馈给它」,哪个更可靠?反馈里应该放什么?
+
+<details><summary>答案</summary>
+
+执行更可靠。模型自评只能发现它本来就知道的错,而 SQL 语法正确但过滤条件和真实数据对不上(比如日期格式不同)这种错,读代码是看不出来的。反馈里要带证据:数据库的原始报错;结果为空时附上表里真实的几行样例值;结果明显不合理时说清楚哪一条业务规则被违反(比如金额单位是分)。只说「不对,再试试」的反馈,模型只能继续猜。
 
 </details>
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sanity checks for the agent-60 course posts.
 
-Run from the repo root:  python3 scripts/check-course.py [--links]
+Run from the repo root:  python3 scripts/check-course.py [--links] [--series=agent-zero]
 
 Checks every post under src/content/blog/agent-60/:
   * frontmatter has the seven course fields, and `day` matches the filename
@@ -23,7 +23,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-POSTS = ROOT / 'src/content/blog/agent-60'
+SERIES = next((a.split('=', 1)[1] for a in sys.argv if a.startswith('--series=')), 'agent-60')
+POSTS = ROOT / 'src/content/blog' / SERIES
 TODAY = dt.date.today()
 SECTIONS = ['今天要解决的问题', '动手练习', '名词解释', '常见误区', '学习资料', '自测', '明天预告']
 RESOURCE_GROUPS = ['文档与文章', 'B 站视频', '其他经典视频', '书籍', '开源项目与代码']
@@ -97,7 +98,7 @@ def main() -> int:
                 problems.append(f'{p.name}: pubDate {pub} is in the future')
         except ValueError:
             problems.append(f'{p.name}: bad pubDate {fm.get("pubDate")!r}')
-        if fm.get('series') != 'agent-60' or fm.get('lang') != 'zh':
+        if fm.get('series') != SERIES or fm.get('lang') != 'zh':
             problems.append(f'{p.name}: series/lang wrong')
         if fm.get('regime') not in ('memory', 'compute', 'none'):
             problems.append(f'{p.name}: regime {fm.get("regime")!r}')

@@ -203,6 +203,22 @@ lang: 'zh'
 - **一句话定位**写在名字下面,比如「后端工程师(x 年),近期专注 AI Agent 开发,做过带评测和安全测试的客服 Agent 与代码审查 Agent」。
 - 中文简历在国内通常会写期望城市和到岗时间;照片可选,大多数技术岗不看。
 
+## 证书:要不要考,考了写在哪
+
+2026 年 Agent 方向冒出来好几个认证,常有人问考一个能不能补「没有 AI 工作经历」这个短板。先看数据:站长整理的 881 条 JD 正文里,提到「持有某某证书优先」的大约只有十来条,而且基本是云厂商证书(阿里云 ACA/ACP、AWS、Azure、Google Cloud、Databricks),没有一条点名 LangChain 或 Anthropic 的认证。国内只有 1 条写了阿里云证书优先。招聘方筛人看的仍然是项目、作品和能被追问的经验,证书最多是一个加分小项。
+
+2026 年 10 月查到的几个,都以官方页面为准,价格这一年变过不止一次:
+
+| 认证 | 考什么 | 费用和形式 | 我的看法 |
+| --- | --- | --- | --- |
+| LangChain Certified Agent Engineer(LCAE) | 构建、测试、部署、监控 Agent 四块各占 25%,围绕 LangChain、LangGraph、LangSmith | 99 美元,40 道选择题 120 分钟,答对 28 道通过,线上监考,有效期 2 年;2026-07-30 推出 | 和这门课 W4–W6 的内容重合度高,学完再考不难。对投用 LangGraph 的公司有一点信号作用 |
+| Claude Certified Architect(Anthropic) | Claude 的 Agent、工具、MCP、上下文管理等架构设计 | 第三方汇总说 Foundations 级 125 美元一次、Professional 级 175 美元,通过 Pearson VUE 考;**报名限 Claude 合作伙伴网络的成员** | 个人大多报不了名,公司是合作伙伴才有机会。官方定价页我没找到,数字来自多篇第三方文章,未核实 |
+| 阿里云大模型工程师 ACP | 提示词、RAG、微调、应用开发、多 Agent 与多模态、生产实践 | 官方大纲公告写了 75 道题(单选 50、多选 25)和各模块比例,费用公告里没写,报名前去阿里云认证官网看 | 国内投阿里云生态的公司、外包和集成商有用;对大厂技术岗基本不加分 |
+
+所以我的建议是:**作品优先,证书可选。** 如果你已经做完 SupportPilot,还想要一个能写进简历的东西,花 99 美元和一个周末考 LCAE 性价比还可以;没做完作品就去考证,是把时间花错了地方。考过以后写在简历最下面的「证书」一行,一行就够,别放到顶部和项目抢位置。面试被问到时,讲你在作品里怎么用了这些东西,比讲考试本身有用得多。
+
+还有一类要躲开:国内各种培训机构发的「AI 智能体工程师」「大模型应用开发师」证书,有的还挂着某某协会的名头,收费几千到上万。这类证书招聘方基本不认,Day 59 的避坑那节也会再提一次。
+
 ## 英文版的不同
 
 如果你打算投新加坡、香港或海外岗位,需要一份英文简历。不是把中文版机翻一遍,有几处习惯不同:
@@ -252,6 +268,7 @@ SupportPilot 第一条的英文版示例:
 | Agent Harness | 国内大厂常见的岗位方向,指 Agent 的运行底座:循环调度、工具注册、上下文组装、沙箱、checkpoint |
 | FDE | Forward Deployed Engineer,驻场或面向客户交付的工程师 |
 | impact | 英文简历里指工作带来的可量化结果 |
+| LCAE | LangChain Certified Agent Engineer,LangChain 官方的 Agent 工程师认证,99 美元,有效期 2 年 |
 
 ## 常见误区
 
@@ -276,6 +293,8 @@ SupportPilot 第一条的英文版示例:
 - [智联招聘 · AI 智能体(FDE)工程师(中兵数字)](https://www.zhaopin.com/jobdetail/CCL1276161630J40883543101.htm):看国内 FDE 岗怎么写年限要求和 Coding Agent 要求。
 - [网易 · Agent 应用开发工程师](https://hr.163.com/job-detail.html?id=76697):职责里「搭建智能体运行效果监控指标」「集成至智能客服」和 SupportPilot 几乎一一对应。
 - [The Tech Resume Inside Out](https://thetechresume.com/):Gergely Orosz 写的技术简历指南的官网,有样章和模板。
+- [LangChain · LCAE 认证页](https://academy.langchain.com/pages/certifications-lcae) 和 [模拟考](https://academy.langchain.com/courses/lcae-practice-exam):考试范围、费用、题量,决定考之前先做一遍模拟考看差多少,1 小时。
+- [阿里云大模型 ACP 考试大纲变更公告](https://help.aliyun.com/zh/document_detail/2986614.html):题量和各模块比例,费用要去认证官网另查。
 
 ### B 站视频
 
@@ -352,6 +371,14 @@ SupportPilot 第一条的英文版示例:
 <details><summary>答案</summary>
 
 不只写「熟练使用 Cursor」,而是写使用方式和质量控制,例如「日常使用 Cursor/Claude Code 开发,建立生成代码审查清单(检查测试是否被修改、异常是否被吞、新增依赖与外部调用),并通过 AGENTS.md 固化项目约定」。面试时能讲出 Coding Agent 典型的失败模式和你遇到过的具体例子。
+
+</details>
+
+7. 一位朋友还没做任何 Agent 作品,打算先花一个月考 LCAE 和阿里云大模型 ACP,再开始投简历。你会怎么劝他?
+
+<details><summary>答案</summary>
+
+先看招聘方要什么:调研的 881 条 JD 里提证书的只有十来条,且全是云厂商认证,没有点名 LangChain 或 Anthropic 认证的;筛简历看的是项目和能被追问的经验。所以顺序应该反过来:先把一个带评测数据的作品做出来,简历上有了「问题、方案、数据」,再考虑用一个周末考 LCAE 当加分项。证书写在简历最下面一行,面试时讲作品里怎么用到了这些东西。
 
 </details>
 

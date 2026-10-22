@@ -450,6 +450,40 @@ curl -s "https://www.youtube.com/results?search_query=..." | grep -o '"videoId":
 - 资料优先一手:OTel 规范、Langfuse/Phoenix 文档、React/Vite 文档、Stripe 计费文档(按天折算、发票、贷记单的概念,查证链接)、τ-bench 论文。
 - Day 120 的「明天预告」预告 Day 121;Day 130 的「明天预告」写作品篇之后的安排(没有 Day 131,写「下一步」即可,但要包含 `Day 131` 字样以免校验报错可写「没有 Day 131 了」)。
 
+## 5D. 专题篇:2026 下半年补充(Day 131–153)
+
+**定位**:2026-10-22 对照 13 份公开课程目录、2026-06~10 新发布和 881 条 JD 补的缺口(清单见 `docs/course-gap-2026-10.md`)。每篇是一个独立专题,**不按顺序学**,每篇在「今天要解决的问题」第一段写清「建议在 Day X 之后读」并链接那一天(站内链接格式 `/blog/agent-60/day-NN-slug/`),前置知识只依赖那一天及之前。读者水平按建议阅读点定:锚点在 Day 0–60 的按基础篇写(手把手、代码完整可跑,沿用 `agent-60-lab/` 和 CloudLedger 设定,新代码放 `agent-60-lab/topics/<slug>/`);锚点在 61 以后的按进阶篇写。骨架同第 2 节,篇幅 5,000–8,000 纯汉字,图 1–3、视频 2–4(B 站至少 1)。pubDate 统一 `2026-10-22`。
+
+**时效要求最高**:这些主题都是 2025-12 以后才成型或有大变化的,每个版本号、发布日期、API 名、价格都必须当场 WebSearch/WebFetch 官方来源核对,写「2026 年 10 月查到」+链接;只有二手来源的写明「据 xx 报道,未核实」;还是 beta/草案的说清楚状态。不编造运行输出。
+
+「明天预告」写下一篇专题的标题关键词(带 `Day N+1`),并说明专题篇可以跳着读;Day 153 写「没有 Day 154 了」。
+
+| Day | slug | 标题 | 建议在…之后读 | 内容要点 |
+| --- | --- | --- | --- | --- |
+| 131 | day-131-agent-skills | Day 131 · Agent Skills:SKILL.md、按需加载与团队分发 | Day 23 | 开放标准现状(agentskills.io、采用的客户端,查证);SKILL.md 结构与 frontmatter;渐进式加载(只放描述→用到才读正文和脚本)省多少上下文;Skills vs MCP vs 子 Agent vs system prompt 怎么选;给 CloudLedger 写「退款政策解读」skill 并在 Claude Code/Agent SDK 里跑;自己在手写 Agent 循环里实现一个最小 skill 加载器;分发与版本;恶意 skill 风险(查证事件)。 |
+| 132 | day-132-code-as-action | Day 132 · 代码即动作:CodeAct、Code Mode 与程序化工具调用 | Day 12 | JSON 工具调用的瓶颈(中间结果全过上下文);CodeAct 论文;smolagents CodeAgent;Cloudflare Code Mode、Anthropic code execution with MCP / Programmatic Tool Calling(查证状态与数据);取舍(token 少、延迟、安全面变大);动手:把 W2 的工具包成 Python 模块,让模型写代码批量调用,在沙箱跑;沙箱选型实测思路(E2B/Modal/Daytona/本地 Docker,冷启动与价格查证)。 |
+| 133 | day-133-tool-search | Day 133 · 工具多了怎么办:Tool Search、延迟加载与工具检索 | Day 11 | 50+ 工具时的问题(上下文、选错率);Anthropic Tool Search(defer_loading,查证状态);自己实现:工具描述做 BM25/embedding 检索,每轮只挂 top-k;分层工具(先选工具组);怎么评测选工具准确率;和 MCP 多 server 场景的关系。 |
+| 134 | day-134-reasoning-models | Day 134 · 推理模型与 test-time compute:thinking 预算、自洽投票、树搜索 | Day 10 | 推理模型怎么来的(RLVR 一句话版,指向 Day 80);thinking/reasoning_effort 参数各家对照(DeepSeek、Claude、OpenAI、Qwen,查证);思考 token 怎么计费;什么时候值得开;self-consistency 投票、best-of-N + 验证器、ToT/LATS 的实现骨架;实验:同一批难工单在不同 thinking 预算下的准确率/成本/延迟表(留空回填)。 |
+| 135 | day-135-coding-agent-workflow | Day 135 · 用 Coding Agent 干活:AGENTS.md、hooks、无人值守与规格驱动开发 | Day 14 | 以工程师视角用 Claude Code/Codex/Cursor(不是讲内部,内部见 Day 89);CLAUDE.md/AGENTS.md 怎么写;hooks、权限模式、slash 命令、subagent;headless 模式进 CI(自动修 lint、写测试);规格驱动开发(GitHub Spec Kit 1.0、Kiro,查证);OpenAI harness engineering 文章的经验;怎么验收 agent 写的代码;面试会怎么问「你怎么用 AI 写代码」。 |
+| 136 | day-136-multimodal-doc-parsing | Day 136 · 多模态与文档解析:看图、OCR、版面分析、多模态 RAG | Day 21 | 视觉输入的 API 写法(image_url/base64,各家支持与计费查证);截图/发票/报错截图理解;PDF 解析三条路(文本层、OCR、VLM 直读),MinerU/Docling/PaddleOCR 对比(查证);表格与版面;多模态 RAG(图文混排切块、ColPali 式页面向量一节);动手:CloudLedger 发票 PDF 抽字段+校验。 |
+| 137 | day-137-graphrag | Day 137 · GraphRAG 与知识图谱:实体关系抽取、图检索与代码图 | Day 18 | 向量检索答不好的问题(多跳、全局总结、关系);知识图谱基础(实体、关系、三元组);用 LLM 抽取三元组;微软 GraphRAG(社区摘要、local/global search)、LightRAG(查证现状);存储(Neo4j 或 Postgres 邻接表/Apache AGE);动手:CloudLedger 帮助中心建图,对比向量检索在多跳问题上的表现;代码库图(import/调用关系)一节;成本。 |
+| 138 | day-138-text-to-sql | Day 138 · 问数 Agent:Text-to-SQL、语义层与结果校验 | Day 23 | 为什么企业最想要问数;schema 怎么喂(表/列描述、样例值、业务术语表);语义层/指标口径;生成→执行→报错自修→结果自检的循环;只读账号与超时、行数限制;评测(执行准确率、Spider/BIRD 介绍,查证);动手:对 cloudledger.db 做一个问数 Agent(含 10 道评测题);国内 ChatBI 产品一句话。 |
+| 139 | day-139-ambient-agents | Day 139 · 后台 Agent:webhook、邮件与定时任务触发,收件箱式审批 | Day 25 | 不是聊天形态的 Agent(LangChain ambient agents 概念,查证);触发源(webhook、邮件、cron、队列);事件去重与幂等;Agent Inbox 式人工审核(通知、批准、编辑、忽略三种处理);动手:新工单 webhook→LangGraph 处理→interrupt 等审批→结果回写;运行监控和告警。 |
+| 140 | day-140-low-code-platforms | Day 140 · 低代码 Agent 平台实操:Dify、扣子、百炼、n8n,什么时候该改成写代码 | Day 27 | 国内 JD 为什么常写 Dify/Coze;Dify(自部署、工作流、知识库、插件/MCP)、扣子 3.0、阿里云百炼智能体、n8n 的现状(查证 2026 版本);同一个工单分流流程分别在 Dify 和代码里实现对比;导出/API 调用/接入自有系统;平台风险(OpenAI Agent Builder 2026-11-30 停用,查证);选型决策表。 |
+| 141 | day-141-java-go-agents | Day 141 · 用 Java 和 Go 写 Agent:Spring AI、LangChain4j、Eino、ADK Go | Day 27 | 国内 JD Java/Go 各约 23%;已有 Java/Go 业务系统怎么加 Agent;Spring AI(ChatClient、tool calling、MCP、advisors)、LangChain4j(AiServices)、字节 Eino、Google ADK Go 2.0(查证版本);同一个查账单工具 Agent 用 Spring AI 和 Eino 各写一遍;Python 写 Agent 服务+Java 调用 vs 全 Java 的取舍。 |
+| 142 | day-142-typescript-agents | Day 142 · 用 TypeScript 写 Agent:Mastra、Vercel AI SDK 与前后端一体 | Day 49 | 海外 JD TS 约 34%;Vercel AI SDK 6(Agent 抽象、工具审批、useChat 流式 UI,查证);Mastra 1.x(agents、workflows、memory、durable agents,查证);OpenAI Agents SDK JS;动手:用 Next.js + AI SDK 重写 SupportPilot 前端的对话部分,工具调用卡片和审批;Python 后端 vs 全 TS 的取舍。 |
+| 143 | day-143-prompt-optimization | Day 143 · 自动优化提示词:DSPy、GEPA 与 ACE | Day 35 | 手调 prompt 的天花板;DSPy 的 signature/module/optimizer 思路;GEPA(读轨迹、自然语言反思改 prompt,ICLR 2026,查证集成情况);ACE(增量更新的上下文手册,防坍缩);动手:用 Day 35 的工单评测集跑一次 GEPA/DSPy 优化分类 prompt,记录前后分数(留空回填);过拟合测试集的防法(留出集)。 |
+| 144 | day-144-feedback-flywheel | Day 144 · 上线后的反馈闭环:点赞、改写、badcase 到测试集的数据飞轮 | Day 52 | 显式反馈(点赞点踩、评分)和隐式反馈(客服改写了多少、转人工、重问)的采集设计;反馈→trace 关联;badcase 分诊流程;自动聚类失败;进测试集和回归;从 trace 提炼新 skill/新规则(人工批准后启用);指标看板;隐私与标注规范。 |
+| 145 | day-145-guardrails | Day 145 · Guardrails 分层防御:输入输出检查、安全分类器与策略引擎 | Day 39 | Day 39 讲攻击,这里讲防御落地;输入侧(注入检测、话题过滤、PII)、输出侧(事实依据、敏感信息、格式);Llama Guard、Qwen3Guard、OpenAI moderation、NeMo Guardrails、OpenAI Agents SDK guardrails(查证);规则+分类器+LLM 三层;延迟与误杀率的取舍;动手:给 SupportPilot 加输入输出 guardrail 并用注入测试集量误杀和漏放。 |
+| 146 | day-146-supply-chain-security | Day 146 · Agent 供应链安全:恶意 MCP server、工具定义被改与恶意 Skills | Day 40 | 新攻击面:第三方 MCP server、skills、插件;tool poisoning、rug pull(批准后改工具定义)、公网 MCP 无鉴权调研数据、真实事件(查证,标明来源);防法:固定版本与哈希、工具定义变更告警、权限最小化、沙箱、注册表审核;动手:写一个检测工具描述变化的 MCP 代理;OWASP Agentic Top 10 对照。 |
+| 147 | day-147-managed-agent-runtimes | Day 147 · 托管 Agent 运行时:Claude/Gemini Managed Agents、Bedrock AgentCore,自建还是租 | Day 41 | 厂商把 harness+沙箱+记忆托管了(查证各家产品、计费、地区);和自己写循环+部署的对比(成本、锁定、可观测、数据合规);国内对应物(百炼、火山);决策表;动手:同一任务用一个托管运行时跑一遍,对比自建版。 |
+| 148 | day-148-generative-ui | Day 148 · 生成式 UI:MCP Apps、A2UI、AG-UI 三条路线 | Day 94 | 从纯文本到可交互界面;MCP Apps(ui:// 资源、沙箱 iframe、宿主支持,查证);A2UI(声明式组件目录,版本查证);AG-UI(agent↔前端事件协议);OpenAI Apps SDK 关系;安全(iframe 隔离、组件白名单);动手:给 CloudLedger 退款审批做一个 MCP App 表单;前端工程师的优势。 |
+| 149 | day-149-agent-identity | Day 149 · Agent 的身份与代理授权:On-Behalf-Of、工作负载身份与新草案 | Day 84 | Agent 替用户调 API 时谁在授权;OAuth token exchange/OBO;工作负载身份(SPIFFE/WIMSE);IETF 新草案(AAuth、AIMS 等,写清都是草案);权限收窄与时效;审计链;动手设计:SupportPilot 退款 Agent 的授权流程图与 token 设计。 |
+| 150 | day-150-webmcp | Day 150 · WebMCP:让网站直接给浏览器 Agent 暴露工具 | Day 90 | 截图点按钮的痛点;WebMCP 提案与 Chrome origin trial 状态(查证 API 名变化);和 MCP、浏览器扩展的关系;动手:给一个 CloudLedger 前端页面注册几个工具;安全与权限;对前端岗的意义。 |
+| 151 | day-151-agent-payments | Day 151 · Agent 支付:AP2、ACP、x402 与 UCP | Day 93 | Agent 替人下单付款的三层(授权/结账/结算);AP2 mandate、OpenAI/Stripe ACP、x402(HTTP 402)、Google UCP 的现状与治理归属(全部查证,标二手);风险与攻击;国内支付场景现状;动手:用 x402 测试网或模拟服务跑通一次按次付费 API 调用(若无法实跑则给模拟实现)。 |
+| 152 | day-152-china-agent-compliance | Day 152 · 国内智能体合规:实施意见、拟人化互动办法、智能体互联国标与内容标识 | Day 86 | 《智能体规范应用与创新发展实施意见》(2026-05-08)、《人工智能拟人化互动服务管理暂行办法》(2026-07-15 施行)、GB/Z 185-2026 智能体互联系列、AI 生成内容标识办法、清朗专项、算法/大模型备案(全部读原文,给 cac.gov.cn 链接);对工程实现的具体要求(授权范围、用户最终决策、标识、日志留存);和欧盟 AI Act 第 50 条对照;SupportPilot 合规检查清单。 |
+| 153 | day-153-industry-cases | Day 153 · 行业里的 Agent:金融、医疗、电商、SaaS 客服各长什么样 | Day 60 | JD 行业分布(用 docs/jd-research);每个行业一个典型场景的架构、关键工具、合规红线、评测指标、失败代价;公开案例(查证,别编);面试时怎么把 SupportPilot 迁移讲到目标行业;选行业的建议。 |
+
 ## 6. 完成后自检(每篇)
 
 - [ ] frontmatter 齐全,`day`、`title` 与规划表一致,`pubDate: 2026-10-12`(作品篇 2026-10-15),tags 最后一个 `agent-60`。

@@ -185,6 +185,217 @@ if __name__ == "__main__":
 
 数据量多少够?分诊这种分类任务,经验上每个类别几十到一两百条干净样本就能看到明显效果,总量 500 到 2,000 条是一个合理的起点。更多数据有帮助,但边际收益递减,先跑通流程、看评测结果,再决定要不要扩充。
 
+## 如果要训的是工具调用
+
+分诊是单轮分类,样本就是三段 messages。可 Agent 里还有一类常见的微调需求:小模型选工具老选错、参数老填漏,想用自己业务里的真实轨迹把它教稳。这时候样本里多了两样东西,工具定义和工具往返,格式上的坑比分诊多不少。
+
+先说结论:**样本里存结构化的 messages 加 tools,不要自己拼字符串**,让基座模型自带的 chat template 去渲染。原因是每家模型把工具塞进上下文的方式都不一样,你手拼的格式只要和推理时 vLLM 用的不一致,训出来的模型在线上就对不上号。
+
+一条工具调用样本长这样:顶层一个 `tools` 列表(和 Day 8 传给 API 的完全同一种 JSON Schema),一个 `messages` 列表,里面有 user 提问、assistant 发起的 `tool_calls`、role 为 `tool` 的结果、最后 assistant 的文字回答。多步任务就是中间多几轮调用和结果。
+
+光看 JSON 看不出模型实际学到的是什么文本,所以训练前一定要渲染一条出来看。下面这个脚本直接读 Qwen3-4B-Instruct-2507 仓库里 `tokenizer_config.json` 的 `chat_template` 字段,用 jinja2 渲染,不需要装 transformers,本机就能跑(`curl -sL https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/raw/main/tokenizer_config.json -o tokenizer_config.json` 下载模板):
+
+```python
+# agentops-lab/w12/render_tool_sample.py
+"""把一条工具调用样本按 Qwen3 的 chat template 渲染成训练文本,检查格式。
+用法:python render_tool_sample.py tokenizer_config.json
+"""
+import json
+import sys
+
+from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+TOOLS = [{
+    "type": "function",
+    "function": {
+        "name": "get_invoice",
+        "description": "按发票号查询 CloudLedger 发票,返回金额、状态、开票日期",
+        "parameters": {
+            "type": "object",
+            "properties": {"invoice_id": {"type": "string", "description": "形如 INV-2026-0012"}},
+            "required": ["invoice_id"],
+        },
+    },
+}]
+
+SAMPLE = [
+    {"role": "system", "content": "你是 CloudLedger 客服助手。"},
+    {"role": "user", "content": "INV-2026-0012 这张发票为什么还是未付款?"},
+    {"role": "assistant", "content": "", "tool_calls": [
+        {"type": "function", "function": {"name": "get_invoice",
+                                          "arguments": {"invoice_id": "INV-2026-0012"}}}]},
+    {"role": "tool", "content": json.dumps({"status": "open", "amount": 199, "due": "2026-10-30"},
+                                           ensure_ascii=False)},
+    {"role": "assistant", "content": "这张发票金额 199 元,到期日是 10 月 30 日,目前还没到期,所以状态是未付款。"},
+]
+
+
+def main(config_path: str) -> None:
+    template = json.load(open(config_path, encoding="utf-8"))["chat_template"]
+    env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+    env.filters["tojson"] = lambda x, **kw: json.dumps(x, ensure_ascii=False)
+    text = env.from_string(template).render(messages=SAMPLE, tools=TOOLS, add_generation_prompt=False)
+    print(text)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1])
+```
+
+<div class="line-notes">
+
+- `from jinja2.sandbox import ImmutableSandboxedEnvironment` chat template 本质是一段 Jinja2 模板。transformers 的 `apply_chat_template` 内部也是用这个沙箱环境渲染的,这里直接用,省掉装 transformers 和下载权重。
+- `TOOLS = [{` 和 Day 8 传给 `chat.completions.create(tools=...)` 的是同一种结构。训练样本里存的就是这个,渲染交给模板。
+- `"required": ["invoice_id"],` 后面清洗脚本会拿它检查样本里的调用有没有漏填必填参数。
+- `{"role": "assistant", "content": "", "tool_calls": [` 发起调用的那一轮 assistant,content 是空串。Qwen3 模板里 `content` 为空时不会在 `<tool_call>` 前多插一个换行。
+- `"arguments": {"invoice_id": "INV-2026-0012"}}}]},` 这里给的是字典。模板两种都接受:字符串原样输出,字典走 `tojson`。从 OpenAI 格式日志导出的通常是字符串,混用不会出错,但字符串里如果是坏 JSON,模板不会帮你检查。
+- `{"role": "tool", "content": json.dumps(` 工具结果。注意 Qwen3 模板会把它渲染成一个 **user** 轮里的 `<tool_response>` 块,不是单独的 tool 角色。
+- `template = json.load(` 读出 `chat_template` 字段,一段两千多字符的 Jinja2。
+- `env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)` 两个参数和 transformers 渲染时的设置一致,去掉模板标签带来的多余换行和缩进;不加的话渲染出的文本会多出空行,和真实训练文本对不上。
+- `env.filters["tojson"] = ` transformers 自定义了 `tojson`,不转义中文。Jinja2 自带的 `tojson` 会把中文转成 `\uXXXX`,还会转义 HTML 字符,这里覆盖成同样不转义的版本。
+- `text = env.from_string(template).render(` `add_generation_prompt=False` 表示这是完整的训练样本,结尾不追加空的 assistant 开头。推理时才设 True。
+
+</div>
+
+本机跑出来的文本是这样的(没有省略):
+
+```text
+<|im_start|>system
+你是 CloudLedger 客服助手。
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"type": "function", "function": {"name": "get_invoice", "description": "按发票号查询 CloudLedger 发票,返回金额、状态、开票日期", "parameters": {"type": "object", "properties": {"invoice_id": {"type": "string", "description": "形如 INV-2026-0012"}}, "required": ["invoice_id"]}}}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call><|im_end|>
+<|im_start|>user
+INV-2026-0012 这张发票为什么还是未付款?<|im_end|>
+<|im_start|>assistant
+<tool_call>
+{"name": "get_invoice", "arguments": {"invoice_id": "INV-2026-0012"}}
+</tool_call><|im_end|>
+<|im_start|>user
+<tool_response>
+{"status": "open", "amount": 199, "due": "2026-10-30"}
+</tool_response><|im_end|>
+<|im_start|>assistant
+这张发票金额 199 元,到期日是 10 月 30 日,目前还没到期,所以状态是未付款。<|im_end|>
+```
+
+从这段文本能读出三件事。第一,工具定义整段进了 system,一个工具就一百多 token,十几个工具时每条样本光定义就上千 token,训练时的序列长度要按这个算。第二,模型要学会输出的是 `<tool_call>` 包着的一行 JSON,这就是 Qwen 文档说的 Hermes 风格;推理时 vLLM 要用 `--enable-auto-tool-choice --tool-call-parser hermes` 才能把这段文本解析回 `tool_calls` 字段,parser 和训练格式不匹配,模型输出是对的,接口却返回一段纯文本。第三,工具结果被包在 user 轮里。这对损失计算正好有利:上一节的 `train_on_responses_only` 按 `<|im_start|>assistant` 和 `<|im_start|>user` 切分,工具结果落在 user 部分会被遮掉,模型不会去学「编造工具返回值」,两轮 assistant(发起调用、最后回答)都参与训练。换别的基座(Llama、Gemma、Mistral)格式完全不同,所以同样的检查要再做一遍。
+
+Hugging Face Agents Course 的 Bonus Unit 1 讲的就是这件事:拿 gemma-2-2b-it 做 function calling 的 LoRA 微调,配套笔记本里自己给模板加了思考和工具调用的标记。基座模板本来不支持工具时就得这么做,代价是推理服务那边也要配同一份模板和 parser。能选原生支持工具调用的基座,就别自己加。
+
+### 清洗、去重和配比
+
+工具调用的样本多半来自线上轨迹(Day 52 的 Langfuse 导出)或强模型生成,脏数据的花样比分诊多:调用了工具列表里没有的工具、参数是截断的 JSON、漏了必填参数、发起了两个并行调用却只回了一个结果、轨迹停在半路没有最终回答。这些样本留着,模型就学会了同样的毛病。下面这个检查脚本把它们挑出来,顺便按用户问题去重:
+
+```python
+# agentops-lab/w12/check_tool_sft.py
+"""工具调用 SFT 样本的清洗检查:结构、工具名、参数、去重。
+用法:python check_tool_sft.py tool_sft_raw.jsonl tool_sft_clean.jsonl
+"""
+import hashlib
+import json
+import sys
+from collections import Counter
+
+
+def problems(sample: dict) -> list[str]:
+    tools = {t["function"]["name"]: t["function"]["parameters"] for t in sample["tools"]}
+    msgs, out = sample["messages"], []
+    for i, m in enumerate(msgs):
+        for call in m.get("tool_calls") or []:
+            fn = call["function"]
+            if fn["name"] not in tools:
+                out.append(f"第{i}条调用了不存在的工具 {fn['name']}")
+                continue
+            args = fn["arguments"]
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    out.append(f"第{i}条参数不是合法 JSON")
+                    continue
+            missing = set(tools[fn["name"]].get("required", [])) - set(args)
+            if missing:
+                out.append(f"第{i}条缺必填参数 {sorted(missing)}")
+        if m.get("tool_calls"):
+            n_calls = len(m["tool_calls"])
+            replies = msgs[i + 1:i + 1 + n_calls]
+            if len(replies) < n_calls or any(r["role"] != "tool" for r in replies):
+                out.append(f"第{i}条的 {n_calls} 个调用没有全部配上 tool 结果")
+    if msgs[-1]["role"] != "assistant" or msgs[-1].get("tool_calls"):
+        out.append("最后一条不是 assistant 的文字回答")
+    return out
+
+
+def fingerprint(sample: dict) -> str:
+    user = "".join(m["content"] for m in sample["messages"] if m["role"] == "user")
+    return hashlib.md5("".join(user.split()).encode()).hexdigest()
+
+
+def main(src: str, dst: str) -> None:
+    seen, kept, dropped = set(), [], Counter()
+    for line in open(src, encoding="utf-8"):
+        sample = json.loads(line)
+        errs = problems(sample)
+        if errs:
+            dropped[errs[0].split("条", 1)[-1]] += 1
+            continue
+        fp = fingerprint(sample)
+        if fp in seen:
+            dropped["重复"] += 1
+            continue
+        seen.add(fp)
+        kept.append(sample)
+    with open(dst, "w", encoding="utf-8") as f:
+        for s in kept:
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+    calls = Counter(len([m for m in s["messages"] if m.get("tool_calls")]) for s in kept)
+    print(f"保留 {len(kept)} 条,丢弃 {sum(dropped.values())} 条:{dict(dropped)}")
+    print(f"按工具调用轮数分布:{dict(sorted(calls.items()))}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1], sys.argv[2])
+```
+
+<div class="line-notes">
+
+- `tools = {t["function"]["name"]: t["function"]["parameters"]` 把这条样本自带的工具列表变成「工具名 → 参数 schema」的字典。每条样本带自己的工具列表,因为线上不同场景挂的工具不一样。
+- `for call in m.get("tool_calls") or []:` 没有 `tool_calls` 的消息 `get` 返回 None,`or []` 让循环直接跳过。
+- `if fn["name"] not in tools:` 测试数据里第 4 条调用了 `refund`,工具列表里只有 `get_invoice`,在这里被抓到。线上轨迹里这种情况多半来自模型幻觉出的工具名,API 当时报了错,但日志照样记下来了。
+- `if isinstance(args, str):` OpenAI 格式的日志里 arguments 是字符串,手造的样本常是字典,两种都要能检查。
+- `except json.JSONDecodeError:` 测试数据第 6 条的参数是 `'{"invoice_id": "INV-1"'`,少一个右括号,模型输出被 max_tokens 截断时就是这个样子。
+- `missing = set(tools[fn["name"]].get("required", [])) - set(args)` 必填参数集合减去实际给的参数名。第 5 条传了空字典,结果是 `{'invoice_id'}`。这里只查必填项,想查类型可以换成 `jsonschema.validate`。
+- `replies = msgs[i + 1:i + 1 + n_calls]` 发起几个调用,后面就应该紧跟几条 tool 消息。第 7 条调用之后直接是 assistant 回答,`replies` 里那条的 role 是 assistant,判为没配上结果。真实 API 遇到这种消息序列会直接报 400(Day 8 练习里见过)。
+- `if msgs[-1]["role"] != "assistant" or msgs[-1].get("tool_calls"):` 轨迹必须以文字回答收尾。停在 tool 结果或者停在一次调用上的,多半是运行中途超时或被中断。
+- `return hashlib.md5("".join(user.split()).encode()).hexdigest()` 指纹只取用户说的话,去掉所有空白。第 2 条和第 1 条只差一个空格、回答措辞不同,算重复。同一个问题保留多种回答对工具调用帮助不大,反而会让某类问题的权重偏大。
+- `dropped[errs[0].split("条", 1)[-1]] += 1` 只按第一个问题计数,去掉「第 i 条」前缀方便汇总。
+- `calls = Counter(` 统计保留下来的样本里各有几轮工具调用,下面讲配比时要看这个分布。
+
+</div>
+
+我用 7 条造好的样本跑了一遍(1 条正常、1 条只差空格的重复、1 条不需要工具的问答、4 条各带一种毛病),输出:
+
+```text
+保留 2 条,丢弃 5 条:{'重复': 1, '调用了不存在的工具 refund': 1, "缺必填参数 ['invoice_id']": 1, '参数不是合法 JSON': 1, '的 1 个调用没有全部配上 tool 结果': 1}
+按工具调用轮数分布:{0: 1, 1: 1}
+```
+
+这里的去重是精确去重。真实数据里更多的是「换了说法的同一个问题」,规模上来以后要加近似去重:用 MinHash(`datasketch` 库)按字符 n-gram 找相似度高于某个阈值的样本,或者用 Day 15 的 embedding 算余弦相似度聚类,每簇只留几条。和评测集隔离的那条黑名单规则在这里同样适用。
+
+最后是配比。只喂「需要调工具」的样本,模型会学成见什么都调工具,用户问一句「你们支持开专票吗」它也去查发票。所以训练集里要有三类样本按比例混在一起:需要调用工具的(单步、多步、并行调用都要有);**不需要调用、直接回答的**(上面那条 0 轮的样本就是);工具报错后怎么处理的(重试一次、换参数、或者如实告诉用户查不到)。再加一小份和业务无关的通用指令数据,用来减轻灾难性遗忘。具体比例没有定律,我的起点是工具类六成、直接回答两成、报错恢复和通用数据合计两成,然后看评测:「不该调却调了」的比例高就加直接回答类,「该调没调」多就反过来。每次调整配比都重跑一遍 Day 33 的轨迹评测,只看最终答案对不对是发现不了这类问题的。
+
 ## LoRA:为什么只训一小部分参数就够
 
 全量微调要更新模型的全部 40 亿参数,还要为每个参数存优化器状态,显存需求是推理的好几倍,一张 T4 根本放不下。LoRA 的想法是:微调时权重的变化量本身是「低秩」的,可以用两个很瘦的矩阵相乘来近似。
@@ -439,6 +650,9 @@ for c in sorted(base, key=lambda c: -base[c][1]):
 | train on responses only | 只对 assistant 回复部分计算损失,不让模型学习复述输入 |
 | 过拟合 | 训练损失继续下降而验证损失上升,模型在背训练集 |
 | 灾难性遗忘 | 微调后模型丢失原有的通用能力 |
+| Hermes 风格工具调用 | 把工具定义放进 `<tools>`、模型输出 `<tool_call>` 包着的 JSON、结果放进 `<tool_response>` 的文本格式,Qwen3 用的就是它 |
+| tool-call parser | 推理服务把模型输出的工具调用文本解析回 `tool_calls` 字段的组件,vLLM 用 `--tool-call-parser` 指定,必须和训练格式一致 |
+| 近似去重 | 用 MinHash 或 embedding 找出说法不同、意思相同的样本,只保留一部分 |
 
 ## 常见误区
 
@@ -447,6 +661,8 @@ for c in sorted(base, key=lambda c: -base[c][1]):
 **训练集混进评测用例。** 测出来的提升是假的,而且你自己很难发现。用指纹去重加场景黑名单,在脚本里强制拦截。
 
 **训练和推理用了不同的 chat template。** 训练时一种格式,vLLM 推理时用模型默认的另一种,效果会莫名其妙地差。训练前打印一条样本确认,推理时用同一个基座的同一个模板。
+
+**工具调用样本只放「要调工具」的。** 模型会学成什么问题都去调工具。要混进不需要调用的直接回答样本和工具报错后的处理样本,并用轨迹评测检查「不该调却调了」的比例。
 
 **只看训练损失。** 分诊输出很短,损失很容易降到很低。决定成败的是评测集准确率,以及按类别拆开后有没有某一类被训坏。
 
@@ -464,6 +680,9 @@ for c in sorted(base, key=lambda c: -base[c][1]):
 - [Unsloth 微调指南](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide)和 [Unsloth 笔记本列表](https://unsloth.ai/docs/get-started/unsloth-notebooks):超参数建议和各模型的 Colab 入口。
 - [TRL · SFT Trainer](https://huggingface.co/docs/trl/main/sft_trainer):SFTTrainer 的数据格式和参数,Unsloth 底层用的就是它。
 - [PEFT · LoRA 概念指南](https://huggingface.co/docs/peft/main/en/conceptual_guides/lora):LoRA 各参数的含义。
+- [Hugging Face Agents Course · Bonus Unit 1](https://huggingface.co/learn/agents-course/bonus-unit1/introduction):用 gemma-2-2b-it 做 function calling 的 LoRA 微调,看配套笔记本里怎么给模板加工具标记,1 小时。
+- [Transformers · Chat templates 中的工具调用](https://huggingface.co/docs/transformers/en/chat_extras):`apply_chat_template(tools=...)` 的用法,以及工具和结果怎么进对话,30 分钟。
+- [Qwen 文档 · Function Calling](https://qwen.readthedocs.io/en/latest/framework/function_call.html):Qwen3 推荐的 Hermes 风格,以及 vLLM 侧怎么开工具解析,20 分钟。
 - [LLaMA-Factory 中文文档](https://llamafactory.readthedocs.io/zh-cn/latest/)和 [Qwen 文档 · LLaMA-Factory](https://qwen.readthedocs.io/zh-cn/latest/training/llama_factory.html):零代码路线的数据格式和配置。
 
 ### B 站视频
@@ -553,6 +772,14 @@ A 是 32 × 4096 = 131,072,B 是 2560 × 32 = 81,920,合计 212,992。原矩阵 
 <details><summary>答案</summary>
 
 LoRA 只更新很少的参数,而且 B 从零开始,增量要经过 alpha/r 缩放,同样的学习率下对模型输出的影响比全量微调小得多。Thinking Machines 的实验测出 LoRA 的最佳学习率大约是全量微调的 10 倍,并且在 1/r 缩放下这个最佳值和 rank 关系不大。
+
+</details>
+
+7. 你用线上轨迹微调了一个选工具的小模型,离线评测里最终答案准确率涨了,上线后客服反馈它「什么都去查一下」,延迟翻倍。最可能是数据哪里出了问题?怎么改?
+
+<details><summary>答案</summary>
+
+训练集几乎全是需要调工具的样本,模型学到了「先调工具」这个习惯;最终答案准确率不会暴露这个问题,因为多调一次查询答案照样是对的。改法是补进不需要调用、直接回答的样本,并调整配比,评测时加上轨迹层面的指标,比如「不必要的工具调用占比」和平均调用次数,用 Day 33 的轨迹评测盯住。
 
 </details>
 

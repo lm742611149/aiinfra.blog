@@ -35,6 +35,7 @@ const WEEKS = [
 	{ w: 17, tag: 'W17', name: '进阶 · 第十七周', title: '资深求职与影响力', out: '设计文档、Staff 面试准备', range: 'Day 106–110', adv: true },
 	{ w: 18, tag: 'P1', name: '作品篇 · 作品一', title: 'Agent Loupe:Agent 运行记录调试器', out: '能在线试用的开源调试器', range: 'Day 111–120', adv: true, capstone: true },
 	{ w: 20, tag: 'P2', name: '作品篇 · 作品二', title: 'BillSleuth:计费争议调查 Agent', out: '带严格评测的 FDE 式作品', range: 'Day 121–130', adv: true, capstone: true },
+	{ w: 22, tag: 'T', name: '专题篇', title: '2026 下半年补充:可以跳着读', out: 'Skills、CodeAct、GraphRAG、问数、生成式 UI、合规等 23 个专题', range: 'Day 131–153', adv: true },
 ].filter((w) => byWeekHas(w.w));
 const strip = (t: string) => t.replace(/^Day \d+ · /, '');
 const total = days.length;

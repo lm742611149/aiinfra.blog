@@ -134,6 +134,135 @@ lang: 'zh'
 
 这篇文章对 harness 设计的启发是:**harness 不只是代码,还包括它给模型准备的环境和约定**。进度文件、功能清单、开工检查清单,这些都是 harness 的一部分。我们给 AgentOps 设计长任务能力时(Day 65、Day 99)会用到这个思路。
 
+### 续篇:规划、生成、评估三个角色
+
+2026 年 3 月 24 日,Anthropic Labs 的 Prithvi Rajasekaran 又发了一篇《Harness design for long-running application development》,把上面那套「初始化 Agent + 编码 Agent」往前推了一步。起因是他发现只靠编码 Agent 自己检查,做出来的东西经常是「看着有、点不动」,模型会说服自己这活已经干完了。
+
+新的结构借了 GAN 的思路,拆成三个角色:
+
+- **规划者(planner)**:把用户一到四句话的需求扩成一份完整的产品规格。它故意只写产品层面,不写技术细节,理由是规划阶段写错的技术决定会一路传下去。
+- **生成者(generator)**:按 sprint 一段一段地做,每段结束先自查,再提交 git。
+- **评估者(evaluator)**:用 Playwright MCP 像真实用户一样点开正在跑的应用,检查界面、接口和数据库状态,按一组打分标准逐项打分,任何一项低于阈值,这个 sprint 就判不合格,把详细反馈退回给生成者。
+
+还有一个细节我觉得最值得抄:每个 sprint 开工前,生成者先写一份「sprint 合约」,说清楚这一段要做什么、怎么验证算做完,评估者审到双方都同意才开工。两个 Agent 之间全靠文件沟通,文章里第三个 sprint 的合约就有 27 条验收标准。评估者本身也要调:作者说开箱即用的 Claude 当评审太宽松,他用 few-shot 例子校准了好几轮才可靠。
+
+数字也很直白。做一个复古游戏编辑器,单个 Agent 跑 20 分钟花 9 美元,核心功能是坏的(角色出现了但不响应操作);完整三角色 harness 跑 6 小时花 200 美元,贵了 20 多倍,但东西真能用。后来换了更强的模型,作者把 sprint 拆分去掉了,评估者只在最后跑一次,一个数字音频工作站跑了 3 小时 50 分钟、124.70 美元。
+
+这篇文章对平台设计的提醒是:**harness 里的每个组件都对应一个「模型自己做不到」的假设,模型变强以后要回头检验这些假设还成不成立**。比如作者在 Sonnet 4.5 上必须定期清空上下文、靠交接文件重新开始(模型在上下文快满时会急着收尾),换到 Opus 4.5 以后这个问题基本消失,就改成了直接用自动压缩。你在 AgentOps 里加的每一层脚手架,都该记下它是为了解决什么问题,换模型时重测一遍。
+
+### OpenAI 的「harness engineering」
+
+同一时期 OpenAI 的 Ryan Lopopolo 在 2026 年 2 月 11 日发了《Harness engineering: leveraging Codex in an agent-first world》,讲的是另一个角度:不是设计 Agent 的运行时,而是设计**让 coding agent 干活的工程环境**。他们一个小团队用五个月做出一个内部产品,大约一百万行代码,没有一行是人手写的,团队自己估计用时是手写的十分之一左右。
+
+文章里能直接用的做法有这几条(OpenAI 官网对命令行请求返回 403,需浏览器打开;下面带「据报道」的是 InfoQ 和 The Neuron 等二手转述里的数字,我没在原文核对):
+
+- **AGENTS.md 当目录,不当百科**。据报道他们的 AGENTS.md 只有一百行左右,只负责指路,详细内容放在结构化的 `docs/` 目录里(设计文档、执行计划、架构说明)。一开始他们试过写一个大而全的指令文件,结果挤占了任务本身的上下文。
+- **用机器检查架构,而不是靠提示词求它守规矩**。依赖只允许按 Types → Config → Repo → Service → Runtime → UI 这个方向流动,用结构测试和自定义 lint 规则卡住。文档之间的交叉引用也用 lint 和 CI 检查。
+- **把可观测性交给 Agent**。Agent 能读日志、指标和 span,在隔离环境里自己复现 bug、提修复、看 CI 结果。
+- **熵会累积**。据报道团队一开始每周五专门清理「AI 写出来的垃圾代码」,后来发现人工清理跟不上产出速度。
+
+把它和上面 Anthropic 的两篇放在一起看,结论是一致的:harness 不只是那个 while 循环,**进度文件、验收标准、lint 规则、目录结构都是 harness**,而且这些部分往往比循环本身更决定成败。Day 135 会从使用者的角度再讲一遍怎么给 coding agent 搭环境。
+
+## Deep Agents:把这些约定做成库
+
+LangChain 把「规划工具 + 文件系统 + 子 Agent」这套做法打包成了一个库,叫 Deep Agents(PyPI 包名 `deepagents`,2026 年 10 月 22 日查到的最新版是 0.7.30)。它底下就是 LangGraph,`create_deep_agent` 返回的是一个编译好的图,所以 Day 24、25 学的 checkpoint、interrupt 都能直接用。
+
+它默认给 Agent 挂上三样东西,正好对应上面几篇文章里的约定:
+
+- **虚拟文件系统**:`ls`、`read_file`、`write_file`、`edit_file`、`glob`、`grep`(0.7 起还有 `delete`)。存储后端可以换:放在图状态里(`StateBackend`)、本地磁盘、LangGraph store,或者自己写。大的中间结果可以写进文件,上下文里只留路径,这就是 Manus 说的可恢复压缩(Day 63 会细讲)。文件系统这一层是必选的,删不掉,只能用白名单隐藏部分工具。
+- **子 Agent**:只要传了 `subagents`,主 Agent 就会多一个 `task` 工具。主 Agent 调 `task(subagent_type=..., description=...)` 把活派出去,子 Agent 在自己的上下文里跑完,只把最后一条消息作为工具结果交回来。另外还有一个默认开着的通用子 Agent。
+- **规划工具** `write_todos`:**0.7 起改成需要自己开**,通过 `middleware=[TodoListMiddleware()]` 加上,之前的版本默认就有。官方文档写得很清楚,这是为了把默认 harness 做轻。
+
+下面这段把 CloudLedger 的查账工作交给一个子 Agent,用来亲眼看看「子 Agent 的中间步骤不进主上下文」是什么意思。
+
+```python
+# agentops/runtime/deep_demo.py
+import json
+import os
+
+from deepagents import create_deep_agent
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
+
+load_dotenv()
+
+model = ChatOpenAI(
+    model=os.environ["LLM_MODEL"],
+    base_url=os.environ["LLM_BASE_URL"],
+    api_key=os.environ["LLM_API_KEY"],
+    extra_body=json.loads(os.environ.get("LLM_EXTRA_BODY", "{}")),
+)
+
+INVOICES = {
+    "C007": [
+        {"id": "INV-0711", "amount": 299, "status": "paid"},
+        {"id": "INV-0712", "amount": 299, "status": "paid"},
+    ],
+}
+
+
+def list_invoices(customer_id: str) -> str:
+    """列出某个客户的发票,返回 JSON。"""
+    return json.dumps(INVOICES.get(customer_id, []), ensure_ascii=False)
+
+
+billing_checker = {
+    "name": "billing-checker",
+    "description": "核对客户的发票有没有重复扣费。给它客户 ID。",
+    "system_prompt": "你只负责查发票。用 list_invoices 查,最后用一句话说结论和发票号。",
+    "tools": [list_invoices],
+}
+
+agent = create_deep_agent(
+    model=model,
+    tools=[],
+    system_prompt="你是 CloudLedger 客服主管。查账的活交给 billing-checker,自己只负责回复客户。",
+    subagents=[billing_checker],
+)
+
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "我是 C007,这个月好像被扣了两次钱?"}]}
+)
+
+for msg in result["messages"]:
+    calls = [c["name"] for c in getattr(msg, "tool_calls", [])]
+    print(f"{msg.type:>6} | tools={calls} | {str(msg.content)[:60]!r}")
+print("files:", list(result.get("files", {}).keys()))
+```
+
+<div class="line-notes">
+
+- `from deepagents import create_deep_agent` 依赖:`uv add deepagents langchain-openai python-dotenv`。2026-10-22 实测装上的是 deepagents 0.7.30、langchain 1.4.7、langgraph 1.2.16、langchain-openai 1.7.2。
+- `model = ChatOpenAI(` 不用 `"provider:model"` 字符串,直接传一个 LangChain 的模型对象。这样就能沿用全课的 OpenAI 兼容环境变量,实测 `LLM_MODEL=deepseek-flash`、`LLM_BASE_URL=https://api.deepseek.com`。
+- `extra_body=json.loads(` 和 Day 9 以来一样,把 `LLM_EXTRA_BODY` 里的 `{"thinking": {"type": "disabled"}}` 原样带上,关掉 DeepSeek 的思考模式。
+- `INVOICES = {` 假数据:C007 名下两张同额已付发票,故意造成「像是重复扣费」的样子。
+- `def list_invoices(customer_id: str) -> str:` 普通 Python 函数就能当工具,docstring 会变成工具描述。实测 `list_invoices("C007")` 返回 `[{"id": "INV-0711", "amount": 299, "status": "paid"}, {"id": "INV-0712", ...}]`。
+- `billing_checker = {` 子 Agent 就是一个字典。`name` 和 `description` 是给主 Agent 看的,决定它什么时候派活;`system_prompt` 是子 Agent 自己的,默认的 `isolated` 模式下它**不会**继承主 Agent 的提示词。
+- `"tools": [list_invoices],` 写了 `tools` 就替换掉主 Agent 的工具;不写则继承。这里只有子 Agent 能查发票,主 Agent 自己查不了,只能派活。
+- `agent = create_deep_agent(` 返回编译好的 LangGraph 图,所以下面用 `.invoke`。
+- `tools=[],` 主 Agent 没有业务工具,但它仍然有文件系统工具和 `task` 工具,这些是 harness 自带的。
+- `subagents=[billing_checker],` 传了这个,主 Agent 的工具列表里就多出 `task`。
+- `result = agent.invoke(` 实测一次大约 14 秒(含 uv 启动),主 Agent 调了一次 `task`,参数是 `{'subagent_type': 'billing-checker', 'description': '核对客户 C007 本月的发票是否存在重复扣费……只做核查分析,不要修改任何数据。'}`。描述是主 Agent 自己扩写的,比用户原话详细得多。
+- `for msg in result["messages"]:` 实测主上下文里只有 **4 条**消息:用户、主 Agent 调 `task`、`task` 的结果、主 Agent 的最终回复。子 Agent 调 `list_invoices` 的那一来一回不在这里。
+- `calls = [c["name"] for c in getattr(msg, "tool_calls", [])]` 只有 AI 消息有 `tool_calls`,其他类型用 `getattr` 默认空列表兜住。
+- `print("files:", list(result.get("files", {}).keys()))` 默认后端是 `StateBackend`,文件存在图状态的 `files` 字段里。这次没人写文件,实测打印 `files: []`。
+
+</div>
+
+我跑了两次,输出大致长这样(每次措辞会不同):
+
+```text
+ human | tools=[] | '我是 C007,这个月好像被扣了两次钱?'
+    ai | tools=['task'] | '我来帮您核查。请稍等，我先让核账的同事查一下 C007 这个月的扣费记录。'
+  tool | tools=[] | 'C007 名下有 INV-0711 和 INV-0712 两张发票,金额均为 299、状态均为 paid,金额与状态一致'
+    ai | tools=[] | '我让核账同事查过了，情况如下：\n\n**查到的情况**\n- 您名下有两张发票：**INV-0711** 和 **INV-0'
+files: []
+```
+
+注意第三行。子 Agent 交回来的不是原始发票 JSON,而是它自己的结论,而且它很老实地说了「发票列表里没有扣费日期,不足以认定重复扣费」。主上下文得到的是一段压缩过的判断,原始数据留在子 Agent 那边。这是子 Agent 最大的价值,也是最大的风险:如果子 Agent 结论写错了,主 Agent 没有原始数据可以复核。所以给子 Agent 的提示词里要求它「说结论和发票号」,让主 Agent 至少有可以追查的线索;要结构化的结果可以给子 Agent 配 `response_format`,主 Agent 拿到的就是 JSON。
+
+拿它和我们自己的 harness 对照:Deep Agents 已经替你做了工具层、文件系统、子 Agent 和 checkpoint,没有做的是 AgentOps 关心的那几样,多租户的权限策略、预算硬约束、审计日志。它适合当单个业务团队的起点,平台层的约束还得自己加。
+
 ## 给 AgentOps 写一个 harness
 
 下面这个 harness 大约 200 行,刻意只用标准库,方便你看清楚每一层在哪。它的设计原则是:核心循环只管「调模型、分发工具调用、决定继续还是停」,其余全部是可替换的接口。
@@ -475,6 +604,10 @@ print("最终回复:", s.messages[-1]["content"])
 | Pregel | LangGraph 运行时的名字,源自 Google 的图计算模型,按「超步」执行节点 |
 | checkpoint | 每一步结束时保存的状态快照,用于恢复和回放 |
 | 硬约束 | 平台强制的规则,业务方可以调参数但不能关闭 |
+| 规划者 / 生成者 / 评估者 | Anthropic 长任务 harness 续篇里的三个角色:扩写规格、分段实现、像用户一样验收 |
+| sprint 合约 | 生成者开工前写下这一段做什么、怎么验收,评估者同意后才开工 |
+| harness engineering | OpenAI 的说法:给 coding agent 设计文档、约束、反馈回路和可观测性这一整套工作环境 |
+| Deep Agents | LangChain 基于 LangGraph 的 harness 库,自带虚拟文件系统、子 Agent 和可选的 todo 规划工具 |
 
 ## 常见误区
 
@@ -497,6 +630,9 @@ print("最终回复:", s.messages[-1]["content"])
 - [Claude Agent SDK 文档](https://docs.claude.com/en/docs/agent-sdk/overview):配合读 `types.py`,看每个配置项的说明。
 - [OpenAI Agents SDK 文档](https://openai.github.io/openai-agents-python/):重点看 Running agents、Handoffs、Guardrails 三页。
 - [LangGraph 持久化文档](https://docs.langchain.com/oss/python/langgraph/persistence):checkpoint 和 thread 的概念,和 `pregel/_checkpoint.py` 对照读。
+- [Anthropic《Harness design for long-running application development》](https://www.anthropic.com/engineering/harness-design-long-running-apps)(2026-03-24):规划、生成、评估三角色和 sprint 合约,看评估者的打分标准和成本数字。25 分钟。
+- [OpenAI《Harness engineering: leveraging Codex in an agent-first world》](https://openai.com/index/harness-engineering/)(2026-02-11,需浏览器打开):AGENTS.md 当目录、用 lint 和结构测试卡架构。20 分钟。命令行打不开时可以先看 [InfoQ 的转述](https://www.infoq.com/news/2026/02/openai-harness-engineering-codex/)。
+- [Deep Agents 文档](https://docs.langchain.com/oss/python/deepagents/overview):看 Harness 和 Subagents 两页,子 Agent 字典的每个字段都在 Subagents 页。
 
 ### B 站视频
 
@@ -580,6 +716,22 @@ print("最终回复:", s.messages[-1]["content"])
 <details><summary>答案</summary>
 
 要点:硬约束包括最大步数、token 预算、有副作用工具默认审批、审计日志,可以调数值但不能关,因为任何一个团队出事都会伤到整个平台的信任;开放的包括模型选择(在白名单内)、上下文策略、权限规则细节、钩子、存储后端。还要提到演进:先从最小约束集开始,每次事故复盘后评估是否新增约束,并且约束的变更要有评审。答题时最好举一个具体的事故例子说明为什么需要预算上限。
+
+</details>
+
+7. Deep Agents 的子 Agent 把结论交回主 Agent,原始工具结果不进主上下文。这样做有什么风险,怎么缓解?
+
+<details><summary>答案</summary>
+
+主 Agent 没有原始数据,子 Agent 的结论错了也无从复核。缓解办法:要求子 Agent 在结论里带上可追查的标识(发票号、文件路径);用 `response_format` 让它返回结构化结果;大的原始数据写进文件系统,主 Agent 需要时按路径去读;关键结论在评测里单独抽查子 Agent 的准确率。
+
+</details>
+
+8. 资深面试题:「Anthropic 的长任务 harness 后来去掉了 sprint 拆分,只在最后跑一次评估。这说明什么?你在自己的平台里怎么应用?」
+
+<details><summary>答案</summary>
+
+说明 harness 的每个组件都对应一个「模型自己做不到」的假设,模型变强后假设可能失效,组件就从收益变成纯成本。应用:每层脚手架在设计文档里写明它解决的问题和验证它的评测;换模型时把这些评测重跑一遍,用数据决定保留还是拆掉;评估者这类贵组件只用在模型单独做不可靠的任务上。
 
 </details>
 

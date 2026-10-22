@@ -71,13 +71,13 @@ lang: 'zh'
 
 时间线大致是:Google 在 2025 年 4 月发布 A2A,6 月捐给 Linux 基金会,7 月发了 0.3 版。2026 年 3 月 12 日发布 1.0,这是第一个稳定版,而且相对 0.3 有不兼容的改动;5 月 28 日发了 1.0.1。2026 年 8 月,A2A 加入 Linux 基金会旗下的 Agentic AI Foundation(AAIF)。AAIF 的公告里把自己的项目按层次列了一遍:AGENTS.md 管给 Agent 的说明和约定,goose 是 Agent 运行时,MCP 管 Agent 到工具,agentgateway 管流量和策略,A2A 管 Agent 到 Agent。这张分层图和上面那张图的意思是一样的。
 
-Python 这边,官方 SDK 是 PyPI 上的 `a2a-sdk`,写这篇时版本是 1.2.2,基于 protobuf 定义生成类型。今天的练习故意不用 SDK、手写一个最小实现,目的是看清楚线上到底传的是什么;生产项目建议用官方 SDK,省得自己处理所有边界情况。
+Python 这边,官方 SDK 是 PyPI 上的 `a2a-sdk`,写这篇时版本是 1.2.2(2026-10-19 又发了 1.2.3),基于 protobuf 定义生成类型。今天的练习故意不用 SDK、手写一个最小实现,目的是看清楚线上到底传的是什么;生产项目建议用官方 SDK,省得自己处理所有边界情况。
 
 ## 读规范:五个核心对象
 
 规范在 a2a-protocol.org,仓库里的 `docs/specification.md` 是同一份内容,`specification/a2a.proto` 是权威的数据定义。一开始读不用全读,抓住这五个对象:
 
-**Agent Card**:Agent 的名片,一个 JSON 文档,默认放在 Agent 所在域名下的 `/.well-known/agent-card.json`。里面有名字、描述、版本、提供方,`supportedInterfaces`(在哪个 URL、用哪种传输绑定、哪个协议版本可以访问它),`capabilities`(支不支持流式、推送通知),`securitySchemes`(怎么鉴权),以及最重要的 `skills`(能干什么,每个技能带描述和示例)。另外还有需要鉴权才能拿到的「扩展名片」,可以给已认证的客户端看更多信息;1.0 还加了名片签名,用来证明这张名片确实是这个提供方发的。
+**Agent Card**:Agent 的名片,一个 JSON 文档,默认放在 Agent 所在域名下的 `/.well-known/agent-card.json`。里面有名字、描述、版本、提供方,`supportedInterfaces`(在哪个 URL、用哪种传输绑定、哪个协议版本可以访问它),`capabilities`(支不支持流式、推送通知),`securitySchemes`(怎么鉴权),以及最重要的 `skills`(能干什么,每个技能带描述和示例)。另外还有需要鉴权才能拿到的「扩展名片」,可以给已认证的客户端看更多信息;1.0 还加了名片签名,用来证明这张名片确实是这个提供方发的:签名格式是 JWS,签之前先按 RFC 8785(JSON Canonicalization Scheme)把 JSON 规范化,否则字段顺序、空格不同就会验签失败。
 
 **Task**:一次协作的单位,有 id、contextId(把相关的多个任务归到同一个会话里)、状态、产出和历史。
 
@@ -129,6 +129,8 @@ Python 这边,官方 SDK 是 PyPI 上的 `a2a-sdk`,写这篇时版本是 1.2.2,�
 同一套语义,A2A 1.0 定义了三种传输绑定:JSON-RPC、gRPC、HTTP+JSON(REST 风格)。规范第 5.3 节有一张方法对照表,比如「发消息」在 JSON-RPC 里叫 `SendMessage`,在 REST 里是 `POST /message:send`;「查任务」是 `GetTask` 和 `GET /tasks/{id}`。Agent 在名片的 `supportedInterfaces` 里声明自己支持哪些,客户端挑一个自己也支持的。
 
 版本协商靠一个请求头:客户端每次请求都带 `A2A-Version: 1.0`(只写主次版本号,不写补丁号)。服务端不支持这个版本就返回 VersionNotSupportedError。有个细节很容易忽略:**没带这个头,服务端要按 0.3 处理**。这是为了兼容老客户端,但也意味着你的新客户端忘了带头,就会莫名其妙地被当成老版本。
+
+从 0.3 迁到 1.0,最容易出错的是这几处不兼容改动(对照官方仓库的 [What's new in v1.0](https://github.com/a2aproject/A2A/blob/main/docs/whats-new-v1.md) 整理):枚举值全部改成大写下划线加前缀,`"working"` 变成 `"TASK_STATE_WORKING"`,`"user"` 变成 `"ROLE_USER"`;Part 和流式事件里用来区分类型的 `kind` 字段删掉了,改成看对象里有哪个字段(有 `text` 就是文本,有 `data` 就是结构化数据);名片上的 `preferredTransport` 和 `additionalInterfaces` 合并成 `supportedInterfaces` 数组,`protocolVersion` 从名片顶层挪到每个接口里;HTTP+JSON 绑定的 URL 去掉了 `/v1` 前缀;`TaskStatusUpdateEvent` 里的 `final` 字段删了,流什么时候结束改由传输层自己表示。另外 `a2a.proto` 从「gRPC 专用文件」升级成三种绑定共同的权威定义。老的 0.3 客户端和 1.0 服务端之间,如果没有 `A2A-Version` 头,服务端会按 0.3 回,所以过渡期两边能凑合着通;一旦你的客户端带上 `A2A-Version: 1.0`,上面这些字段就得全部按新格式来。
 
 错误怎么表示,每种绑定各有规定。HTTP+JSON 绑定用 google.rpc.Status 的 JSON 格式,`details` 里必须放一个 ErrorInfo,`reason` 字段写错误类型(比如 `TASK_NOT_FOUND`),`domain` 写 `a2a-protocol.org`。因为好几种错误都映射到 HTTP 400,只看状态码分不清,必须看 reason。
 

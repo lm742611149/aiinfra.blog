@@ -552,6 +552,24 @@ LangChain 的多 Agent 文档把模式分成五类,除了上面两种,还有三�
 
 还有一个常被一起问的词是 **A2A(Agent2Agent)协议**。它解决的是「不同公司、不同框架做的 Agent 之间怎么通信」:每个 Agent 发布一张 Agent Card 声明自己能干什么,其他 Agent 按协议发任务。Google 2025 年 4 月发起,同年 6 月交给 Linux 基金会,据报道 2026 年发布了 1.0 版(以 a2a-protocol.org 为准)。今天的两种拓扑都在同一个进程里,用不到 A2A;等到你需要调用别的团队、别的公司部署的 Agent 时才轮到它。面试里能说清「MCP 连工具,A2A 连 Agent」就够了。
 
+## Subagent:为了省上下文,不是为了分工
+
+前面讲多 Agent 的三种收益时,上下文隔离只占了一段。到 2026 年,它其实已经单独长成了一类用法,名字叫 subagent(子 Agent),Claude Code、Claude Agent SDK、Codex、LangChain Deep Agents 都有。很多人把它和多 Agent 混为一谈,面试时一问就露馅,这里单独说清楚。
+
+多 Agent 的出发点是**分工**:账务专员、技术专员各有各的提示词、工具和评测集,长期存在,可能由不同的人维护。subagent 的出发点是**扔掉中间过程**:主 Agent 干活干到一半,发现某一步要读很多东西,比如在仓库里搜 40 个文件找某个函数被谁调用、翻一遍三个月的工单日志,它就临时开一个子 Agent,给一句任务描述,子 Agent 自己去读、去试,读完只交回一段结论,然后整个子 Agent 连同它几万 token 的中间结果一起被丢掉。主 Agent 的上下文里只多了一次工具调用和几百字结论。
+
+所以判断用的是哪一种,看两点就够了。子 Agent 是不是临时的(用完就扔)?它交回来的是不是一段压缩过的结论?两个都是,那就是 subagent,它解决的是 Day 20 讲的上下文预算问题,和团队怎么分工没关系。你甚至可以让子 Agent 用和主 Agent 一模一样的提示词和工具,收益照样成立。
+
+拿 CloudLedger 举例。客户问「我这半年的发票为什么金额每个月都不一样」,主 Agent 要翻 6 张发票、每张的明细行、期间的两次升级记录,工具结果加起来上万 token。真正要交给客户的只是三句话:哪个月升级了、按天折算多收了多少、哪个月用了优惠券。把「翻发票对账」这一步交给 subagent,主 Agent 的上下文就只多出这三句话,后面继续和客户多轮对话时不会被一堆发票明细挤占。
+
+Claude Agent SDK 里 subagent 是这样定义的:在 `agents` 参数里给每个子 Agent 一个 `AgentDefinition`,写它的 `description`(主 Agent 靠这句话决定什么时候派活,和 Day 11 写工具描述是一回事)、`prompt`、可用的 `tools`、用哪个 `model`。主 Agent 通过内置的 Agent 工具去调用它,子 Agent 的消息不进主 Agent 的上下文,你在 SDK 里可以用 `getSubagentMessages()` 单独取出来看。
+
+还有两个版本相关的细节,我是 2026 年 10 月对着官方 TypeScript SDK 的 [CHANGELOG](https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md) 核对的。一是**嵌套和并发有上限**:0.3.217 版把「子 Agent 再开子 Agent」的默认深度从 5 层降到了 1 层(也就是默认不允许嵌套),要更深得设 `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`;同一版加了同时运行的子 Agent 数量上限,默认 20 个,用 `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` 改。有第三方文章说后来 Claude Code 2.1.219 又把默认深度放回了 3 层,我在 SDK 的 CHANGELOG 里没找到这一条,以你装的版本实测为准。为什么要限制?每多一层嵌套,token 是乘法往上涨,一个写坏的提示词能让子 Agent 一层层往下派活,账单失控。
+
+二是 **fork 型子 Agent**:0.3.302 版起,SDK 会话里默认开启 `subagent_type: "fork"`。普通子 Agent 是从一张白纸开始,只看到任务描述;fork 型子 Agent 继承主 Agent 到目前为止的完整上下文,再去干一件事,干完同样只交回结论。它的取舍和普通子 Agent 正好相反:不用把背景重新写一遍给它,还能吃到 prompt caching(前缀和主 Agent 一样,Day 38 会讲为什么这很省钱);代价是它的输入不再干净,主 Agent 上下文里的噪音它也全带着。经验上,任务描述一句话说不清、需要很多背景的,用 fork;任务边界清楚、背景越少越好的(比如「在这 40 个文件里找出所有调用 `charge()` 的地方」),用普通子 Agent。
+
+回到 Cognition 那篇文章:它反对的是把**有依赖的决策**拆给多个 Agent,而 subagent 交出去的通常是「去查一下、去读一下」这种只读、没有决策冲突的活,所以两边的观点在这里并不冲突。一句话记住:**多 Agent 是拆人,subagent 是拆上下文**。
+
 ## 什么时候不该用多 Agent
 
 把前面的讨论收成一张判断清单。下面任何一条成立,我都会先坚持单 Agent:
@@ -751,6 +769,8 @@ uv run python browser_agent.py
 | handoff(交接) | Agent 之间转移对话控制权,接手方看到完整历史并直接面对用户 |
 | router | 先分类再把请求交给对应 Agent 的模式 |
 | 上下文隔离 | 子 Agent 的中间过程留在自己的上下文里,只把结论交回 |
+| subagent(子 Agent) | 主 Agent 临时开出来干一件读很多东西的活、只交回结论、用完就扔的 Agent,目的是省主 Agent 的上下文 |
+| fork 型子 Agent | 继承主 Agent 当前完整上下文再去干活的子 Agent,省得重写背景、能命中缓存,代价是输入不干净 |
 | 协调失败 | 子 Agent 理解偏差、结果冲突、汇总遗漏等不报错的失败 |
 | Command(goto, update) | LangGraph 节点的返回值,同时更新状态并指定下一个节点 |
 | A2A | Agent2Agent 协议,跨系统的 Agent 间通信标准 |
@@ -872,6 +892,14 @@ handoff。接手的 Agent 能看到完整对话历史并直接回复用户,适�
 <details><summary>答案</summary>
 
 参考要点:先说默认立场是单 Agent,因为多 Agent 的 token 成本成倍增长,协调失败又不报错。然后说 CloudLedger 里哪里用了、为什么:客户一条消息问账务和技术两件互不依赖的事,用主管模式并行派给两个专员,子 Agent 的查询结果留在各自上下文里,主管上下文保持干净;多轮对话场景用 handoff,让接手的专员看到完整历史。最后给数据:用记账对比过单 Agent 和多 Agent 的 token 和成功率(说出你测到的倍数),并说明有评测集兜底才敢上多 Agent。能引用 Anthropic 和 Cognition 两篇文章的观点会更有说服力。
+
+</details>
+
+7. subagent 和多 Agent(比如主管派活给账务专员)是一回事吗?什么时候用 fork 型子 Agent?
+
+<details><summary>答案</summary>
+
+不是一回事。多 Agent 是为了分工,专员长期存在、各有提示词和工具,可能由不同团队维护;subagent 是为了省上下文,主 Agent 临时开一个子 Agent 去读大量东西,子 Agent 只交回结论、用完就扔,哪怕它和主 Agent 用同一套提示词和工具也有收益。fork 型子 Agent 继承主 Agent 当前的完整上下文,适合任务需要大量背景、一句话说不清的情况,还能命中 prompt caching;任务边界清楚、背景越少越好时用普通子 Agent。另外要知道 SDK 对嵌套深度和并发数有默认上限,防止 token 成倍失控。
 
 </details>
 

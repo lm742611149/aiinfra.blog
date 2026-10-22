@@ -283,6 +283,8 @@ if __name__ == "__main__":
 
 学出来的路由器。训练一个小分类器,预测「这条请求便宜模型能不能搞定」,RouteLLM 是这个方向的代表。Day 79 我们会做一个简化版:用小模型输出类别时的概率当置信度。
 
+还有一种不在这四种里的分工,叫顾问模式(Advisor)。它不是在两个模型之间选一个,而是便宜模型做完全程,只在拿不准的判断点请教一次强模型,拿回几百 token 的建议接着干。Anthropic 2026 年把它做成了 beta 的 advisor tool,Pydantic AI 有跨厂商的实现,Day 38 的「另一种分工:Advisor 模式」有用 DeepSeek 两个模型跑的例子。放进选型框架里看,它改变的是成本结构:顾问模型按自己的价格计费,但只为那段短建议付钱,所以评估「强模型值不值」时,别只拿它和便宜模型整单对比,还要算「只在关键点用它」这种用法的成本和质量。它适合难度集中在少数判断点的长任务;如果难的是整张工单,按风险路由或级联更直接。
+
 <figure>
 <svg viewBox="0 0 640 260" role="img" aria-label="SupportPilot 路由:分类走小模型,低置信度回退大模型,起草按风险分流">
 <rect x="20" y="105" width="90" height="44" rx="6" fill="var(--paper-raised)" stroke="var(--rule)"/>
@@ -366,6 +368,7 @@ draft       deepseek-flash   refund / billing 强制 v4-pro          ...
 | TCO | 总拥有成本,包含调用费、基础设施、人力维护和失败造成的损失 |
 | 模型别名 | 像 `deepseek-flash` 这种不带日期的名字,背后的具体版本可能被厂商更新 |
 | logprobs | 模型对每个输出 token 给出的对数概率,可以用来估计置信度 |
+| 顾问模式(Advisor) | 便宜模型执行全程、只在关键判断点请教强模型一次的组合方式 |
 
 ## 常见误区
 
@@ -387,6 +390,7 @@ draft       deepseek-flash   refund / billing 强制 v4-pro          ...
 - [OpenAI · Model selection](https://developers.openai.com/api/docs/guides/model-selection):OpenAI 的选型指南,讲怎么在准确率、延迟、成本三者之间权衡,和 Anthropic 那篇对照着读,15 分钟。
 - [FrugalGPT 论文](https://arxiv.org/abs/2305.05176):系统研究级联和组合多个 LLM 降成本,读摘要和第 3 节的级联部分,30 分钟。
 - [RouteLLM 论文](https://arxiv.org/abs/2406.18665)和 [LMSYS 博客介绍](https://lmsys.org/blog/2024-07-01-routellm/):用偏好数据训练路由器,先读博客,Day 79 前再回来看论文。
+- [Anthropic · Advisor tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool):看「执行模型和顾问模型的兼容表」和计费那一节,理解「强模型只在关键点用」的成本结构。15 分钟。
 - [Artificial Analysis](https://artificialanalysis.ai/):同时看质量、速度、价格的第三方对比,用来缩小候选范围。
 - [LMArena](https://lmarena.ai/) 和 [BFCL 函数调用榜单](https://gorilla.cs.berkeley.edu/leaderboard.html):前者是人类偏好投票,后者专测工具调用,后者对 Agent 更有参考价值。
 - [阿里云百炼模型列表](https://help.aliyun.com/zh/model-studio/models):国内另一大 API 供应方的模型和价格入口,填 `models.yaml` 时用。
@@ -471,6 +475,14 @@ TCO 里除了调用费还有失败成本。如果便宜模型错误率更高,而
 <details><summary>答案</summary>
 
 没法用「类别概率」直接当置信度做级联回退。替代办法有:让模型同时输出一个自评的置信度字段(不太可靠,需要校准);对同一条输入采样多次看结果是否一致(自一致性,成本翻倍);或者训练一个独立的小分类器/路由器;再或者换成能返回 logprobs 的模型或自部署模型(vLLM 支持返回 logprobs)。
+
+</details>
+
+7. 你在做选型对比时,发现强模型整单使用比便宜模型贵 6 倍,质量只高 4 个点。还有什么组合方式值得测,怎么测?
+
+<details><summary>答案</summary>
+
+除了按节点、按风险路由和级联,还可以测顾问模式:便宜模型执行,只在规则冲突、是否升级这类判断点请教强模型。测法是同一评测集上跑三组(全便宜、全强、顾问模式),比较质量、单均成本(顾问用量要单独加上)和 P95 延迟;再单独统计执行模型「该问没问」的比例,如果很高就在提示词里写明必须请教的情形后重测。
 
 </details>
 

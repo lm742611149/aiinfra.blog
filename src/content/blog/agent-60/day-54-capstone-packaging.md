@@ -219,6 +219,126 @@ README 讲「是什么」,博客讲「怎么做出来的、踩了什么坑」。
 
 写完自己读一遍,把读起来像宣传稿的句子删掉。「本系统具有高效、稳定、安全等特点」这种话读者一眼就会跳过,换成「越权查询类攻击 0/6 成功,原因是工具层不接受客户 ID 参数」。
 
+## 没有服务器也能留一个在线演示:Gradio、Streamlit 和 HF Spaces
+
+README 第一屏那个「在线演示」链接,最怕的是面试官点开的那天你的云服务器已经到期了。求职周期动不动两三个月,轻量云续费、域名续费、Langfuse 占内存把机器拖死,哪一样出问题,链接就变成 502。我的建议是留两个入口:Day 53 部署的完整版照常放着,再做一个托管在免费平台上的精简入口,哪怕主站挂了,这个还能点。Day 55 的代码审查 Agent 如果你不打算为它单独买服务器,也可以直接用这个办法上线。
+
+先说 2026 年 10 月查到的几个平台现状,这块变化很快,用之前再看一眼官方页面:
+
+| 平台 | 免费能做什么 | 限制 | 适合 |
+| --- | --- | --- | --- |
+| Hugging Face Spaces | 静态页面 Space 所有人免费;免费个人账号最多 2 个跑在 ZeroGPU 上的 Gradio Space | 其余 Gradio / Docker Space 要 PRO(每月 9 美元);默认 CPU Basic 是 2 vCPU、16 GB 内存;免费硬件没人访问会休眠 | 想让演示出现在 HF 社区、面试官顺手就能点 |
+| Streamlit Community Cloud | 连 GitHub 仓库一键部署,免费 | 单个应用内存上限约 2.7 GB;12 小时没流量就休眠,下一个访问者要等它醒 | 演示本身就是 Streamlit 写的 |
+| 自己的服务器 | 想怎么跑都行 | 要钱、要维护 | 完整版(Day 53) |
+
+这里有个容易过时的地方:前两年很多教程说「HF Spaces 免费跑 Gradio 和 Streamlit」,现在 Spaces 创建页只剩 Gradio、Docker、静态 HTML 三种 SDK,Streamlit 要走 Docker,而 Gradio 和 Docker 类 Space 默认要付费套餐,免费账号只剩 ZeroGPU 那 2 个名额。ZeroGPU 本来是给要用 GPU 的 Gradio 应用准备的,我们的演示只发 HTTP 请求、不用 GPU,能不能在上面长期稳定地跑,我没有长期实测过。所以最省事的做法是:愿意花 9 美元一个月就用 Spaces;不想花钱就用 Streamlit Community Cloud 或者 ZeroGPU 名额先试。
+
+精简入口不要把整个 SupportPilot 搬过去。Postgres、Langfuse、MCP server 都在你的服务器上,免费平台跑不动也不该跑。它只做一件事:一个聊天框,把客户的话转给你线上 API,把工具调用和回复流式显示出来。后端挂了,它就显示一句「完整版维护中,看演示视频」并给出视频链接。下面用 Gradio 写,Gradio 的 `ChatInterface` 一行就是一个带流式输出和停止按钮的聊天界面,比自己写前端快得多(写这段时 PyPI 上 gradio 最新是 6.30.0)。
+
+```python
+# supportpilot/demo/app.py
+import json
+import os
+
+import gradio as gr
+import httpx
+
+API = os.environ.get("SUPPORTPILOT_API", "https://demo.your-domain.com/api")
+DEMO_EMAIL = os.environ.get("DEMO_EMAIL", "demo@cloudledger.example")
+VIDEO = os.environ.get("DEMO_VIDEO", "https://www.bilibili.com/video/你的演示视频")
+TICKETS: dict[str, str] = {}  # 浏览器会话 -> 工单号
+
+
+def sse_events(resp: httpx.Response):
+    event, data = "message", []
+    for line in resp.iter_lines():
+        if line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:"):
+            data.append(line[5:].strip())
+        elif line == "" and data:
+            yield event, json.loads("\n".join(data))
+            event, data = "message", []
+
+
+def respond(message: str, history: list, request: gr.Request):
+    sid = request.session_hash or "anon"
+    try:
+        with httpx.Client(base_url=API, timeout=httpx.Timeout(10, read=120)) as c:
+            if sid not in TICKETS:
+                r = c.post("/tickets", json={"customer_email": DEMO_EMAIL,
+                                             "subject": message[:40], "body": message})
+                r.raise_for_status()
+                TICKETS[sid] = r.json()["ticket_id"]
+                url, payload = f"/tickets/{TICKETS[sid]}/run", None
+            else:
+                url, payload = f"/tickets/{TICKETS[sid]}/messages", {"content": message}
+            steps, answer = [], ""
+            with c.stream("POST", url, json=payload) as resp:
+                if resp.status_code == 409:
+                    yield "这张工单在等客服审批退款,审批完成前不能继续追问。"
+                    return
+                resp.raise_for_status()
+                for event, data in sse_events(resp):
+                    if event == "tool":
+                        steps.append(f"→ 调用工具 {data['name']}")
+                    elif event == "token":
+                        answer += data["text"]
+                    elif event == "interrupt":
+                        answer += "\n\n(退款申请已提交,等待人工审批)"
+                    elif event == "error":
+                        answer += f"\n\n出错了:{data['message']}"
+                    yield "\n".join(steps) + ("\n\n" if steps else "") + answer
+    except httpx.HTTPError:
+        yield f"完整版暂时连不上,可以先看演示视频:{VIDEO}"
+
+
+demo = gr.ChatInterface(
+    fn=respond,
+    title="SupportPilot 演示",
+    description="虚构公司云簿 CloudLedger 的客服 Agent,数据全部是造的。",
+    examples=["我上个月被扣了两次钱", "年付能退款吗?"],
+)
+
+if __name__ == "__main__":
+    demo.launch()
+```
+
+<div class="line-notes">
+
+- `API = os.environ.get("SUPPORTPILOT_API"` 线上 API 地址从环境变量读。Day 53 的 nginx 把 `/api` 前缀去掉再转给 FastAPI,所以这里要带 `/api`;本地调试时设成 `http://localhost:8000`。
+- `DEMO_EMAIL = os.environ.get("DEMO_EMAIL"` 所有访客都用同一个演示客户建工单。换成你 Day 44 造数脚本里真实存在的那个客户邮箱,否则 `load_customer` 找不到人,Agent 会一直追问账号。
+- `TICKETS: dict[str, str] = {}` 进程内存里记「哪个浏览器会话对应哪张工单」。演示用够了,应用重启就清空,访客重新开一张工单而已。
+- `def sse_events(resp: httpx.Response):` 手写的 SSE 解析器,省得多装一个依赖。用 Day 49 后端那种格式的假数据跑过:输入 `event: tool` / `data: {"type": "tool", "name": "list_invoices", ...}` 再加一个空行,吐出 `('tool', {'type': 'tool', 'name': 'list_invoices', 'args': '{}', 'error': False})`。
+- `for line in resp.iter_lines():` 按行读流。sse-starlette 用 `\r\n` 换行,`iter_lines()` 会把行尾去掉,所以下面能直接比较空字符串。
+- `elif line == "" and data:` 空行表示一条消息结束。sse-starlette 每隔一段时间发一条 `: ping` 心跳,它以冒号开头,上面两个分支都不进,后面的空行因为 `data` 是空列表也被跳过。实测假数据里夹一条 `: ping - 2026`,输出里没有它。
+- `def respond(message: str, history: list, request: gr.Request):` ChatInterface 要求前两个参数依次是这次的消息和历史。第三个参数标注成 `gr.Request`,Gradio 会自动把当前请求塞进来,用它的 `session_hash` 区分不同访客。`history` 这里用不上,对话历史在后端 LangGraph 的 checkpoint 里。
+- `timeout=httpx.Timeout(10, read=120)` 连接等 10 秒,读流等 120 秒。Agent 一轮要查库、检索、起草,中间几十秒没有 token 很正常,读超时设短了会在半路断掉。
+- `url, payload = f"/tickets/{TICKETS[sid]}/run", None` 第一句话走建工单加 `/run`,后面的追问走 `/messages`,和 Day 49 的接口设计一一对应。
+- `if resp.status_code == 409:` 后端在工单等审批时返回 409(Day 49 的 `follow_up`),这里翻译成访客看得懂的话,而不是抛异常。
+- `yield "\n".join(steps) + ("\n\n" if steps else "") + answer` ChatInterface 的流式规则是每次 yield 完整的当前内容,不是增量。所以每来一个 token 都把工具步骤和已有回答整个拼一遍交出去。
+- `except httpx.HTTPError:` 连不上、超时、5xx 都算。主站挂了也不白屏,而是给出演示视频链接,这是做这个入口的全部意义。
+
+</div>
+
+要上 HF Spaces,在仓库里单独建一个 `demo/` 目录推到 Space 仓库,放三个文件:上面的 `app.py`,一行 `httpx` 的 `requirements.txt`(gradio 由 Space 自己装),再加一个带元数据的 `README.md`:
+
+```yaml
+---
+title: SupportPilot Demo
+sdk: gradio
+sdk_version: 6.30.0
+app_file: app.py
+pinned: true
+---
+```
+
+`SUPPORTPILOT_API`、`DEMO_EMAIL` 在 Space 的 Settings 里配成 Variables,有密钥的话配成 Secrets,别写进代码,Spaces 自带的密钥扫描器会提醒你。
+
+有两件事别忘。第一,所有访客经过 Space 发出的请求,在你的服务器看来都来自同一批出口 IP,Day 53 按 IP 限流的 `6/minute;60/day` 会让第二个访客就撞上 429。给演示入口单独发一个 API key,后端按 key 限流并给它一个独立的每日总额度,比按 IP 更合理。第二,Space 和 Streamlit Community Cloud 都会休眠,醒过来要几十秒。录演示视频、发简历之前自己先点一下,把它叫醒。
+
+如果你更习惯 Streamlit,同样的逻辑用 `st.chat_input` 加 `st.write_stream` 几十行就能写完,部署到 Community Cloud 只要把 GitHub 仓库连上、在网页上填 Secrets。两者选一个就行,别两个都维护。
+
 ## GitHub 主页和仓库卫生
 
 最后把门面收拾干净。
@@ -263,6 +383,10 @@ README 讲「是什么」,博客讲「怎么做出来的、踩了什么坑」。
 | Mermaid | 用文本描述流程图、时序图的语法,GitHub 能直接渲染 |
 | Excalidraw | 浏览器里的手绘风白板工具,可导出 SVG/PNG |
 | 调色板(palette) | 生成 GIF 时先统计视频用到的颜色,能明显减小体积、提高画质 |
+| Gradio | Python 写网页演示界面的库,`ChatInterface` 一行就是带流式输出的聊天框 |
+| HF Spaces | Hugging Face 托管演示应用的平台,每个 Space 是一个 git 仓库,推代码自动重建 |
+| ZeroGPU | Spaces 上按需分配共享 GPU 的硬件档,免费账号可以用它跑最多 2 个 Gradio Space |
+| Streamlit Community Cloud | Streamlit 官方的免费托管,连 GitHub 仓库部署,12 小时无流量休眠 |
 | profile README | 与用户名同名的仓库里的 README,会展示在个人主页顶部 |
 | gitleaks | 扫描 git 仓库及历史提交里是否有密钥、令牌等敏感信息的工具 |
 | 冒烟测试 | 只跑少量关键用例,快速确认系统没坏,这里指评测集的小子集 |
@@ -292,6 +416,10 @@ README 讲「是什么」,博客讲「怎么做出来的、踩了什么坑」。
 - [Hamel Husain · Your AI Product Needs Evals](https://hamel.dev/blog/posts/evals/):不是为了学评测(Day 29 已经学过),而是看一篇好的技术博客怎么用真实案例讲方法。
 - [Anthropic Engineering 博客](https://www.anthropic.com/engineering):同上,看工程博客的写法:先给结论和数字,再讲过程。
 - [Diátaxis](https://www.diataxis.fr/):把文档分成教程、操作指南、参考、解释四类的框架,README 和博客分别属于哪类,读完会更清楚该写什么。
+- [Hugging Face · Spaces Overview](https://huggingface.co/docs/hub/spaces-overview) 和 [Pricing](https://huggingface.co/pricing):Spaces 现在哪些免费、哪些要 PRO、硬件规格和休眠规则,上线前以这两页为准,10 分钟。
+- [Hugging Face · ZeroGPU](https://huggingface.co/docs/hub/spaces-zerogpu):免费账号那 2 个 Gradio Space 名额的说明。
+- [Gradio · Creating a Chatbot Fast](https://www.gradio.app/guides/creating-a-chatbot-fast):`ChatInterface` 的官方指南,看流式输出和 history 格式那两节,20 分钟。
+- [Streamlit · Manage your app](https://docs.streamlit.io/deploy/streamlit-community-cloud/manage-your-app):Community Cloud 的资源上限和休眠规则。
 
 ### B 站视频
 
@@ -322,6 +450,7 @@ README 讲「是什么」,博客讲「怎么做出来的、踩了什么坑」。
 - [othneildrew/Best-README-Template](https://github.com/othneildrew/Best-README-Template):常被引用的 README 模板,看结构,别照搬徽章墙。
 - [abhisheknaiidu/awesome-github-profile-readme](https://github.com/abhisheknaiidu/awesome-github-profile-readme):各种个人主页 README 的合集,挑简洁的参考。
 - [gitleaks/gitleaks](https://github.com/gitleaks/gitleaks):扫描密钥泄露,今天必跑。
+- [gradio-app/gradio](https://github.com/gradio-app/gradio):`demo/` 目录里有大量可以直接改的聊天界面例子。
 - [asciinema](https://asciinema.org/) 和 [OBS Studio](https://obsproject.com/):录终端和录屏的工具。
 
 ## 自测
@@ -371,6 +500,14 @@ README 讲「是什么」,博客讲「怎么做出来的、踩了什么坑」。
 <details><summary>答案</summary>
 
 太像论文标题,没有具体发现,读者看不出读完能得到什么。改成以一个具体结论或数字为标题,例如「客服 Agent 的成本从每单 0.11 元降到 0.04 元:我改了哪两处」。注意标题里的数字必须是你实测的。
+
+</details>
+
+7. 你把演示入口放在 HF Spaces 上,面试官点开后第一条消息就报「请求太频繁」。Day 53 的限流明明是每个 IP 每分钟 6 次,为什么会这样?怎么改?
+
+<details><summary>答案</summary>
+
+Space 是服务器端转发请求,所有访客在你的后端看来都来自 Space 的那几个出口 IP,按 IP 计数等于所有人共用一个额度,前面几个访客(包括你自己测试)就把它用完了。改法是给演示入口单独发一个 API key,后端对带这个 key 的请求按 key 限流,配一个独立的每日总额度和花费上限;也可以在 Gradio 那边按 `session_hash` 再限一层,防止单个访客刷爆总额度。
 
 </details>
 

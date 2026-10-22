@@ -95,6 +95,100 @@ Anthropic 2025 年 9 月那篇《Effective context engineering for AI agents》�
 <figcaption>缓存友好的上下文布局。越不变的东西越往前放;最近的工具结果和 todo 放在末尾,这里模型注意力最强。</figcaption>
 </figure>
 
+## Claude API 自带的三样:context editing、compaction、memory tool
+
+上面三层压缩是我们自己在客户端写的。Anthropic 把其中几层做进了 API,2026 年 10 月 22 日我对着 platform.claude.com 的文档核了一遍,一共三样东西,分工不一样,很容易混。
+
+**context editing(上下文编辑)**,对应我们的第一层。请求带上 beta 头 `context-management-2025-06-27`,在 `context_management.edits` 里放一个 `clear_tool_uses_20250919` 策略,服务端在把请求交给模型之前,按规则把最旧的工具结果换成占位文字。默认规则是输入超过 100,000 token 时触发、保留最近 3 次工具调用;`clear_at_least` 规定每次至少清掉多少 token,不够就不清,这正是为了让「缓存失效一次」划得来;`exclude_tools` 列出永远不清的工具;`clear_tool_inputs` 设成 true 时连工具参数也清。另一个策略 `clear_thinking_20251015` 清旧的思考块,和前者一起用时必须排在前面。有一点和我们自己写的不同:编辑发生在服务端,**你客户端保存的历史还是完整的**,不需要同步被清理后的版本。每次清了什么,响应的 `context_management.applied_edits` 里会写清,比如 `cleared_tool_uses` 和 `cleared_input_tokens`。
+
+**compaction(压缩)**,对应我们的第三层,让服务端替你写摘要。现在有两种,都是 beta:
+
+- **按阈值自动压缩**:beta 头 `compact-2026-01-12`,同样写在 `context_management.edits` 里,类型是 `compact_20260112`。默认输入到 150,000 token 时触发,最低只能设到 50,000。触发时响应开头多一个 `compaction` 块,里面是摘要,你照常把整条回复追加进历史,下次请求时 API 自动忽略这个块之前的内容。`instructions` 可以换掉默认的摘要提示词,`pause_after_compaction` 设成 true 会在写完摘要后停下(`stop_reason` 为 `"compaction"`),方便你把最近几轮原文塞回去。
+- **按需压缩**:beta 头 `compact-2026-09-04`,在请求顶层加 `compaction={"type": "summarize"}`。这次请求不生成回复,只返回一个带签名的 `compaction` 块。之后由你把被摘要的那些消息从历史里删掉,把这个块放在 `messages` 第一个。文档建议能用按需压缩的地方都优先用它,因为什么时候压由你的代码决定,还能保留最近几轮原文、能在后台压。注意它不能和 `context_management` 出现在同一个请求里。
+
+两种压缩都要多跑一次模型,算钱也算限流;顶层的 `usage.input_tokens` 不含这一次,要把 `usage.iterations` 里的每一项加起来才是实际花费。还有一个坑:被摘要范围内的图片、文档、抓取过的网页,压缩后就没了,后面还要用得重新传。
+
+**memory tool(记忆工具)**,对应我们说的「外部笔记」,它不是压缩,而是让模型有一个跨会话的文件夹。工具定义就一行 `{"type": "memory_20250818", "name": "memory"}`,不需要 beta 头。它是**客户端工具**:模型发出 `view`、`create`、`str_replace`、`insert`、`delete`、`rename` 这几种命令,路径都在 `/memories` 下面,真正读写存储的是你的代码,存本地文件、数据库都行。加了这个工具,API 会自动往系统提示词里加一段话,要求模型开工前先看记忆目录、做的过程中随时记进度,因为「上下文随时可能被重置」。安全上最要紧的是路径穿越:`/memories/../../secrets.env` 这种路径必须拒绝,文档建议用 `pathlib.Path.resolve()` 加 `relative_to()` 校验。
+
+三样合在一起用的顺序,和我们三层压缩的思路一样,先便宜后贵:
+
+<figure>
+<svg viewBox="0 0 640 210" role="img" aria-label="Claude API 三种上下文功能的启用顺序:先清理工具结果,接近上限时压缩摘要,记忆工具保存必须跨越摘要和会话的信息">
+  <rect x="0" y="0" width="640" height="210" fill="var(--paper-raised)"/>
+  <g font-family="var(--font-mono)" font-size="11">
+    <rect x="20" y="30" width="180" height="70" rx="4" fill="var(--compute-wash)" stroke="var(--compute)"/>
+    <text x="110" y="55" text-anchor="middle" fill="var(--ink)">context editing</text>
+    <text x="110" y="73" text-anchor="middle" fill="var(--ink-soft)" font-size="10">清旧工具结果(第一层)</text>
+    <text x="110" y="89" text-anchor="middle" fill="var(--ink-faint)" font-size="10">默认 100k 触发</text>
+    <line x1="200" y1="65" x2="230" y2="65" stroke="var(--rule)" stroke-width="1.5"/>
+    <rect x="230" y="30" width="180" height="70" rx="4" fill="var(--mem-wash)" stroke="var(--mem)"/>
+    <text x="320" y="55" text-anchor="middle" fill="var(--ink)">compaction</text>
+    <text x="320" y="73" text-anchor="middle" fill="var(--ink-soft)" font-size="10">摘要旧轮次(第三层)</text>
+    <text x="320" y="89" text-anchor="middle" fill="var(--ink-faint)" font-size="10">阈值版默认 150k</text>
+    <line x1="410" y1="65" x2="440" y2="65" stroke="var(--rule)" stroke-width="1.5"/>
+    <rect x="440" y="30" width="180" height="70" rx="4" fill="var(--paper)" stroke="var(--ink-soft)"/>
+    <text x="530" y="55" text-anchor="middle" fill="var(--ink)">memory tool</text>
+    <text x="530" y="73" text-anchor="middle" fill="var(--ink-soft)" font-size="10">/memories 文件夹</text>
+    <text x="530" y="89" text-anchor="middle" fill="var(--ink-faint)" font-size="10">客户端存储,跨会话</text>
+    <text x="20" y="140" fill="var(--ink-soft)">左边两个在服务端改「这次请求看到什么」,不动你的历史(按需压缩除外)</text>
+    <text x="20" y="162" fill="var(--ink-soft)">右边一个保存「摘要和新会话之后还必须在的东西」:进度、决定、用户偏好</text>
+    <text x="20" y="184" fill="var(--ink-faint)">我们的第二层「丢最早轮次」在 API 里没有对应,它最便宜也最伤信息</text>
+  </g>
+</svg>
+<figcaption>三样功能和本课三层压缩的对应关系。琥珀色是工具结果那一侧,蓝色是模型写摘要那一侧。</figcaption>
+</figure>
+
+下面是把第一层和外部笔记交给 API 的写法。本课默认没有 Anthropic 的 key,这段我**没有实跑**,参数是按 2026-10-22 的文档和 `anthropic` SDK 2.1.0(当天 PyPI 最新版)的类型定义逐个核对的,`import` 和 `tool_runner` 的参数名在本机确认过。
+
+```python
+# agentops/runtime/claude_context.py
+import anthropic
+from anthropic.tools import BetaLocalFilesystemMemoryTool
+
+client = anthropic.Anthropic()
+memory = BetaLocalFilesystemMemoryTool(base_path="./memory")
+
+runner = client.beta.messages.tool_runner(
+    model="claude-sonnet-5-5",
+    max_tokens=4096,
+    betas=["context-management-2025-06-27"],
+    context_management={
+        "edits": [
+            {
+                "type": "clear_tool_uses_20250919",
+                "trigger": {"type": "input_tokens", "value": 60000},
+                "keep": {"type": "tool_uses", "value": 4},
+                "clear_at_least": {"type": "input_tokens", "value": 10000},
+                "exclude_tools": ["memory"],
+            }
+        ]
+    },
+    tools=[memory],
+    messages=[{"role": "user", "content": "继续整理 CloudLedger 十月的退款工单,进度记在记忆里。"}],
+)
+
+final = runner.until_done()
+print(final.content)
+```
+
+<div class="line-notes">
+
+- `from anthropic.tools import BetaLocalFilesystemMemoryTool` SDK 自带的本地文件版记忆工具实现,替你处理六种命令和路径校验。要存数据库就继承 `BetaAbstractMemoryTool` 自己写。
+- `memory = BetaLocalFilesystemMemoryTool(base_path="./memory")` 模型看到的路径是 `/memories/...`,实际落在当前目录的 `./memory` 下面。多租户平台里这个目录要按租户和用户隔离。
+- `runner = client.beta.messages.tool_runner(` tool runner 帮你跑「调模型、执行工具、回传结果」的循环,就是 Day 9 手写的那个循环。记忆工具本身不需要 beta 头,但 runner 在 SDK 的 beta 命名空间里。
+- `betas=["context-management-2025-06-27"],` context editing 的 beta 头。少了它,`context_management` 参数会被拒。
+- `"type": "clear_tool_uses_20250919",` 清理旧工具结果的策略,带日期后缀,以后出新版会换名字。
+- `"trigger": {"type": "input_tokens", "value": 60000},` 输入超过 6 万 token 才开始清(默认 10 万)。阈值越低越省钱,但缓存失效越频繁。
+- `"keep": {"type": "tool_uses", "value": 4},` 永远保留最近 4 次工具调用的结果(默认 3)。
+- `"clear_at_least": {"type": "input_tokens", "value": 10000},` 每次至少能清掉 1 万 token 才动手,否则不清,避免为了清几百 token 让整段缓存失效。
+- `"exclude_tools": ["memory"],` 记忆工具的结果不清。模型刚读出来的进度笔记被清掉,等于白读。
+- `tools=[memory],` 加了记忆工具,API 会自动在系统提示词里加「开工前先看记忆目录」那段话,不用自己写。
+- `final = runner.until_done()` 一直循环到模型不再调工具。每一轮清了什么,在那一轮响应的 `context_management.applied_edits` 里。
+
+</div>
+
+它和我们今天要写的上下文管理器怎么选?如果你只用 Claude,API 自带的这几样省掉了很多代码,而且服务端清理不改客户端历史,排查问题时原始记录都在。但 AgentOps 要接多家模型,DeepSeek、通义这些 OpenAI 兼容接口没有这些参数,所以平台层还是要有自己的实现,Claude 的版本可以作为一个「供应商原生」的策略插进去。另一个现实的考虑是,这几样功能大多还是 beta,参数名带日期后缀,升级时要回归测试。
+
 ## 写一个分层上下文管理器
 
 昨天的 harness 留了一个坑:按条数裁剪会拆散工具调用和它的结果。下面这个实现先把消息切成「轮」,一轮是一条 user 或 assistant 消息加上紧跟着的所有 tool 结果,裁剪只在轮与轮之间发生。然后按上面的三层依次启用。
@@ -280,6 +374,9 @@ print("前缀是否和原来一样(缓存友好):", prefix[0] == SYSTEM)
 | 可恢复压缩 | 丢掉内容但保留找回它的线索(URL、文件路径、工具参数) |
 | compaction | 把旧对话压成摘要继续工作,Claude Code 等工具里的叫法 |
 | 复述 recitation | 让 Agent 不断改写 todo 之类的目标列表,把目标保持在上下文末尾 |
+| context editing | Claude API 的服务端功能,按规则把旧工具结果或思考块换成占位,不改客户端历史 |
+| 按需压缩 / 阈值压缩 | Claude API 的两种服务端摘要:你的代码决定何时压,或输入到阈值时自动压 |
+| memory tool | Claude 的客户端记忆工具,模型在 `/memories` 下读写文件,存储由你实现 |
 
 ## 常见误区
 
@@ -304,7 +401,9 @@ print("前缀是否和原来一样(缓存友好):", prefix[0] == SYSTEM)
 - [Chroma《Context Rot》](https://research.trychroma.com/context-rot):上下文腐烂的实验报告,看实验设计和图表。20 分钟。
 - [《Lost in the Middle》论文](https://arxiv.org/abs/2307.03172):U 形曲线的出处,读摘要和图 1 即可。
 - [LangChain《Context engineering for agents》](https://blog.langchain.com/context-engineering-for-agents/):把上下文工程归纳成写入、选择、压缩、隔离四类,和今天的三层可以互相对照。
-- [Claude 的 context editing 文档](https://docs.claude.com/en/docs/build-with-claude/context-editing):API 层面自动清理旧工具结果的功能。
+- [Claude 的 context editing 文档](https://platform.claude.com/docs/en/build-with-claude/context-editing):API 层面自动清理旧工具结果和思考块,看参数表和与缓存的关系。15 分钟。
+- [Claude 的 compaction 文档](https://platform.claude.com/docs/en/build-with-claude/compaction):先看总览页那张对比表,决定用按需压缩还是阈值压缩。15 分钟。
+- [Claude 的 memory tool 文档](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool):六种命令的返回格式、路径穿越防护,以及末尾「多会话软件开发模式」一节。20 分钟。
 - [DeepSeek 上下文硬盘缓存文档](https://api-docs.deepseek.com/guides/kv_cache):`prompt_cache_hit_tokens` 字段的说明和命中规则,第四步练习要用。
 
 ### B 站视频
@@ -388,6 +487,14 @@ Agent 每一步的输入是整个历史,输出很短,输入输出比大约 100 �
 <details><summary>答案</summary>
 
 要点:先看数据,每一步的输入 token、缓存命中 token、输出 token,画出随步数的曲线;检查缓存命中率,排查前缀里是否有变化的内容(时间戳、动态工具列表、不稳定的序列化);看上下文构成,哪类内容占比最大,通常是工具结果;按代价从低到高优化:清理旧工具结果、工具结果分页和精简、外部笔记、子 Agent 隔离、最后才是摘要;每个改动都在长任务评测集上对比成功率和成本,而不是只看成本。提到「出错率上升」和上下文腐烂的关系、以及 todo 复述这类保持目标的手段会加分。
+
+</details>
+
+7. Claude 的 context editing、compaction 和 memory tool 分别解决什么问题?为什么 memory tool 不能被前两者替代?
+
+<details><summary>答案</summary>
+
+context editing 按规则清掉旧工具结果或思考块,便宜、可恢复;compaction 让服务端把旧轮次压成摘要,保留信息但要多花一次调用;memory tool 是客户端的持久文件夹。前两者只决定「这一次请求看到什么」,会话结束或摘要漏掉的细节就没了;memory tool 存的东西跨摘要、跨会话都在,用来放进度、决定和用户偏好。
 
 </details>
 

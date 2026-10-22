@@ -1016,6 +1016,81 @@ claude mcp add cloudledger -- uv run --directory /绝对路径/agent-60-lab pyth
 
 **Claude Desktop**:可以用 `uv run mcp install server.py --name cloudledger` 自动写配置,它会帮你把路径转成绝对路径。改完配置要**完全退出** Claude Desktop 再打开,只关窗口不算。连不上时去 `~/Library/Logs/Claude/` 看 `mcp-server-cloudledger.log`,里面是你 server 的 stderr。
 
+## 不接模型,先写一个最小 client
+
+接进 Claude Code 能用,不代表你知道它在背后发了什么。下一节我们要自己当 host,在那之前先写一个更小的东西:不调大模型,只用 SDK 的 `Client` 连上 server,把三样东西各列一遍,再手动调一次工具。它有两个用处,一是确认 server 在「别人的进程里」也能正常启动(内存客户端测不出这一点),二是以后接第三方 server 时,先用它看看对方到底暴露了什么,再决定要不要信它。
+
+```python
+# agent-60-lab/w4/mcp_probe.py
+"""最小 MCP client:不接模型,把 server 的三样东西逛一遍,再手动调一个工具。"""
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+from mcp import Client, StdioServerParameters
+
+SERVER = Path(__file__).parent / "cloudledger" / "server.py"
+
+
+async def main() -> None:
+    params = StdioServerParameters(command=sys.executable, args=[str(SERVER)])
+    async with Client(params) as c:
+        print("server:", c.server_info.name, "| 协议版本:", c.protocol_version)
+
+        for t in (await c.list_tools()).tools:
+            print(f"[tool] {t.name}: {(t.description or '').splitlines()[0]}")
+        for r in (await c.list_resources()).resources:
+            print(f"[resource] {r.uri}")
+        for p in (await c.list_prompts()).prompts:
+            print(f"[prompt] {p.name}")
+
+        result = await c.call_tool("find_customer", {"query": "user007@example.com"})
+        print("is_error =", result.is_error)
+        print(json.dumps(result.structured_content, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+<div class="line-notes">
+
+- `from mcp import Client, StdioServerParameters` 和测试里用的是同一个 `Client` 类。区别只在传给它什么:测试传 server 对象(同进程),这里传 `StdioServerParameters`(起子进程),下一节 HTTP 时传一个 URL 字符串。
+- `SERVER = Path(__file__).parent` `__file__` 是 `.../agent-60-lab/w4/mcp_probe.py`,所以 `SERVER` 是 `.../agent-60-lab/w4/cloudledger/server.py`。用绝对路径,从哪个目录运行都找得到。
+- `params = StdioServerParameters(` `command=sys.executable` 是当前虚拟环境的 Python,比如 `.../agent-60-lab/.venv/bin/python`,子进程就能找到同一套依赖。这里没传 `env`,server 用默认的数据库路径(相对于 server.py 的 `cloudledger.db`),够用。
+- `async with Client(params) as c:` 进入时启动子进程、和 server 谈好协议版本;退出 `with` 时关掉子进程。你不用写任何 initialize。
+- `print("server:"` 实测输出 `server: cloudledger | 协议版本: 2026-07-28`。`cloudledger` 是 server.py 里 `MCPServer("cloudledger")` 起的名字;协议版本说明 2.x 的 client 和 server 用上了新版无状态协议。
+- `for t in (await c.list_tools()).tools:` 发 `tools/list`。`.tools` 是 Tool 对象列表,实测 4 个。这个结果对象上还有 `ttl_ms` 和 `cache_scope`,实测是 `0` 和 `"private"`,就是 Day 22 讲的缓存提示。
+- `.splitlines()[0]` 只取描述第一行,免得多行 docstring 刷屏。实测第一行是 `[tool] find_customer: 按邮箱/姓名/公司/编号查找客户,返回最多 5 条。查订阅和发票前先用它拿到 customer_id。`
+- `for r in (await c.list_resources()).resources:` 实测一条:`[resource] cloudledger://policy/refund`,就是前面写的退款政策。
+- `for p in (await c.list_prompts()).prompts:` 实测一条:`[prompt] reply_ticket`。
+- `result = await c.call_tool(` 手动调工具,和模型调用走的是完全同一条路,只是参数是你写死的。
+- `print("is_error ="` 实测 `is_error = False`。
+- `print(json.dumps(result.structured_content` 实测 `{"result": [{"id": "C007", "name": "刘静", "email": "user007@example.com", "company": "半岛咖啡"}]}`。`ensure_ascii=False` 让中文名照原样打出来,不变成 `刘静`。
+
+</div>
+
+```bash
+uv run python w4/mcp_probe.py
+```
+
+输出:
+
+```text
+server: cloudledger | 协议版本: 2026-07-28
+[tool] find_customer: 按邮箱/姓名/公司/编号查找客户,返回最多 5 条。查订阅和发票前先用它拿到 customer_id。
+[tool] get_subscription: 查询客户当前订阅:套餐、计费周期、席位数、状态、开始日期、本期结束日。
+[tool] list_invoices: 列出客户最近的发票(按开票日期倒序),金额单位为元。可按状态过滤。
+[tool] create_refund_request: 提交一条退款申请,状态为 pending_approval,不会立刻退钱,需要客服主管审批。
+[resource] cloudledger://policy/refund
+[prompt] reply_ticket
+is_error = False
+{"result": [{"id": "C007", "name": "刘静", "email": "user007@example.com", "company": "半岛咖啡"}]}
+```
+
+这个脚本跑不通,下一节的 Agent 也一定跑不通,而它没有模型的随机性,报错只会是 server 本身的问题(路径、依赖、启动时往 stdout 打了东西)。我自己排查 MCP 问题的顺序就是:先 probe,再 Inspector,最后才看 Agent。
+
 ## 自己当 host:接到手写的 Agent 循环
 
 现成 host 好用,但你做产品时 host 是你自己写的。这一节我们写一个最小的 host:用 OpenAI 兼容接口调 DeepSeek(或任何你在 `.env` 里配的模型),工具清单从 MCP server 拿,工具调用转发给 MCP server。
@@ -1187,6 +1262,105 @@ if __name__ == "__main__":
 
 另外,部署到公网的 MCP server 要考虑 DNS rebinding 防护、Host 白名单这些 Web 安全问题,SDK 的 Deploy 文档里有清单。今天不展开,记住一句话就行:**本机用 stdio,远程用 HTTP + 鉴权,永远不要把没有鉴权的写操作 server 暴露到公网**。
 
+## 用 Gradio 快速放一个公网演示
+
+写简历、发帖时你会想让别人点一个链接就能试你的 MCP server。自己买服务器、配 HTTPS、加鉴权,一套下来大半天。有个省事的办法:Gradio 的 `launch(mcp_server=True)`,一个 Python 函数同时变成网页表单和 MCP 工具,再丢到 Hugging Face Spaces 上免费托管,别人在 Claude Desktop 或 Cursor 里填个 URL 就能连。
+
+先说一个我实际撞上的坑:2026 年 10 月最新的 Gradio 6.30.0,它的 `mcp` 可选依赖写的是 `mcp<2.0.0`,和我们 lab 里的 `mcp 2.3.0` 冲突,装不进同一个项目。所以演示版单独放一个目录,依赖分开:
+
+```python
+# cloudledger-demo/app.py
+"""Gradio 演示版:网页上能点,同时是一个 MCP server。只放只读工具。"""
+import json
+import sqlite3
+from pathlib import Path
+
+import gradio as gr
+
+DB = Path(__file__).parent / "cloudledger.db"
+
+
+def find_customer(query: str) -> str:
+    """按邮箱、姓名、公司或编号查找 CloudLedger 客户,最多返回 5 条。
+
+    Args:
+        query: 邮箱、姓名、公司名或客户编号,如 user007@example.com 或 C007
+    """
+    like = f"%{query.strip()}%"
+    with sqlite3.connect(f"file:{DB}?mode=ro", uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, name, email, company FROM customers "
+            "WHERE id = ? OR email LIKE ? OR name LIKE ? OR company LIKE ? LIMIT 5",
+            (query.strip().upper(), like, like, like),
+        ).fetchall()
+    if not rows:
+        return f"没有找到和「{query}」匹配的客户,换邮箱或客户编号再试。"
+    return json.dumps([dict(r) for r in rows], ensure_ascii=False)
+
+
+demo = gr.Interface(
+    fn=find_customer,
+    inputs=gr.Textbox(label="邮箱 / 姓名 / 公司 / 编号"),
+    outputs=gr.Textbox(label="结果"),
+    title="CloudLedger 客户查询(演示数据)",
+    api_name="find_customer",
+)
+
+if __name__ == "__main__":
+    demo.launch(mcp_server=True)
+```
+
+<div class="line-notes">
+
+- `DB = Path(__file__).parent / "cloudledger.db"` 把 `w4/cloudledger/cloudledger.db` 复制一份到 `cloudledger-demo/` 里。演示用造的数据,别放真实客户数据,公网上谁都能查。
+- `def find_customer(query: str) -> str:` Gradio 用函数名当工具名(`find_customer`),用类型标注生成参数 schema。返回 `str` 是因为输出组件是文本框。
+- `"""按邮箱、姓名、公司或编号` docstring 第一段变成工具描述,`Args:` 下面那行变成参数 `query` 的描述。实测连上以后,`list_tools` 拿到的描述就是这一句,`input_schema` 是 `{"type": "object", "properties": {"query": {"type": "string", "description": "邮箱、姓名、公司名或客户编号,如 user007@example.com 或 C007"}}, "required": ["query"]}`。和 MCPServer 一样,描述写得好不好直接决定模型会不会用。
+- `file:{DB}?mode=ro", uri=True` 以只读方式打开 SQLite。就算有人想办法注入 SQL,写操作也会被数据库本身拒掉。公网演示多加一层保险不吃亏。
+- `WHERE id = ? OR email LIKE ?` 参数全部用 `?` 占位,不拼字符串。查 `C007` 时,`query.strip().upper()` 是 `"C007"`,`like` 是 `"%C007%"`,第一个条件就命中。
+- `return f"没有找到` 查不到时返回一句能指导模型改参数的话。Gradio 这里没有 `ToolError`,只能用文字表达失败,`isError` 会是 false,这是它比 MCPServer 粗糙的地方。
+- `return json.dumps([dict(r) for r in rows]` 实测查 `C007` 返回 `[{"id": "C007", "name": "刘静", "email": "user007@example.com", "company": "半岛咖啡"}]`。
+- `api_name="find_customer",` 固定接口名。不写的话 Gradio 默认叫 `predict`,工具名会变得没意义。
+- `demo.launch(mcp_server=True)` 同时启动网页(默认 7860 端口)和 MCP 端点 `http://127.0.0.1:7860/gradio_api/mcp/`。也可以不改代码,设环境变量 `GRADIO_MCP_SERVER=True`。
+
+</div>
+
+```bash
+mkdir -p ~/Documents/cloudledger-demo && cd ~/Documents/cloudledger-demo
+cp ~/Documents/agent-60-lab/w4/cloudledger/cloudledger.db .
+# 把上面的 app.py 存到这里,然后:
+uv run --no-project --python 3.12 --with "gradio[mcp]" python app.py
+```
+
+`--no-project --with` 的意思是临时建一个环境装 gradio,不碰任何项目的依赖,第一次要下载 30MB 左右。浏览器开 `http://127.0.0.1:7860` 能看到表单。然后用我们 lab 里的 2.x client 连它试试(在 lab 目录下执行):
+
+```bash
+cd ~/Documents/agent-60-lab
+uv run python -c "
+import asyncio
+from mcp import Client
+async def main():
+    async with Client('http://127.0.0.1:7860/gradio_api/mcp/') as c:
+        print(c.protocol_version, [t.name for t in (await c.list_tools()).tools])
+        r = await c.call_tool('find_customer', {'query': 'C007'})
+        print(r.is_error, r.content[0].text)
+asyncio.run(main())
+"
+```
+
+我实测的输出是:
+
+```text
+2025-11-25 ['find_customer']
+False [{"id": "C007", "name": "刘静", "email": "user007@example.com", "company": "半岛咖啡"}]
+```
+
+注意第一行协议版本是 `2025-11-25`,不是 `2026-07-28`。Gradio 背后用的是 mcp 1.x,不认识新版协议,2.x 的 client 探测到以后自动退回老协议,你什么都不用做。这正是 Day 22 说的「SDK 2.x 两种都支持」。
+
+**放到 Hugging Face Spaces。** 在 huggingface.co 新建一个 Space,SDK 选 Gradio,硬件选免费的 CPU。把 `app.py`、`cloudledger.db` 传上去,再加一个 `requirements.txt`,里面写一行 `gradio[mcp]`。Space 启动后,MCP 地址是 `https://你的用户名-space名.hf.space/gradio_api/mcp/`,网页底部的「View API」链接点进去,切到 MCP 那一栏,有可以直接复制的客户端配置。我只在本机跑通了,没有实际发布到 Spaces,发布步骤以 [Spaces 的 Gradio 文档](https://huggingface.co/docs/hub/spaces-sdks-gradio)为准。
+
+几条边界要守住:只放只读工具和造的数据;Space 默认是公开的,谁都能调,免费 CPU 会休眠,第一次访问要等它醒;要加鉴权就得用 Gradio 的 `gr.Header` 读请求头里的 token,这已经超出「快速演示」的范围了。正式给团队用的 server 还是按上一节的 Streamable HTTP 加 OAuth 来。
+
 ## 动手练习
 
 1. 按上面的步骤造数、写 server、跑测试,`pytest` 全绿。
@@ -1194,6 +1368,7 @@ if __name__ == "__main__":
 3. 接进 Claude Code 或 Cursor 中的任意一个,问三个问题:「C012 是什么套餐、多少席位?」「星河餐饮最近有没有未付款的发票?」「user007 有重复扣款吗?有的话提交退款申请。」记录每个问题它调用了哪些工具、几步完成。
 4. 跑通 `mcp_agent.py`。然后做一个对照实验:把 `find_customer` 的 docstring 改成只有「查找客户」四个字,删掉使用顺序提示,重跑三次同一个问题,看模型是否开始直接拿邮箱去调 `list_invoices`。把两种描述下的步数和失败次数记下来。
 5. 加分题:新增一个只读工具 `get_ticket(ticket_id)`,返回工单详情,补上对应的测试。
+6. 加分题:先跑 `mcp_probe.py` 确认四个工具、一个资源、一个提示词都在;再按「用 Gradio 快速放一个公网演示」那一节在本机起演示版,用 2.x client 连上去,看看协商出来的协议版本是哪个。
 
 **验收标准**:测试全部通过;在 Claude Code 或 Cursor 里能用中文问出 C007 的重复扣款;`mcp_agent.py` 能自主完成「查客户 → 查发票 → 提交退款申请」三步,并且 `refund_requests` 表里出现一条 `pending_approval` 记录(`sqlite3 w4/cloudledger/cloudledger.db "select * from refund_requests"`);第 4 题的对照数据写进笔记。
 
@@ -1212,6 +1387,9 @@ if __name__ == "__main__":
 | MCP Inspector | 官方调试界面,`uv run mcp dev server.py` 启动 |
 | 内存客户端 | `Client(mcp)`,同进程连接 server,用于测试 |
 | StdioServerParameters | 描述如何把 server 作为子进程启动(命令、参数、环境变量) |
+| probe 脚本 | 不接模型、只列工具和手动调用的最小 client,用来先排除 server 本身的问题 |
+| `mcp_server=True` | Gradio `launch()` 的参数,把界面函数同时暴露成 MCP 工具,端点在 `/gradio_api/mcp/` |
+| Hugging Face Spaces | Hugging Face 的免费应用托管,适合放公开演示,不适合放真实数据 |
 | 幂等(idempotent) | 同样的调用执行一次和执行多次效果相同 |
 
 ## 常见误区
@@ -1235,6 +1413,7 @@ if __name__ == "__main__":
 ### 文档与文章
 
 - [MCP Python SDK 文档](https://py.sdk.modelcontextprotocol.io/):今天主要读 Get started 下的 First steps、Connect to a real host、Testing 三页,以及 Servers 下的 Tools、Structured Output、Handling errors,合计约 1.5 小时。所有例子都是 2.x 写法。
+- [Gradio · Building an MCP Server with Gradio](https://www.gradio.app/guides/building-mcp-server-with-gradio):`mcp_server=True` 的官方说明,看 docstring 怎么变成工具描述、怎么接 Claude Desktop、怎么放到 Spaces,20 分钟。
 - [MCP Python SDK · Migration Guide](https://py.sdk.modelcontextprotocol.io/migration/):如果你手上有 1.x 的代码或教程,这页列出了每一个破坏性改动的前后对照。
 - [Anthropic · Writing effective tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents):Day 11 读过的话今天重读「返回有意义的上下文」和「错误信息」两节,对照你的 ToolError 消息改一遍。
 - [MCP 规范 · Tools](https://modelcontextprotocol.io/specification/2026-07-28):在规范目录里找到 Server Features → Tools,看 annotations 和错误处理的原文规定。

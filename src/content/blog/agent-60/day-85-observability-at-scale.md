@@ -55,6 +55,114 @@ OpenTelemetry 用 W3C 的 `traceparent` 头在服务之间传递 trace 上下文
 
 还有一个很实用的做法:在 trace 的根 span 上放几个「业务属性」,比如 `agentops.tenant`、`agentops.agent`、`agentops.agent_version`、`agentops.run_id`,用 OTel 的 baggage 把它们传给下游,每个服务在自己的 span 上也记一份。这样不管从哪一段开始查,都能按租户和 Agent 版本过滤。
 
+## Agent span 统一叫什么
+
+链路连起来以后还有一个问题:平台上的 Agent 不是同一个框架写的。有的团队用 LangGraph,有的用 OpenAI Agents SDK,有的直接手写循环,各家自带的埋点给 span 起的名字和属性都不一样。看板要按「哪个 Agent、调了哪个工具、花了多少 token」聚合,名字不统一,每接一个新团队就要改一遍查询。所以平台要规定一件事:所有 Agent 都按 OTel GenAI 语义约定里的 agent span 打点。
+
+Day 34 那张表列了最常用的五种 span。这份约定在 2026 年 5 月搬进了独立仓库 [semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai),agent 相关的部分单独一个文件 `docs/gen-ai/gen-ai-agent-spans.md`。我 10 月去读的时候,文件头和每一种 span、每一个 `gen_ai.*` 属性的状态全都是 **Development**,没有一项是 Stable。平台规模下有几处 Day 34 没细讲、但会直接影响看板设计的规定:
+
+`invoke_agent` 分两种 span kind。Agent 就在你的进程里跑(SupportPilot 的运行时、LangGraph 图),用 INTERNAL;调的是远端托管的 Agent(通过 A2A 调别的团队的 Agent,或者调 Bedrock 这类托管服务),用 CLIENT。这一点在平台上很有用:看板按 span kind 一筛,就能把「我们自己跑的」和「调别人的」分开算延迟和成本。远端 Agent 还应该带 `gen_ai.agent.id`,约定的说法是托管服务给的稳定标识,比如 Bedrock Agent 的 ARN。
+
+版本用标准属性。约定里有 `gen_ai.agent.version`。上面「先把链路连起来」那一节我们自己定义了 `agentops.agent_version`,现在可以换成标准名字,或者过渡期两个都写,等看板和告警全切过去再删自定义的。
+
+除了模型调用和工具调用,约定还给 Agent 内部的几个阶段定了操作名:`plan`(规划、拆任务)、`create_agent`、`invoke_workflow`,以及一组记忆操作 `search_memory`、`upsert_memory`、`update_memory`、`delete_memory` 等。Day 64 的记忆系统每次读写打一个 span,就能在看板上看到记忆检索占了多少延迟。
+
+最新加进去的是 Agent Skills。约定把「加载一个 skill」也算成工具调用,span 名是 `execute_tool {gen_ai.tool.name} {gen_ai.skill.name}`,另外还有读取 skill 资源文件、执行 skill 里脚本的 span,属性 `gen_ai.skill.name` 直接引用了 agentskills.io 的规范。文档里列举的实现包括 Google ADK 的 `load_skill`、OpenAI Agents SDK 沙箱的 `exec_command`、LangChain Deep Agents 的 `execute`。这部分刚加不久,变的可能性最大。
+
+工具的参数和返回值在约定里是 `gen_ai.tool.call.arguments` 和 `gen_ai.tool.call.result`,两个都是 **Opt-In**,默认不采。这和下面「原文和元数据分开管」那一节是同一件事:它们属于原文,应该走带原文那一路管道,不该出现在元数据里。
+
+下面是一次退款工单运行按约定手动打点的最小例子,不接真模型,只为核对 span 的名字、类型和层级:
+
+```python
+# agent-60-lab/w13/obs/agent_spans.py
+"""按 OTel GenAI 语义约定给一次 Agent 运行打 span(手动埋点版)。
+依赖:uv add opentelemetry-sdk
+"""
+import json
+
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+from opentelemetry.trace import SpanKind
+
+
+class PrintExporter(SpanExporter):
+    """只打印名字、类型和 gen_ai.* 属性,方便核对。"""
+
+    def export(self, spans):
+        for s in spans:
+            attrs = {k: v for k, v in s.attributes.items() if k.startswith("gen_ai.")}
+            parent = "root" if s.parent is None else "child"
+            print(f"{s.name:28} {s.kind.name:8} {parent:5} {json.dumps(attrs, ensure_ascii=False)}")
+        return SpanExportResult.SUCCESS
+
+
+provider = TracerProvider()
+provider.add_span_processor(SimpleSpanProcessor(PrintExporter()))
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer("supportpilot")
+
+AGENT = {"gen_ai.agent.name": "refund_agent", "gen_ai.agent.version": "2026-10-20"}
+
+
+def chat(model: str, turn: int) -> None:
+    with tracer.start_as_current_span(f"chat {model}", kind=SpanKind.CLIENT) as span:
+        span.set_attribute("gen_ai.operation.name", "chat")
+        span.set_attribute("gen_ai.provider.name", "deepseek")
+        span.set_attribute("gen_ai.request.model", model)
+        span.set_attribute("gen_ai.usage.input_tokens", 4100 + turn * 300)
+        span.set_attribute("gen_ai.usage.output_tokens", 120)
+
+
+def execute_tool(name: str, call_id: str) -> None:
+    with tracer.start_as_current_span(f"execute_tool {name}", kind=SpanKind.INTERNAL) as span:
+        span.set_attribute("gen_ai.operation.name", "execute_tool")
+        span.set_attribute("gen_ai.tool.name", name)
+        span.set_attribute("gen_ai.tool.call.id", call_id)
+        span.set_attribute("gen_ai.tool.type", "function")
+
+
+with tracer.start_as_current_span("invoke_agent refund_agent", kind=SpanKind.INTERNAL) as root:
+    root.set_attribute("gen_ai.operation.name", "invoke_agent")
+    root.set_attributes(AGENT)
+    root.set_attribute("gen_ai.conversation.id", "conv_T-10293")
+    chat("deepseek-flash", 0)
+    execute_tool("get_invoice", "call_01")
+    chat("deepseek-flash", 1)
+    execute_tool("request_refund_approval", "call_02")
+    chat("deepseek-flash", 2)
+```
+
+<div class="line-notes">
+
+- `class PrintExporter(SpanExporter):` 自己写一个导出器,只打印要核对的字段。SDK 自带的 `ConsoleSpanExporter` 会把每个 span 打成一大段 JSON,五六个 span 就刷满一屏。
+- `attrs = {k: v for k, v in s.attributes.items() if k.startswith("gen_ai.")}` 只留 `gen_ai.` 开头的属性。平台自定义的 `agentops.*` 属性不在今天要核对的范围里。
+- `parent = "root" if s.parent is None else "child"` `s.parent` 是父 span 的上下文,根 span 没有父。用来确认工具和模型调用都挂在 `invoke_agent` 下面。
+- `provider.add_span_processor(SimpleSpanProcessor(PrintExporter()))` Simple 处理器每结束一个 span 就立刻导出,适合本地核对;线上用 `BatchSpanProcessor` 攒一批再发。
+- `AGENT = {"gen_ai.agent.name": "refund_agent", "gen_ai.agent.version": "2026-10-20"}` 版本用标准属性 `gen_ai.agent.version`,取值是 Agent 配置的发布日期。约定没规定版本格式,示例里给的就是 `1.0.0` 和 `2025-05-01` 两种。
+- `with tracer.start_as_current_span(f"chat {model}", kind=SpanKind.CLIENT) as span:` 模型调用是跨网络的请求,kind 是 CLIENT,名字是 `chat` 加模型名,结果就是 `chat deepseek-flash`。
+- `span.set_attribute("gen_ai.provider.name", "deepseek")` `deepseek` 在约定的标准取值表里。
+- `span.set_attribute("gen_ai.usage.input_tokens", 4100 + turn * 300)` 假数据,模拟每轮对话历史变长、输入 token 递增:4100、4400、4700。
+- `with tracer.start_as_current_span(f"execute_tool {name}", kind=SpanKind.INTERNAL) as span:` 工具在本进程里执行,kind 是 INTERNAL。如果工具是调远端 MCP server,MCP 那一侧另有 span,按 `docs/gen-ai/mcp.md` 命名。
+- `span.set_attribute("gen_ai.tool.call.id", call_id)` 模型返回的 `tool_call_id`,约定要求「模型给了就必须填」。线上排查时靠它把 trace 里的工具 span 和对话记录里的那一次调用对上。
+- `with tracer.start_as_current_span("invoke_agent refund_agent", kind=SpanKind.INTERNAL) as root:` Agent 在本进程里跑,所以是 INTERNAL。如果这是网关在调另一个团队的远端 Agent,就要改成 CLIENT 并加上 `gen_ai.agent.id`。
+- `root.set_attribute("gen_ai.conversation.id", "conv_T-10293")` 会话 id,一张工单多次运行用同一个值。看板按它聚合,就能看到一张工单前前后后一共花了多少。
+
+</div>
+
+用 opentelemetry-sdk 1.45.1 在本机跑(`uv run --no-project --with opentelemetry-sdk python agent_spans.py`),输出如下。根 span 最后才打印,因为它最后结束:
+
+```text
+chat deepseek-flash          CLIENT   child {"gen_ai.operation.name": "chat", "gen_ai.provider.name": "deepseek", "gen_ai.request.model": "deepseek-flash", "gen_ai.usage.input_tokens": 4100, "gen_ai.usage.output_tokens": 120}
+execute_tool get_invoice     INTERNAL child {"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "get_invoice", "gen_ai.tool.call.id": "call_01", "gen_ai.tool.type": "function"}
+chat deepseek-flash          CLIENT   child {"gen_ai.operation.name": "chat", "gen_ai.provider.name": "deepseek", "gen_ai.request.model": "deepseek-flash", "gen_ai.usage.input_tokens": 4400, "gen_ai.usage.output_tokens": 120}
+execute_tool request_refund_approval INTERNAL child {"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "request_refund_approval", "gen_ai.tool.call.id": "call_02", "gen_ai.tool.type": "function"}
+chat deepseek-flash          CLIENT   child {"gen_ai.operation.name": "chat", "gen_ai.provider.name": "deepseek", "gen_ai.request.model": "deepseek-flash", "gen_ai.usage.input_tokens": 4700, "gen_ai.usage.output_tokens": 120}
+invoke_agent refund_agent    INTERNAL root  {"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "refund_agent", "gen_ai.agent.version": "2026-10-20", "gen_ai.conversation.id": "conv_T-10293"}
+```
+
+全部还是 Development 状态,对平台意味着什么?属性名随时可能改,Day 34 提过的 `gen_ai.system` 改名 `gen_ai.provider.name` 就是前车之鉴。我的做法是两条。第一,平台提供一个很薄的内部埋点库(比如 `agentops-otel`),各团队只调它的 `agent_span()`、`tool_span()`,不自己拼属性名;约定一改,只改这一个库。第二,在 Collector 里留一个 transform 处理器专门做新旧名字的映射,还没升级埋点库的老服务发出来的旧名字,在这里统一改成新名字再落库。看板和告警永远只认一套名字。
+
 ## 采样:头部还是尾部
 
 采样有两种时机。
@@ -399,6 +507,8 @@ def test_cost_anomaly_and_cardinality():
 | 错误预算 | SLO 允许的失败额度,例如 30 天内 5% |
 | 燃烧速率(burn rate) | 实际错误率除以允许错误率,表示错误预算消耗的快慢 |
 | exemplar | 附在指标数据点上的 trace ID,用于从指标直接跳到对应 trace |
+| agent span | GenAI 语义约定里描述 Agent 行为的 span,如 `invoke_agent`、`plan`、`execute_tool`,状态仍是 Development |
+| Opt-In 属性 | 语义约定里默认不采集、需要使用者显式开启的属性,如工具参数和返回值 |
 
 ## 常见误区
 
@@ -504,6 +614,14 @@ def test_cost_anomaly_and_cardinality():
 <details><summary>答案</summary>
 
 先测量:按服务和属性拆开看数据量,通常原文占大头,重复的完整对话历史又是原文的大头。方案分四块。一是原文和元数据分离:原文默认不采,按租户开启;采了的只保留 14 天;元数据长期保留。二是尾部采样:错误、慢、转人工、低评测分、高成本、指定租户全留,其余 3–5% 基线,预计留下 10% 左右;部署负载均衡层保证同一 trace 落到同一采样实例,处理长任务的晚到 span。三是能用指标的不用 trace:看板和告警全部基于指标(从网关账本和运行结果打点),不再从 trace 里实时聚合。四是存储分层:近期热存储、历史冷存储。验证不影响排查:上线前回放过去一个月的 10 个真实事故,确认用采样后的数据都能定位根因;上线后跟踪排查时间这个指标。要提到风险和取舍:采样会让少量罕见问题的样本不足,用「指定租户临时全量」和动态调整采样率补;原文少了,线上评测要改成在线实时打分并把分数写进元数据,而不是事后从原文里重算。
+
+</details>
+
+7. 平台上有 A2A 调用:你们的退款 Agent 会调财务团队部署的对账 Agent。两边的 `invoke_agent` span 各自应该是什么 kind?看板怎么用这个区别?
+
+<details><summary>答案</summary>
+
+退款 Agent 自己在进程里跑,它的 `invoke_agent` 是 INTERNAL;它调对账 Agent 的那一次是一个 CLIENT 类型的 `invoke_agent` span,带上对方的 `gen_ai.agent.name` 和稳定的 `gen_ai.agent.id`。财务团队那边收到请求后,在自己的进程里再打一个 INTERNAL 的 `invoke_agent`,通过 traceparent 挂在同一条 trace 下。看板按 kind 筛选,就能把「自己跑的耗时和成本」和「等别的 Agent 的耗时」分开,依赖方变慢时一眼能看出来是谁的问题。
 
 </details>
 

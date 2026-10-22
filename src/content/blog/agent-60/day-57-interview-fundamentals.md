@@ -117,6 +117,42 @@ token 是模型处理文本的最小单位,由 tokenizer(多数是 BPE 一类的
 
 </details>
 
+### 加题:模型结构(Transformer、注意力、MoE)
+
+这 4 道不在 60 题里,是 2026 年 10 月补的。国内一面问「讲讲 Transformer」的频率比 JD 上写的高得多,尤其是大厂和算法背景的面试官。Agent 岗不会让你推公式,但答不上来很减分。底子在 Day 1 的「Transformer、注意力和 MoE,面试够用版」一节。
+
+**加 1. 用两三分钟讲讲 Transformer 的结构。(Day 1)**
+
+<details><summary>答案</summary>
+
+现在的大模型基本都是 decoder-only Transformer:输入的 token 先变成向量,经过几十个结构相同的层,每层先做自注意力(每个 token 按相关度从前面的 token 取信息),再过前馈网络(FFN,每个 token 单独做非线性变换),层与层之间有残差连接和归一化;最后一层输出经过一个线性层和 softmax 得到下一个 token 的概率分布。生成时加因果遮罩,每个位置只能看前面,所以要一个 token 一个 token 地自回归输出。位置信息靠位置编码,现在多用 RoPE。能主动补一句「所以长输入的 prefill 计算量随长度近似平方增长、首 token 延迟变长」,把结构和工程现象连起来,会加分。
+
+</details>
+
+**加 2. 注意力机制里的 Q、K、V 是什么?多头注意力有什么用?(Day 1)**
+
+<details><summary>答案</summary>
+
+每个 token 的向量分别乘三个矩阵得到查询(Q)、键(K)、值(V)。当前 token 用自己的 Q 去和前面每个 token 的 K 算相似度,softmax 后当权重,再对这些 token 的 V 加权求和,得到它这一层的新表示。直觉上 Q 是「我在找什么」,K 是「我有什么」,V 是「我能给出的内容」。多头就是并行做多组这样的计算,每组用不同的矩阵,能同时关注不同类型的关系(指代、语法、位置等),最后拼起来。不必展开缩放因子等细节,除非面试官追问。
+
+</details>
+
+**加 3. KV cache 是什么?它和 prompt caching、长上下文成本有什么关系?(Day 1、Day 38)**
+
+<details><summary>答案</summary>
+
+生成第 n 个 token 时,前面 n-1 个 token 的 K、V 不会再变,推理引擎把它们缓存在显存里,每步只算新 token 的 Q、K、V,不用重算整段,这就是 KV cache。代价是显存占用随上下文长度和并发请求数线性增长,所以长上下文会降低一张卡能同时服务的请求数,厂商对长上下文加价也和这有关。prompt caching 是把相同前缀的 KV cache 跨请求保存下来,命中时省掉这段的 prefill 计算,所以缓存读便宜、首 token 更快;这也是为什么 system prompt 和工具定义要放在最前面且保持不变。
+
+</details>
+
+**加 4. MoE 模型是什么?总参数和激活参数分别决定什么?(Day 1、Day 75、Day 76)**
+
+<details><summary>答案</summary>
+
+MoE(混合专家)把每层的 FFN 换成很多个专家网络加一个路由器,每个 token 只交给得分最高的少数几个专家计算。激活参数决定每个 token 的计算量,也就决定了速度和单 token 成本;总参数决定显存占用,因为所有专家都要加载。例子:DeepSeek-V3 总 671B、激活约 37B,API 便宜,但自部署仍要多卡;Qwen3-30B-A3B 激活 3B,本地跑速度接近 3B 模型。追问可能是「MoE 的难点」:路由负载不均衡(有的专家被挤爆、有的闲着),训练时要加负载均衡,推理时专家分布在多卡上带来通信开销。
+
+</details>
+
 ### 提示词与结构化输出
 
 **8. 一个好的 system prompt 一般包含哪些部分?(Day 5)**
@@ -660,6 +696,8 @@ def run(user_msg: str, model: str, max_steps: int = 8) -> str:
 
 | 名词 | 意思 |
 | --- | --- |
+| KV cache | 推理时缓存前面 token 的键和值向量,省重算,代价是显存随上下文长度增长 |
+| MoE | 混合专家结构,每个 token 只激活少数专家;速度看激活参数,显存看总参数 |
 | BPE | 一种子词切分算法,按出现频率合并字符对,得到 tokenizer 的词表 |
 | lost in the middle | 长上下文中位于中间位置的信息更容易被模型忽略的现象 |
 | context rot | 上下文越长、无关内容越多,模型表现越下降的现象 |

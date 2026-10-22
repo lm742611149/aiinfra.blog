@@ -207,6 +207,39 @@ server 回:
 
 在 `tools/list` 之前,传统的流程还有一次握手:client 发 `initialize`,双方交换协议版本和各自支持的能力(capabilities),然后 client 发一个 `notifications/initialized` 通知。这个握手在 2025 年的规范里一直存在。2026-07-28 版规范做了一次大改:去掉了握手和会话,每个请求自己在 `_meta` 里带上协议版本和客户端信息,能力发现改用一个普通的 `server/discover` 请求。好处是服务端变成无状态的,放在负载均衡后面随便扩容,不需要会话粘滞。官方 Python SDK 2.x 两种都支持,会先探测 server 支持哪种。你写代码时几乎感觉不到区别,但面试被问到「MCP 怎么横向扩展」,能说出这一点会很加分。
 
+## 2026-07-28 版规范还改了什么
+
+上面提到新版去掉了握手。同一版里还有几处改动,老教程里一律没有,但你用 2.x SDK 连 server 时每一处都会碰到。下面的内容是 2026 年 10 月对照[官方发布说明](https://blog.modelcontextprotocol.io/posts/2026-07-28/)和规范原文整理的。
+
+**HTTP 请求要多带两个头。** 走 Streamable HTTP 时,每个请求除了 JSON 正文里的 `method`,还必须在 HTTP 头里写一遍:`Mcp-Method: tools/call`,调用工具、读资源这类请求再加 `Mcp-Name: find_customer`(工具名或资源名)。看起来是重复劳动,其实是给网关用的。以前 Nginx、API 网关、WAF 想按工具限流(比如「退款工具每分钟最多 10 次」),得把 JSON 正文解析出来才知道调的是哪个工具;现在看头就够了,和看 URL 路径一样便宜。server 会核对头和正文是否一致,不一致直接拒掉,防止有人头里写只读工具、正文里调写操作来绕过网关规则。明天写完 CloudLedger server 后,我用 curl 故意不带头、带错头各试了一次,结果放在下面,你也可以照着试:
+
+```bash
+# 明天的 server 用 streamable-http 跑在 8765 端口后,在另一个终端执行
+B='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_customer","arguments":{"query":"C007"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"curl","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}'
+curl -s http://127.0.0.1:8765/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2026-07-28' -d "$B"
+curl -s http://127.0.0.1:8765/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/call' -H 'Mcp-Name: list_invoices' -d "$B"
+curl -s http://127.0.0.1:8765/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/call' -H 'Mcp-Name: find_customer' -d "$B"
+```
+
+<div class="line-notes">
+
+- `B='{"jsonrpc"` 一个完整的 `tools/call` 请求体。注意没有 `initialize`,协议版本、客户端信息、能力都塞在 `params._meta` 里,每个请求自带,这就是「无状态」的意思。
+- `-d "$B"` 第一次:不带 `Mcp-Method`。实测返回 HTTP 400,正文是 `{"code":-32020,"message":"mcp-method header does not match the request body's method"}`。没带头也算「不一致」。
+- `Mcp-Name: list_invoices` 第二次:头里写 `list_invoices`,正文里调的是 `find_customer`。实测返回 `-32020`,message 是 `mcp-name header does not match the request body's 'name' parameter`。这就是防绕过的那道检查。
+- `Mcp-Name: find_customer` 第三次:头和正文一致,返回 HTTP 200,`result.structuredContent.result[0].id` 是 `"C007"`,`resultType` 是 `"complete"`。
+
+</div>
+
+用 SDK 的时候这两个头是 SDK 自动加的,你不用管。只有自己写网关、或者用 curl 和 Postman 手调时才需要记得。
+
+**列表结果带缓存提示。** `tools/list`、`prompts/list`、`resources/list` 和 `resources/read` 的结果里多了两个字段:`ttlMs`(这份结果可以缓存多少毫秒)和 `cacheScope`(缓存能不能跨用户共享)。以前 host 不知道工具列表会不会变,要么每轮都重新拉一次,要么一直不刷新,两头都不对。我对明天的 CloudLedger server 发了一次 `tools/list`,SDK 默认回的是 `ttlMs: 0`、`cacheScope: "private"`,意思是「别缓存,也别给别的用户用」,最保守的设置。工具定义基本不变的 server 可以把 ttl 调大,host 就能少发很多请求。
+
+**长任务变成了扩展。** 有些工具调用要跑几分钟甚至几小时,比如跑一次对账、等主管审批。连接一直挂着等结果不现实,中间的代理和负载均衡几十秒就会断。新版把「任务」做成了官方扩展 `io.modelcontextprotocol/tasks`:client 在每个请求的能力里声明支持它,server 觉得这次调用要跑很久,就不直接返回结果,而是返回一个 `resultType: "task"` 的任务句柄,里面有 `taskId`、建议的轮询间隔 `pollIntervalMs` 和过期时间 `ttlMs`。之后 client 用 `tasks/get` 拿着 taskId 去问进度。任务有五个状态:`working`、`input_required`、`completed`、`failed`、`cancelled`,后三个是终态。要是中途需要用户确认(比如「这笔退款超过 5000 元,确定吗?」),任务会停在 `input_required`,`tasks/get` 的结果里带上要问的问题,client 用 `tasks/update` 把答案交回去,任务回到 `working`。想取消就发 `tasks/cancel`,但规范说得很清楚,取消是「尽量」,server 不保证真的停下来。taskId 要存到数据库里,这样 client 重启以后还能接着查。这和 Day 37 讲的长任务、Day 65 讲的持久化执行是一个思路,协议层把句柄的格式统一了而已。CloudLedger 的工具都是毫秒级的,用不上,你知道有这回事就行。
+
+**一批老功能进入废弃期。** Roots、Sampling、Logging 三个能力标记为废弃,至少还能用 12 个月,新写的代码不要再用。前面说的「server 主动问用户」现在走多轮往返:工具返回 `resultType: "input_required"` 并列出要问的问题,client 拿到答案后把原请求带上 `inputResponses` 重发一遍。老的「HTTP+SSE」传输正式废弃,有一年过渡期。远程 server 鉴权里的动态客户端注册(DCR)也废弃了,改用 CIMD(客户端用一个 URL 上的元数据文档表明身份),Day 84 讲 MCP 网关鉴权时细讲。
+
+这些改动的方向是一致的:让 MCP server 像普通的无状态 HTTP 服务一样,能放在网关后面、能水平扩容、能被缓存。如果你是后端出身,会觉得这一版「终于像个正常的 Web 协议了」。
+
 ## 两种传输:stdio 和 Streamable HTTP
 
 JSON-RPC 只规定了消息长什么样,消息怎么从 client 到 server,由传输层决定。MCP 现在主要用两种。
@@ -505,6 +538,10 @@ claude mcp add time -- uvx mcp-server-time
 | isError | 工具执行失败的标记,失败信息作为正常结果返回给模型 |
 | MCP Inspector | 官方调试工具,可视化地连接 server、列工具、调用、看原始消息 |
 | A2A | Agent2Agent 协议,解决 Agent 之间的协作,和 MCP 是互补关系 |
+| `Mcp-Method` / `Mcp-Name` | 2026-07-28 版起 Streamable HTTP 请求必带的两个头,写明方法名和工具/资源名,方便网关不解析正文就能路由和限流 |
+| `ttlMs` / `cacheScope` | 列表类结果里的缓存提示:可以缓存多少毫秒、能否跨用户共享 |
+| Tasks 扩展 | `io.modelcontextprotocol/tasks`,长时间运行的调用返回任务句柄,client 用 `tasks/get` 轮询、`tasks/update` 补充输入 |
+| 多轮往返(MRTR) | 新版里 server 需要用户输入时,返回 `input_required`,client 带上 `inputResponses` 重发原请求,取代 server 主动发请求 |
 
 ## 常见误区
 
@@ -526,6 +563,8 @@ claude mcp add time -- uvx mcp-server-time
 
 - [MCP 官方文档 · Introduction](https://modelcontextprotocol.io/docs/getting-started/intro):从这里进,架构概念那几页(Architecture、Server concepts、Client concepts)今天全部读完,大约 40 分钟。
 - [MCP 规范 2026-07-28 版](https://modelcontextprotocol.io/specification/2026-07-28):不用通读,看目录知道有哪些部分,重点扫一眼 Base Protocol 和 Server Features 下 Tools 那一节。和上一版 [2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25) 对照着看变化。
+- [MCP 博客 · 2026-07-28 规范发布说明](https://blog.modelcontextprotocol.io/posts/2026-07-28/):这一版所有改动的官方总结,15 分钟,读完再回来看上面「还改了什么」那一节会更清楚。
+- [MCP Tasks 扩展说明](https://modelcontextprotocol.io/extensions/tasks/overview):任务的状态表和完整时序图,用到长任务时再细读。
 - [Anthropic · Introducing the Model Context Protocol](https://www.anthropic.com/news/model-context-protocol):2024 年 11 月的发布文,5 分钟,知道它最初想解决什么。
 - [MCP Python SDK 文档 · What's new in v2](https://py.sdk.modelcontextprotocol.io/whats-new/):SDK 2.x 的改动总览,看完你就知道老教程哪些写法不能抄了,20 分钟。
 - [MCP Registry](https://registry.modelcontextprotocol.io):官方的 server 注册表,随便翻翻,看看大家都在给什么系统写 server。
@@ -616,6 +655,14 @@ stdio 传输下 stdout 就是 JSON-RPC 通信线路。启动时 print 的这行�
 <details><summary>答案</summary>
 
 参考要点:function calling 解决的是模型怎么表达「我要调用某个工具」,是模型和应用之间的约定;MCP 解决的是应用怎么发现、连接、执行外部工具,是应用和工具之间的约定。没有 MCP 时,每个应用都要为每个系统写一套工具定义和执行代码,M 个应用 N 个系统就是 M×N 份;有了 MCP,每个系统写一个 server,每个应用实现一个 client,变成 M+N,而且同一个 server 能直接用在 Claude Code、Cursor 这类现成工具里。两者是配合关系:host 用 MCP 拿到工具列表,转成 function calling 的 tools 参数给模型,模型选中后 host 再用 MCP 去执行。最后可以补一句取舍:只给单个 Agent 用的同进程工具,不必上 MCP。
+
+</details>
+
+7. 你在公司 API 网关上想给 CloudLedger 的 MCP server 配一条规则:`create_refund_request` 每个用户每分钟最多 3 次,其他工具不限。2026-07-28 版规范之前和之后,这条规则分别怎么实现?
+
+<details><summary>答案</summary>
+
+之前:所有请求都 POST 到同一个 `/mcp`,网关只能把 JSON 正文解析出来,读 `method` 和 `params.name` 才知道调的是哪个工具,很多网关做不到或者代价高。之后:请求头里有 `Mcp-Method: tools/call` 和 `Mcp-Name: create_refund_request`,网关按头匹配就行,和按 URL 路径限流一样简单。server 会校验头和正文一致,所以调用方没法在头里写别的工具名来绕过这条规则。
 
 </details>
 

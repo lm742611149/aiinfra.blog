@@ -8,7 +8,8 @@ export const weekOf = (day: number) => {
 	if (day <= 105) return 15;
 	if (day <= 110) return 17;
 	if (day <= 120) return 18;
-	return 20;
+	if (day <= 130) return 20;
+	return 22;
 };
 
 /** Day 61 onward is the senior track. */
@@ -33,6 +34,7 @@ export const WEEK_TITLES: Record<number, string> = {
 	17: 'W17 资深求职与影响力',
 	18: '作品一 Agent Loupe 调试器',
 	20: '作品二 BillSleuth 计费争议调查',
+	22: '专题篇 2026 下半年补充',
 };
 
 // Month structure of the aiinfra-365 track: Day 0 is the prologue, then 30 days per month.

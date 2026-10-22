@@ -261,6 +261,85 @@ def model_for(node: str) -> str:
 
 比静态路由更进一步的是动态路由:根据输入的难度临时决定。比如先让便宜模型试,它在自检节点判断自己没把握时,再升级到贵模型重做(这叫 cascade,级联);或者训练一个小分类器预测每个请求需要多强的模型,开源的 RouteLLM 就是做这个的。这些做法在面试里提一提可以加分,但我不建议在毕业项目里一开始就上,它们增加的复杂度和评测成本,在工单量不大的时候省不回来。
 
+### 另一种分工:Advisor 模式
+
+路由和级联都是「整件事交给一个模型」:要么便宜模型做完,要么贵模型重做。还有第三种分法,便宜模型从头干到尾,只在拿不准的那一下去问一次强模型,拿回一段几百 token 的建议接着干。Anthropic 把它做成了 API 里的 advisor tool(2026 年 10 月 22 日查到仍是 beta,beta 头 `advisor-tool-2026-03-01`,工具类型 `advisor_20260301`)。执行模型可以是 Haiku 或 Sonnet,顾问要求 Sonnet 4.6 及以上且不弱于执行模型;顾问那次调用按顾问模型的价格单独计费,写在 `usage.iterations` 里 `type` 为 `advisor_message` 的条目里,**顶层 usage 只算执行模型**,算账时别漏。文档给的典型数字是顾问每次回 400–700 个文本 token(连思考 1,400–1,800),`max_tokens` 设 2048 基本不截断。
+
+省钱的原理是:最后那封长回复、那几十次工具调用,都是便宜模型按便宜的价格生成的,贵模型只出了一段短短的意见。文档自己也说它适合长链路的 Agent 任务(写代码、多步查资料),单轮问答不划算,每一步都需要强模型能力的任务也不划算。
+
+不用 Claude 也能这么做。Pydantic AI 的 harness 包里有一个 `Advisor` capability:执行和顾问都在 Anthropic(或都走 OpenRouter)时用上面那个原生工具,其他组合就退回成一个本地的 `advisor` 函数工具,背后单独跑一个用顾问模型的 Agent。下面用 DeepSeek 的两个模型试一下,执行用 `deepseek-flash`,顾问用 `deepseek-v4-pro`,题目故意选一个退款规则没写清楚的组合场景。
+
+```python
+# agent-60-lab/w6/advisor_demo.py
+import json
+import os
+
+from dotenv import load_dotenv
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai_harness import Advisor
+
+load_dotenv()
+
+provider = OpenAIProvider(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"])
+settings = {"extra_body": json.loads(os.environ.get("LLM_EXTRA_BODY", "{}"))}
+executor = OpenAIChatModel("deepseek-flash", provider=provider, settings=settings)
+advisor = OpenAIChatModel("deepseek-v4-pro", provider=provider, settings=settings)
+
+agent = Agent(
+    executor,
+    instructions=(
+        "你是 CloudLedger 客服,负责起草回复。退款规则:月付不退;年付只限专业版和企业版,"
+        "购买 14 天内全额退,之后按剩余整月折算。遇到规则组合不确定时先问 advisor,再起草。"
+    ),
+    capabilities=[Advisor(advisor, max_uses=1, max_tokens=1024)],
+)
+
+result = agent.run_sync(
+    "客户 C023:9 月 20 日买了企业版年付 11880 元,10 月 22 日从企业版降到专业版年付,"
+    "问能不能把差价退回来、退多少。"
+)
+
+for msg in result.all_messages():
+    for part in msg.parts:
+        if part.part_kind == "tool-call":
+            print("CALL", part.tool_name, str(part.args)[:80])
+        if part.part_kind == "tool-return":
+            print("ADVICE", str(part.content)[:120].replace("\n", " "))
+print("REPLY", result.output[:120].replace("\n", " "))
+print("USAGE", result.usage)
+```
+
+<div class="line-notes">
+
+- `from pydantic_ai import Agent` 依赖:`uv add "pydantic-ai-slim[openai]" pydantic-ai-harness python-dotenv`(zsh 里方括号要加引号,不然报 `no matches found`)。2026-10-22 实测装上的是 pydantic-ai-slim 2.59.0、pydantic-ai-harness 0.59.0。harness 包还在 0.x,官方说小版本之间 API 可能变。
+- `from pydantic_ai_harness import Advisor` 顾问能力在单独的 harness 包里,不在 `pydantic_ai` 本体。
+- `provider = OpenAIProvider(base_url=` 走 OpenAI 兼容协议,两个模型共用一个 provider,沿用全课的 `LLM_BASE_URL` 和 `LLM_API_KEY`。
+- `settings = {"extra_body": json.loads(` 关掉 DeepSeek 思考模式的那段 `{"thinking": {"type": "disabled"}}`,两个模型都带上。
+- `executor = OpenAIChatModel("deepseek-flash"` 干活的便宜模型。
+- `advisor = OpenAIChatModel("deepseek-v4-pro"` 顾问。因为不在 Anthropic 上,`Advisor` 的 `auto` 模式会选本地回退路径:给执行模型加一个叫 `advisor` 的函数工具,调用时另起一个用 `deepseek-v4-pro` 的 Agent。
+- `"购买 14 天内全额退,之后按剩余整月折算。遇到规则组合不确定时先问 advisor,再起草。"` 执行模型自己决定什么时候问,所以要在指令里写明什么情况下该问。文档也是这么建议的。
+- `capabilities=[Advisor(advisor, max_uses=1, max_tokens=1024)],` `max_uses=1` 每次模型请求最多问一次;`max_tokens` 最低只能设 1024。实测这一单 `tool_calls=1`,问了一次。
+- `result = agent.run_sync(` 实测一次约 24 秒(含启动),`requests=3`:执行模型两次(决定问顾问、写回复)加顾问一次。
+- `if part.part_kind == "tool-call":` 实测打印 `CALL advisor {"prompt": "需要你就一个退款组合情形给出判断……`。本地回退路径下顾问**只看到执行模型写的这段 prompt**,看不到完整对话(要转发历史得设 `forward_history=True`)。所以执行模型把规则和案情重新写了一遍。
+- `print("ADVICE", str(part.content)[:120]` 实测顾问的第一句是「结论:现有规则不足以直接处理,必须升级人工/财务审核。不得由客服直接承诺退款金额或计算方式。」降级退差价确实不在规则里,它没有硬算。
+- `print("REPLY", result.output[:120]` 实测执行模型照着建议,回复开头写「此案不能由客服直接答复金额,需提交财务人工审核」,后面是给客户的草稿。
+- `print("USAGE", result.usage)` 实测 `input_tokens=2900, output_tokens=1978, requests=3, cache_read_tokens=1152`,pydantic-ai 按内置价格表估的 `cost` 约 0.0062。本地回退路径下顾问的用量也算进这里;如果用的是 Anthropic 原生 advisor tool,记得去 `usage.iterations` 里单独加。另外每次运行会打印一段 Logfire 的广告横幅,设 `PYDANTIC_AI_NO_BANNER=1` 可以关掉。
+
+</div>
+
+输出大致长这样(措辞每次不同):
+
+```text
+CALL advisor {"prompt": "需要你就一个退款组合情形给出判断，以便起草客服回复。\n\n背景规则（CloudLedger 退款规则）：\n1. 月付订阅：一律不退。
+ADVICE **结论：现有规则不足以直接处理，必须升级人工/财务审核。不得由客服直接承诺退款金额或计算方式。**  ---  ### 1. 能否直接处理？ ...
+REPLY **处理建议：此案不能由客服直接答复金额，需提交财务人工审核。** 以下为给客户 C023 的回复草稿：  ---  ...
+USAGE RunUsage(cache_read_tokens=1152, ... input_tokens=2900, output_tokens=1978, requests=3, tool_calls=1)
+```
+
+什么时候该用 Advisor 而不是路由?我的判断是看「难的部分」在哪。如果难度在**整张工单**上(有的工单整体就难),按难度路由或级联更直接;如果难度集中在**一两个判断点**上,比如规则冲突、要不要升级、下一步查什么,而大部分输出都是常规体力活,Advisor 更省,因为贵模型只为那一个判断付钱。它的代价有三个:多了一次往返的延迟(Anthropic 原生版在顾问思考时流式输出会暂停);执行模型可能该问不问,文档说 Haiku 这类小模型容易「不好意思问」,要在提示词里点名哪些情况必须问;评测要单独看「问了的那部分」和「没问的那部分」各自的质量。
+
 ## 延迟:先搞清楚时间花在哪
 
 成本看 token,延迟看时间线。打开 Langfuse 里任意一张工单的 trace,你会看到类似这样的瀑布图:分类 0.9 秒、检索 0.4 秒、Agent 第一步 1.6 秒、查客户 0.2 秒、查发票 0.3 秒、Agent 第二步 1.8 秒、起草 4.5 秒。加起来近 10 秒。
@@ -462,6 +541,7 @@ Agent 不是全自动的。真实上线以后,工单会分成两类:Agent 起草
 | 命中率 | 命中缓存的输入 token 占全部输入 token 的比例 |
 | 模型路由 | 按任务难度把请求分给不同的模型 |
 | cascade(级联) | 先用便宜模型,判断不可靠时再升级到贵模型重做 |
+| Advisor 模式 | 便宜模型执行全程,拿不准时向强模型请教一次、拿回几百 token 的建议再继续 |
 | TTFT | Time To First Token,首 token 延迟,用户感知等待的关键指标 |
 | 错峰定价 | 部分厂商在非高峰时段降价,DeepSeek 非高峰半价 |
 | Batch API | 异步批量提交请求、24 小时内返回、价格减半的接口 |
@@ -492,6 +572,8 @@ Agent 不是全自动的。真实上线以后,工单会分成两类:Agent 起草
 - [Anthropic · Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching):讲得最细的一份缓存文档,即使你不用 Claude 也值得读。重点看「什么会让缓存失效」那张表,对任何厂商都适用。40 分钟。
 - [OpenAI · Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching):自动缓存的规则和 `prompt_cache_key` 的用法。15 分钟。
 - [阿里云百炼 · 上下文缓存](https://help.aliyun.com/zh/model-studio/context-cache):国内厂商的显式与隐式两种模式,计费方式和最小长度。15 分钟。
+- [Anthropic · Advisor tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool):执行/顾问模型的兼容表、计费方式、`max_tokens` 和缓存的实测建议。20 分钟。
+- [Pydantic AI · Advisor](https://pydantic.dev/docs/ai/harness/advisor/):原生和本地回退两条路径各什么时候生效,参数表。10 分钟。
 - [OpenAI · Batch API](https://developers.openai.com/api/docs/guides/batch) 和 [Anthropic · Batch processing](https://platform.claude.com/docs/en/build-with-claude/batch-processing):两家批处理接口,看用法和限制。各 15 分钟。
 
 ### B 站视频
@@ -569,6 +651,14 @@ Agent 不是全自动的。真实上线以后,工单会分成两类:Agent 起草
 <details><summary>答案</summary>
 
 一般不会全面加。语义相似不等于问题相同,比如「金额不对」和「日期不对」;客服回答依赖客户个人数据,不能跨客户复用;知识库更新后旧答案会过期。如果要用,只用在不涉及个人数据的通用知识问答上,阈值设高、过期时间设短、知识库更新时清空,并且把它纳入评测。精确缓存(相同输入复用分类结果)风险小得多,可以放心用。
+
+</details>
+
+7. Advisor 模式和级联(cascade)都是「便宜模型 + 贵模型」,区别在哪?各适合什么工单?
+
+<details><summary>答案</summary>
+
+级联是便宜模型先完整做一遍,不过关就让贵模型从头重做,失败的单要付两次全价;Advisor 是便宜模型做完全程,只在某个判断点请教贵模型一次,贵模型只输出几百 token 的建议。难度分布在整张工单上(整体就难的单)用路由或级联;难度集中在少数判断点、其余是常规输出的长任务用 Advisor。用 Advisor 时要在提示词里写明哪些情况必须问,并单独评测问过和没问的两部分。
 
 </details>
 

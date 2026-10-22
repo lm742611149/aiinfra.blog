@@ -119,10 +119,28 @@ Day 39 讲过间接注入,GUI Agent 是重灾区,因为它读的就是外部网�
 
 今天练习里的运行时就是按这几条做的。
 
+### 2026 年的现状:浏览器 Agent 一直在被打
+
+如果你觉得上面这些是纸上谈兵,看看过去一年公开的事。
+
+2025 年 12 月 22 日,OpenAI 发了一篇讲 ChatGPT Atlas 安全加固的博客,里面有一句被到处转载的话:prompt injection 和网上的诈骗、社会工程一样,「不太可能被彻底解决」。他们的做法是用自动化红队(拿强化学习训练出来的攻击模型去找新攻击)不断发现新的注入方式,再拿这些样本对抗训练模型,同时加系统层面的防护。给用户的建议也很朴素:尽量别让 Agent 登录敏感账号,确认之前看一眼它要做什么,别下「帮我把邮件都处理了」这种范围太宽的指令(我没能直接打开 OpenAI 原文,内容来自 [TechCrunch 的报道](https://techcrunch.com/2025/12/22/openai-says-ai-browsers-may-always-be-vulnerable-to-prompt-injection-attacks/))。英国国家网络安全中心(NCSC)的说法类似,认为 prompt injection 可能永远无法完全消除,建议机构把重点放在限制损害上。
+
+2026 年 3 月,安全公司 Zenity 公开了一类叫 PleaseFix 的漏洞,第一个目标是 Perplexity 的 Comet 浏览器。特点是零点击:用户不需要点任何东西,攻击指令藏在 Agent 正常干活时会读到的内容里,据报道用的是日历邀请,最后能读到本地文件和 1Password 的会话(见 [CSA 的研究摘要](https://labs.cloudsecurityalliance.org/research/csa-research-note-pleasefix-agentic-browser-exploits-2026032/),二手)。8 月的 Black Hat USA 上,Zenity 把同一套思路扩展到了 Claude in Chrome、ChatGPT Atlas 等多家浏览器 Agent,他们把底层手法叫 Intent Collision:普通网页内容里夹带的指令和用户的真实意图「撞车」,Agent 按攻击者的意思去做。按 Zenity 自己的[会后总结](https://zenity.io/blog/ai-agent-security-black-hat-recap),厂商反应不一,有的很快修了,有的认为这是预期行为;他们的结论是这个问题是结构性的,不是打一个补丁能解决的。这些细节主要来自 Zenity 自己的材料,读的时候记住它是一家卖安全产品的公司。
+
+对工程师来说,这两件事说明的是同一点:浏览器 Agent 用的是**你的**浏览器、**你的**登录状态。致命三要素在这里是自动凑齐的,不可信网页一打开就有了,私有数据就在已经登录的邮箱和网盘里,外发能力就是任何一个能提交的表单。所以除了上面那四条,自己做浏览器 Agent 还要加两条:Agent 用单独的浏览器配置文件跑,里面不登录和任务无关的账号;能不登录就不登录,需要登录的任务用专门的低权限账号。
+
+另一个值得关注的方向是让网站直接告诉 Agent「我这里能做什么」,而不是让 Agent 去猜按钮。WebMCP 就是这个思路:网页通过浏览器接口把功能注册成工具,Agent 直接调用,不用截图也不用解析 DOM。它还在 Chrome 的试验阶段,专题篇 [Day 150 · WebMCP](/blog/agent-60/day-150-webmcp/) 单独讲。
+
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV18RhQ6LEY8&autoplay=0&high_quality=1" title="CMU 2026 AI Agent公开课 07：计算机操作智能体（Computer Use Agents） 双语字幕" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
 <figcaption>阿宅在AI时代 · CMU 2026 AI Agent公开课 07:计算机操作智能体(Computer Use Agents)双语字幕 · 74 分钟,大学课程,讲 grounding、benchmark 和训练数据,是今天最系统的一份视频材料。</figcaption>
 </figure>
+
+## 视觉 Agent 不只是点界面
+
+computer use 只是视觉能力的一种用法。客服场景里更常见的是「看图答题」:用户发来一张报错截图、一张银行转账回单、一张发票照片,Agent 要从图里读出关键信息再去调工具。这类任务不需要操作界面,一次视觉调用就够,难点在读得准:截图里的报错码、回单上的金额和日期,读错一位后面全错。我的做法是视觉模型只负责抽字段,输出用 Day 6 的结构化输出约束,抽出来的金额、单号再拿业务库核对一遍,对不上就转人工,不让模型凭图片下结论。专题篇 Day 136 会专门讲多模态和文档解析。
+
+开源这边,GUI 定位(看截图、给坐标)已经有专门训练过的模型。字节的 [UI-TARS](https://github.com/bytedance/UI-TARS) 是基于 Qwen-VL 系列微调的 GUI Agent 模型,2025 年 9 月发布了 UI-TARS-2,技术报告讲的是多轮强化学习怎么训练 GUI Agent;阿里的 [Qwen3-VL](https://github.com/QwenLM/Qwen3-VL) 本身也把操作电脑和手机界面列为能力之一。想自部署截图路线,可以从它们开始试,但要拿自己的任务测,别直接信榜单分数,原因上面讲 OSWorld 时说过了。
 
 ## 什么时候该用,什么时候别用
 
@@ -348,12 +366,17 @@ uv run pytest -q
 | grounding | 把「要点保存按钮」这样的意图落到具体坐标或元素上的过程 |
 | zoom 动作 | Claude computer use 里放大截图某个区域的动作,用来看清小字 |
 | 视觉 token | Claude 处理图片的单位,28×28 像素一块 |
+| 零点击注入 | 用户不需要任何操作,攻击指令藏在 Agent 正常读取的内容(网页、邮件、日历邀请)里就能生效 |
+| Intent Collision | Zenity 对浏览器 Agent 注入手法的叫法:内容里的指令和用户真实意图冲突,Agent 按攻击者的意思执行 |
+| GUI 定位(grounding) | 根据截图和指令给出要操作元素的坐标,UI-TARS 这类模型专门训练这个能力 |
 | OSWorld / OSWorld 2.0 | 在真实操作系统里测 computer use 的基准;2.0 是更长链路的版本 |
 | WebArena | 在可复现的网站环境里测网页 Agent 的基准 |
 | 截图裁剪 | 只在上下文里保留最近几张截图,更早的用文字摘要代替 |
 | 致命三要素 | 读不可信内容、能访问私有数据、能对外发送,三者同时具备时注入风险最高 |
 
 ## 常见误区
+
+**「等厂商把注入修好再用」。** OpenAI 自己都说 prompt injection 不太可能被彻底解决,PleaseFix 这类问题被安全研究者认为是结构性的。能做的是限制 Agent 的登录状态和权限,让它被骗了也闯不了大祸。
 
 **以为隐藏文字过滤掉就安全了。** 注入可以写在 alt 文本、表单默认值、PDF 里、图片里。防护要靠权限和审批,不能靠识别攻击文本。
 
@@ -376,6 +399,10 @@ uv run pytest -q
 - [WebArena](https://webarena.dev/):网页 Agent 基准,可复现网站环境的做法值得借鉴,20 分钟。
 - [Simon Willison:The lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/):致命三要素原文,10 分钟。
 - [Playwright aria snapshots 文档](https://playwright.dev/python/docs/aria-snapshots):可访问性树快照的格式,15 分钟。
+- [TechCrunch · OpenAI says AI browsers may always be vulnerable to prompt injection attacks](https://techcrunch.com/2025/12/22/openai-says-ai-browsers-may-always-be-vulnerable-to-prompt-injection-attacks/):OpenAI 对 Atlas 注入问题的表态和加固做法,10 分钟。
+- [Zenity · Black Hat USA 2026 回顾](https://zenity.io/blog/ai-agent-security-black-hat-recap):PleaseFix 和 Intent Collision 的来龙去脉,注意是厂商自己的材料,15 分钟。
+- [NCSC · Prompt injection is not SQL injection](https://www.ncsc.gov.uk/blog-post/prompt-injection-is-not-sql-injection):英国国家网络安全中心解释为什么注入没法像 SQL 注入那样根治,15 分钟。
+- [UI-TARS-2 技术报告](https://arxiv.org/abs/2509.02544):开源 GUI Agent 模型怎么用多轮强化学习训练,读摘要和第 1、2 节,40 分钟。
 
 ### B 站视频
 
@@ -452,6 +479,14 @@ uv run pytest -q
 <details><summary>答案</summary>
 
 先问清楚三件事:系统是网页还是桌面客户端;审批的判断规则有多少是确定的;误批一单的代价。然后分层设计:能不能拿到底层数据(数据库只读视图、导出文件),能拿就别走界面;只能走界面的话,网页系统用可访问性树路线,先让 Agent 探索一次并把「打开单据、读字段、点通过或驳回」写成 Playwright 脚本,日常跑脚本,判断部分交给模型读结构化字段,而不是看截图。审批这个写操作分级:金额小、规则明确的自动通过并留审计日志;金额大或模型置信度低的进人工队列。上线前用历史单据做离线评测,对比人工审批结果算一致率,再小流量灰度。成本上估算每单 token 和时间,和现在人工审批的人力对比,算 ROI(Day 38 的方法)。
+
+</details>
+
+**6. 产品经理想做一个「帮用户在自己浏览器里自动处理邮件和报销」的浏览器 Agent 插件。结合 2026 年公开的浏览器 Agent 注入案例,你会提出哪些设计约束?**
+
+<details><summary>答案</summary>
+
+插件跑在用户已登录的浏览器里,致命三要素天然齐全:邮件内容不可信、邮箱和报销系统里是私有数据、发邮件和提交报销都是外发能力。约束至少包括:Agent 只在指定的域名里动作,其他链接不跟;每一次发送、提交、付款都停下来让用户确认,并把要做的事用人话列出来;不把整个邮箱交给它,而是一次处理用户选中的几封;读到的邮件和网页内容当数据处理,不当指令;所有动作写日志让用户能回看;上线前用一批带注入的邮件和页面做回归测试。还要提前说清楚这类风险没法根除,OpenAI 和安全研究者都公开这样讲过,所以设计目标是「被骗了损失有限」。
 
 </details>
 

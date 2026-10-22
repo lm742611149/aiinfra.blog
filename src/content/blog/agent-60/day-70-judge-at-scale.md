@@ -225,6 +225,14 @@ drift alerts: ['tnr 从 0.75 掉到 0.62(95% 区间上限 0.72 也低于基线)'
 
 Day 79 会讲另一条路:用积累下来的人工标注,蒸馏出一个专门做评审的小模型,把评审本身的模型成本再降一个数量级。
 
+### 人工这一侧也要校准:多人标注和工具
+
+上面算的「一天两个多小时」默认只有一个客服主管在看。量再大一点,就得两三个人一起标,这时候出现一个 Day 32 只顺带提过的问题:人和人之间也不一致。评审 TPR、TNR 是拿人工标注当标准答案算出来的,如果两个标注员对同一批样本只有 0.5 的 kappa,那「标准答案」本身就晃,评审校准得再好也没有意义。
+
+我的做法分三步。先从复核队列里抽 40 条,两个人**各自独立**标完再讨论,算两人之间的 kappa,直接用前面模块里那个 kappa 公式,把两个人的标签当成两列就行。低于 0.6 不急着开工,把分歧的样本拿出来逐条过,多半会发现是判断标准没写清楚,比如「退款金额说对了但没提审批时效,算不算 pass」。把结论写进标注指南,指南加版本号,再标一轮,直到两人 kappa 稳定在 0.7 以上。第二,日常分工时留 10% 的样本两个人都标,持续监控人和人的一致性,掉下去了说明有人对指南理解变了,或者新出现了指南没覆盖的情况。第三,分歧要有一个人拍板:Hamel 在 [evals FAQ](https://hamel.dev/blog/posts/evals-faq/) 里把这个角色叫 benevolent dictator,一般是最懂业务的那位,拍板时写一句理由,理由回流进指南。
+
+工具上不用一开始就上平台。Day 30 那个几十行的 Streamlit 标注页,加一个「标注人」下拉框和一个「指南版本」字段,就够两三个人用。人多了、要分配任务和看进度,再换现成的:Day 34 接的 Langfuse 有 [Annotation Queues](https://langfuse.com/docs/evaluation/evaluation-methods/annotation-queues),可以把 trace 批量放进队列、指定评分维度和标注人,还能在 Score Analytics 里看人工分和 LLM 评审分的一致程度;LangSmith 有同名功能;通用的标注平台可以看 [Label Studio](https://labelstud.io/) 或 [Argilla](https://github.com/argilla-io/argilla)。不管用哪个,导出的标注里一定要带标注人和指南版本,不然半年后你没法解释为什么某个月的校准集 TNR 突然变了。
+
 ## 把它们放进一个模块
 
 上面的东西整理成 `agentops/evals/judge_monitor.py`,依赖 Day 69 的 `stats.py`:
@@ -361,6 +369,8 @@ def drift_check(base: dict, now: dict, max_drop: float = 0.05) -> list[str]:
 | 相关错误 | 多个评审在同一批样本上一起出错,投票无法消除 |
 | 弃权 | 允许评审在信息不足时输出 unknown,送人工处理 |
 | 评审漂移 | 评审因模型、prompt 或输入变化导致判断标准悄悄改变 |
+| 标注员间一致性 | 两个或多个人工标注员独立标同一批样本的一致程度,常用 kappa 衡量 |
+| 标注指南 | 写明每个判断标准和边界例子的文档,带版本号,分歧的结论要写回去 |
 
 ## 常见误区
 
@@ -374,6 +384,8 @@ def drift_check(base: dict, now: dict, max_drop: float = 0.05) -> list[str]:
 
 **线上评审的成本主要是模型调用。** 模型调用每天几美元,人工复核每天几小时。优化重点在降低不一致率和按风险抽样。
 
+**人工标注就是标准答案,不用检查。** 两个标注员之间的 kappa 可能只有 0.5。人和人都对不齐的时候,先改标注指南,再谈评审校准。
+
 **人工复核完就结束了。** 复核结果不回流进校准集,专家的时间就只换来了当天一个数。
 
 ## 学习资料
@@ -382,6 +394,8 @@ def drift_check(base: dict, now: dict, max_drop: float = 0.05) -> list[str]:
 
 - [Zheng 等 · Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena](https://arxiv.org/abs/2306.05685):LLM 评审的奠基论文,系统讨论了位置偏差、冗长偏差、自我偏好,读第 3 节约 40 分钟。
 - [Verga 等 · Replacing Judges with Juries](https://arxiv.org/abs/2404.18796):用多个不同家族小模型组成评审团(PoLL)的研究,今天评审团设计的出处,读摘要和实验部分。
+- [Hamel Husain · LLM Evals FAQ](https://hamel.dev/blog/posts/evals-faq/):看「How many people should annotate my LLM outputs?」和「Should I outsource annotation」两条,讲单人拍板和多人标注时怎么用 kappa,15 分钟。
+- [Langfuse Annotation Queues](https://langfuse.com/docs/evaluation/evaluation-methods/annotation-queues):把 trace 放进人工标注队列、看人工分和评审分的一致程度,10 分钟。
 - [Thakur 等 · Judging the Judges](https://arxiv.org/abs/2406.12624):比较了很多评审模型和人工的一致程度,指出只看百分比一致率会误导,应该看 kappa 这类指标,读结论。
 - [Eugene Yan · Evaluating the Effectiveness of LLM-Evaluators](https://eugeneyan.com/writing/llm-evaluators/):把几十篇关于 LLM 评审的论文整理成实用结论,长文,挑「How to use LLM-evaluators」读,约 40 分钟。
 - [Hamel Husain · Using LLM-as-a-Judge For Evaluation: A Complete Guide](https://hamel.dev/blog/posts/llm-judge/):从实践角度讲怎么让领域专家参与、怎么迭代评审 prompt,约 30 分钟。
@@ -470,6 +484,14 @@ TNR 只在人判 fail 的约 90 条上算,TPR 在约 210 条上算,样本少区�
 <details><summary>答案</summary>
 
 最可能是新版本评审变宽松了(TNR 下降),也可能是线上流量结构变化恰好同时发生。确认方法:在金丝雀集上同时跑新旧两个版本,比较 TPR、TNR 和区间;如果 TNR 显著下降,就是评审的问题,不能直接切换,要么调新版本的 prompt 重新校准,要么继续用旧版本。同时检查线上工单类别分布有没有变化。
+
+</details>
+
+7. 你有两个客服主管做人工复核,他们在同一批 40 条上 kappa 只有 0.52。接下来先做什么?
+
+<details><summary>答案</summary>
+
+先不动评审,先对齐人。把两人分歧的样本逐条过一遍,找出是哪条判断标准没写清楚,写进标注指南并升版本号,再各自独立标一轮,直到 kappa 稳定在 0.7 以上。日常留一小部分样本双人标注持续监控,分歧由最懂业务的人拍板并写理由。人工标签本身不稳,用它算出来的评审 TPR、TNR 也不可信。
 
 </details>
 
