@@ -924,7 +924,7 @@ max_tokens=200  finish_reason=stop   这次输出 112
 
 ### 开源项目与代码
 
-- [openai/openai-python](https://github.com/openai/openai-python):`src/openai/types/chat/chat_completion.py` 是 `ChatCompletion` 的定义,不到 100 行,能看到 `finish_reason` 在类型里允许哪几个值(OpenAI 的标准里没有 DeepSeek 那两个);`src/openai/types/completion_usage.py` 是 `usage` 的定义。
+- [openai/openai-python](https://github.com/openai/openai-python):`src/openai/types/chat/chat_completion.py` 是 `ChatCompletion` 的定义,两百多行,大半是注释;搜 `finish_reason` 能看到类型里只写了 `stop`、`length`、`tool_calls`、`content_filter`、`function_call` 五个值,没有 DeepSeek 自己加的那两个;`src/openai/types/completion_usage.py` 是 `usage` 的定义。
 
 ## 自测
 
