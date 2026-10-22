@@ -109,7 +109,7 @@ if __name__ == "__main__":
 - `if tok_end > start and tok_start < end:` 两个区间有重叠的标准写法。`plan`(14–18)和 `_change`(18–25)都重叠;`'",'`(25–27)从 25 开始,不算重叠,所以引号的 logprob 不会混进来。
 - `return math.exp(total)` logprob 相加再取 exp,等于这几个 token 的概率相乘。演示数据里 −0.69 + (−0.01) = −0.70,exp(−0.70) ≈ 0.497。
 - `conf["min"] = min(conf.values())` 四个字段里最低的那个。要「四个字段都对」才算对时,最没把握的那个字段决定了整张工单有多可靠。
-- `def parse_triage(text: str) -> dict | None:` 把模型输出解析成字典。有的模型会套一层 ```` ```json ```` 代码块,先剥掉。线上用的时候宽容一点,能救一条是一条。
+- `def parse_triage(text: str) -> dict | None:` 把模型输出解析成字典。有的模型会在 JSON 外面套一层三个反引号开头的 json 代码块,先剥掉。线上用的时候宽容一点,能救一条是一条。
 - `return ans if isinstance(ans, dict) else None` 解析出列表或数字也当失败处理。
 - `print("api:     ", field_confidence(toks, lps, "api"))` 输出里没有这个字段,正则找不到,返回 0.0。找不到字段就当完全没把握,这样后面的路由会把它交给大模型。
 
@@ -253,6 +253,7 @@ def run(case: dict) -> dict:
     ids = tok(prompt, return_tensors="pt")
     out = model.generate(**ids, max_new_tokens=60, do_sample=False,
                          output_scores=True, return_dict_in_generate=True)
+    assert not isinstance(out, torch.Tensor) and out.scores is not None
     new = out.sequences[0, ids["input_ids"].shape[1]:]
     lps = model.compute_transition_scores(out.sequences, out.scores, normalize_logits=True)[0]
     tokens = [tok.decode([int(t)]) for t in new]
@@ -285,10 +286,11 @@ if __name__ == "__main__":
 - `SHOTS = [   # 和 Day 574 prompt_first.py 里的 3 个示例一样` 没有直接从 `prompt_first.py` 导入,因为那个文件一导入就会去读 `.env`、建 OpenAI client,而 dpo-cpu 环境当时没装 `python-dotenv`,第一次跑时我就撞上了 `ModuleNotFoundError: No module named 'dotenv'`。
 - `GUIDE = (Path(__file__).resolve().parent.parent / "teacher_guide_v2.txt").read_text(encoding="utf-8")` Day 577 的 v2 口径说明。替身没训练过,不给口径它连类别边界都不知道。真正训好的学生不需要这段,口径已经在训练数据里了。
 - `model = AutoModelForCausalLM.from_pretrained(BASE, dtype=torch.float32)` CPU 上用 32 位浮点,和 Day 576 一样。第一次跑会用 Day 576 下载好的权重。
-- `@torch.no_grad()` 装饰器([Day 51](/blog/agent-zero/day-051-decorators/) 学过装饰器):这个函数里不记录梯度,只推理不训练,省内存也快一点。
+- `@torch.no_grad()` 装饰器([Day 96](/blog/agent-zero/day-096-decorators/) 学过装饰器):这个函数里不记录梯度,只推理不训练,省内存也快一点。
 - `prompt = tok.apply_chat_template(messages(case["subject"], case["body"]), tokenize=False, add_generation_prompt=True)` 按 Qwen 的对话模板把消息拼成一段文字,结尾加上「轮到 assistant 说话」的标记。
 - `out = model.generate(**ids, max_new_tokens=60, do_sample=False,` `do_sample=False` 是贪心解码,每一步都挑概率最高的 token,和线上 `temperature=0` 一个意思。
 - `output_scores=True, return_dict_in_generate=True)` 让 `generate` 把每一步的打分也带回来,不加这两个参数只返回 token 编号。
+- `assert not isinstance(out, torch.Tensor) and out.scores is not None` `generate` 的返回类型写的是「张量或者一个带 `sequences`、`scores` 的对象」,类型检查器不知道我们传了 `return_dict_in_generate=True`,会在下一行标红。这一句告诉它(也在运行时检查)拿到的是后一种,而且 `scores` 不是空的。
 - `new = out.sequences[0, ids["input_ids"].shape[1]:]` 返回的序列包括输入,切掉前面输入那么长的部分,剩下的才是新生成的。
 - `lps = model.compute_transition_scores(out.sequences, out.scores, normalize_logits=True)[0]` 把每一步的分数换成「被选中的那个 token 的 logprob」。`normalize_logits=True` 先做 log-softmax,保证得到的是对数概率。这一行做的事,就是 vLLM 或 API 里 `logprobs=True` 替你做的事。
 - `tokens = [tok.decode([int(t)]) for t in new]` 每个 token 单独解码成文字,得到和 API 返回一样格式的 token 列表。
@@ -670,7 +672,7 @@ print(f"test 验证: 阈值 {r['t']:.2f}  准确率 {r['acc']:.3f}(只用大模�
 - `TOLERANCE = 0.02` 容忍线:最多比只用大模型低 2 个百分点。这个数写在代码最上面,是「事先写好」的意思,不是看完结果再调。
 - `GRID = [i / 20 for i in range(20)] + [0.97, 0.99, 1.01]` 比 `sweep.py` 更密的网格:0、0.05、0.10……0.95,再加几个高位的点。列表用 `+` 拼接,相当于 JS 的 `[...a, ...b]`。
 - `ok = [r for r in sweep(rows, GRID) if r["acc"] >= big_acc - TOLERANCE]` 先筛出所有达标的阈值。1.01(全部回退)的准确率就等于大模型,所以 `ok` 至少有一个元素,不会是空的。
-- `return min(ok, key=lambda r: (r["cost_1k"], -r["t"]))` 达标的里面挑成本最低的。`key` 返回一个元组,先比成本,成本一样时 `-r["t"]` 让阈值高的优先(更保守)。[Day 30](/blog/agent-zero/day-030-lambda/) 学过 `lambda`。
+- `return min(ok, key=lambda r: (r["cost_1k"], -r["t"]))` 达标的里面挑成本最低的。`key` 返回一个元组,先比成本,成本一样时 `-r["t"]` 让阈值高的优先(更保守)。[Day 30](/blog/agent-zero/day-030-functions-3/) 学过 `lambda`。
 - `test = view(load(DATA / "small-test.jsonl"), load(DATA / "big-test.jsonl"), mode)` test 的数据读进来,但下面只用一次,只跑选出来的那一个阈值。
 - `r = sweep(test, [best["t"]])[0]` 在 test 上只评估这一个阈值,不扫,不挑。
 
@@ -757,7 +759,7 @@ if __name__ == "__main__":
 - `if category is None or category in ALWAYS_BIG:` 小模型没给出类别(输出坏了)也回退。
 - `return "small" if conf >= threshold else "big"` 和 `sweep.py` 里的判断一模一样。离线模拟和线上代码用同一条规则,离线算出来的回退率才能在线上复现。
 - `result, cost = b["pred"], SMALL_COST + b["cost"]` 回退的那张付两次钱。
-- `return {"id": case["id"], "route": route, "conf": round(s["conf"]["category"], 3),` `route` 和 `conf` 一定要记下来,真实系统里要写进 trace([Day 365](/blog/agent-zero/day-365-langfuse-1/) 的 Langfuse metadata),上线后才能统计回退率和回退的都是哪类工单。
+- `return {"id": case["id"], "route": route, "conf": round(s["conf"]["category"], 3),` `route` 和 `conf` 一定要记下来,真实系统里要写进 trace([Day 365](/blog/agent-zero/day-365-langfuse/) 的 Langfuse metadata),上线后才能统计回退率和回退的都是哪类工单。
 
 </div>
 
@@ -896,7 +898,7 @@ vLLM 这边不用担心温度 0 的问题。我查了 vLLM 文档,它有一个 `
 | --- | --- | --- |
 | logprob 和 softmax | Day 110 | `confidence.py` 的 `math.exp(total)` |
 | API 的 `logprobs`、温度对 logprob 的影响 | Day 112、Day 577 | `small_api.py`、温度 0 那个坑 |
-| 正则捕获组和 `span` | Day 26 | `field_confidence` 的 `re.search`、`m.span(1)` |
+| 正则捕获组 | 前面多次用过 `re` | `field_confidence` 的 `re.search`;`m.span(1)` 今天第一次用 |
 | 指纹去重、评测集黑名单 | Day 570 | `make_route_eval.py` |
 | CPU 上跑 0.5B 模型 | Day 576 | `student_run.py` |
 | 线程池并发调 API | Day 577 | `big_run.py`、`small_api.py` |

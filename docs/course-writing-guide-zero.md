@@ -70,6 +70,7 @@ draft: true
   - `partNN/`:每部分一个目录(`part01/` … `part12/`),文件名按主题起,代码块第一行注释写完整路径,如 `# agent-zero-lab/part03/agent_loop.py`;
   - `cloudledger/`:虚构 SaaS 公司「云簿 CloudLedger」的数据(帮助中心文章、customers/subscriptions/invoices/tickets 表、seed 脚本),旧课 Day 23 的 `w4/cloudledger/seed.py` 是蓝本;在大纲指定的那天首次建,之前的天要数据就在脚本里写几行小样本;
   - 毕业项目和作品各自独立仓库:`supportpilot/`、`agentops/`、`agent-loupe/`、`billsleuth/`。
+- 练习仓库建法(Day 10):`uv init --no-package agent-zero-lab --python 3.12`(uv 0.12 起默认是带 src/ 的打包项目,必须加 --no-package),仓库在 `~/agent-zero-lab`,脚本从仓库根目录运行。
 - 旧课代码搬过来时,改成新目录和新导入路径,改完要实跑。
 
 ### 5.1 共享模块的接口约定(所有写手必须一致)
@@ -78,6 +79,7 @@ draft: true
 - `common/embed.py`(Day 217 建):`embed(texts)`、`embed_one(text)`、`cosine(a, b)`、模块级 `usage` 字典;import 它的脚本在 `agent-zero-lab` 根目录用 `uv run python -m partNN.xxx` 跑。
 - CloudLedger MCP server(第五部分):`agent-zero-lab/cloudledger/server.py`(和 `seed.py` 同目录),四个工具名固定为 `find_customer`、`get_subscription`、`list_invoices`、`create_refund_request`(和旧课一致;大纲里写 `get_customer` 的以此为准)。
 - 天气 CLI(Day 70 建,Day 74–76 依赖):`part01/weather_cli.py` 含 `GEO_URL`、`FORECAST_URL`、`WeatherError`、`geocode(...)`、`current_temp(...)`、`get_weather(client, city)`、`main(cities)`,用 Open-Meteo 免费接口;Day 74 再把 client 参数改成 `HttpClient` Protocol、超时读 `WEATHER_TIMEOUT`。
+- `common/structured.py`(Day 150 建):`ChatClient`(Protocol)、`ExtractionError`、`schema_prompt(...)`、`extract(...)`(pydantic 校验+带错误重试)。DeepSeek 官方不支持 `json_schema`,需要 schema 约束的演示用硅基流动(`.env.sf`,同一模型)。
 - 环境变量统一 `LLM_BASE_URL / LLM_API_KEY / LLM_MODEL`(embedding 用 `EMB_*`),放在 `agent-zero-lab/.env`。
 - 不要把共享模块写进 scratchpad 里别人的目录;每个写手只在自己的子目录(如 `w216/agent-zero-lab/`)里放一份副本。
 

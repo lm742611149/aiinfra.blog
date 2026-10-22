@@ -781,7 +781,3 @@ uv run python -m part11.ex650_grade
 ## 明天预告
 
 明天是 Day 651,Loupe 开题(二):PRD、架构、仓库、里程碑。今天的 30 秒回答说清了 Loupe 和别人的区别,明天把它写成一份正式的 PRD:目标用户、用户故事、非目标、验收指标,再画出架构图,建好 `agent-loupe/` 仓库的空骨架,排出从 Day 652 到 Day 676 的里程碑。后面二十多天都照着这份 PRD 施工,所以它得比今天的回答更经得起追问。
-</content>
-</invoke>
-<invoke name="Bash">
-<parameter name="command">cd /Users/minliu/Documents/blog; for u in https://docs.python.org/3/library/itertools.html https://docs.python.org/3/library/math.html https://arxiv.org/abs/2107.03374 https://arxiv.org/abs/2406.12045 https://github.com/openai/human-eval; do echo "$(curl -s -o /dev/null -w '%{http_code}' -L -m 20 $u) $u"; done; grep -m1 '^| 112 ' docs/agent-zero-outline.md | cut -c1-60; python3 scripts/check-course.py --series=agent-zero 2>&1 | grep -E '650' 

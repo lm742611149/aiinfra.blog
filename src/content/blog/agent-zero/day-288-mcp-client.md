@@ -352,7 +352,7 @@ if __name__ == "__main__":
 - `print("[prompt]"` prompt 一般不多,全列。
 - `print("没声明的能力:", [k for k in ("tools", "resources", "prompts") if getattr(caps, k) is None])` `getattr(对象, "名字")` 按字符串取属性,相当于 JS 的 `caps[k]`。
 - `if len(sys.argv) < 2:` 没给启动命令就退出。`sys.argv[0]` 是脚本自己的路径,所以至少要有 2 个。
-- `sys.exit("用法: ...")` 传字符串给 `sys.exit` 会把它打到 stderr 并以退出码 1 结束(Day 44)。
+- `sys.exit("用法:` 传字符串给 `sys.exit` 会把它打到 stderr 并以退出码 1 结束(Day 44)。
 - `anyio.run(probe, sys.argv[1:])` `anyio.run` 的第二个参数起是传给 `probe` 的参数。
 
 </div>

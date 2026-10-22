@@ -149,13 +149,13 @@ uv run python part10/verifier.py
 
 实跑输出:
 
-```text
+````text
 1.00  ...'true, "needs_human": true, "urgency": "high"}'
 0.50  ...'e, "needs_human": false, "urgency": "normal"}'
 0.00  ...'"needs_human": true, "urgency": "high"} 已为您核实'
 0.00  ...'```json\n{"category": "billing"}\n```'
 0.00  ...'uman": true, "urgency": "high", "note": "ok"}'
-```
+````
 
 第三条四个字段其实全对,只是后面多了「已为您核实」五个字,照样 0 分。第五条多了一个 `note` 字段,也是 0 分。你可能觉得这太狠了,线上 Day 578 的 `parse_triage` 不是会剥掉代码块标记吗?那是**用**模型输出的时候宽容,能救一条是一条;**训练**模型的时候不能宽容,你宽容什么,模型就学会什么。
 

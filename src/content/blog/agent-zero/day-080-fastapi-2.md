@@ -121,7 +121,7 @@ def get_ticket(ticket_id: int):
 
 <div class="line-notes">
 
-- `from pydantic import BaseModel` Day 51 学的 `BaseModel`。FastAPI 装的时候已经把 pydantic 一起装上了(Day 79 装到的是 `pydantic==2.14.1`),不用再 `uv add`。
+- `from pydantic import BaseModel` Day 51 学的 `BaseModel`。FastAPI 装的时候已经把 pydantic 一起装上了(我 2026 年 10 月 22 日的环境里是 `pydantic==2.14.1`),不用再 `uv add`。
 - `class TicketCreate(BaseModel):` 描述「新建工单时,前端要发来的 JSON 长什么样」。名字里带 `Create`,是因为它只管「新建」这一个场景,和存在 `TICKETS` 里的完整工单不是一回事:完整工单有 `id` 和 `status`,新建时这两个由服务端决定。<br>对照 TS,它相当于 `interface TicketCreate { title: string; priority?: "low" \| "normal" \| "high" }`,区别是 TS 的 interface 编译完就没了,pydantic 模型在运行时真的会去检查数据。如果你用过 zod,它更像 `z.object({...})`。
 - `title: str` 必填,字符串。没有默认值就是必填,规则和 Day 79 的查询参数一样。
 - `priority: Literal["low", "normal", "high"] = "normal"` 可选,只能是这三个值之一,不传就是 `"normal"`。
