@@ -18,7 +18,7 @@ lang: 'zh'
 1. 项目里有一个统一的 `LLMClient`:记账(花了多少钱)、结构化输出(校验失败自动重试)、流式输出(边生成边推给前端)。
 2. 一张 LangGraph 图,9 个节点,4 个条件分支,每个节点做什么、为什么这么分,能讲清楚。
 3. 退款申请创建后,图停在审批节点等人;人点了通过或驳回,图从停下的地方接着跑。
-4. 不连数据库、不调大模型,用假 LLM 跑通 5 个单测:退款审批、纯政策问题、转人工、质检两次不过、违规承诺被拦。
+4. 不连数据库、不调大模型,用假 LLM 跑通 6 个单测:退款审批、转人工时作废待审批申请、纯政策问题、转人工、质检两次不过、违规承诺被拦。
 5. 终端里跑 10 张演示工单,看着每一步在干什么。
 
 预计用时 5–7 小时,是 12 天里最核心的一天。前置:Day 9(手写 Agent 循环)、Day 13(五种 workflow 模式)、Day 24–25(LangGraph 基础和人工审批)、Day 45–46。
@@ -86,6 +86,8 @@ class LLMClient:
             kwargs["tools"] = tools
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        if self.s.llm_extra_body:  # 比如关掉思考:{"thinking": {"type": "disabled"}}
+            kwargs["extra_body"] = self.s.llm_extra_body
         resp = self.client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message
         calls = [{"id": c.id, "name": c.function.name, "arguments": c.function.arguments or "{}"}
@@ -102,6 +104,7 @@ class LLMClient:
         resp = self.client.chat.completions.create(
             model=model or self.model, messages=messages, temperature=temperature,
             stream=True, stream_options={"include_usage": True},
+            extra_body=self.s.llm_extra_body or None,
         )
         parts: list[str] = []
         last_usage = None
@@ -135,13 +138,74 @@ class LLMClient:
         raise ValueError(f"结构化输出重试 {retries} 次仍失败:{last_err}")
 ```
 
+<div class="line-notes">
+
+- `"""W1 的 LLMClient 搬过来` 模块说明直接写清楚比 W1 版本多了什么:账本、结构化重试、流式回调。以后有人打开这个文件,第一行就知道它的职责。
+- `from collections.abc import Callable` 给 `on_token` 标类型用。`Callable[[str], None]` 读作「接收一个 str、不返回值的函数」。
+- `from dataclasses import dataclass, field` `dataclass` 自动生成 `__init__`;`field(default_factory=...)` 专门给列表、字典这类可变默认值用,每个实例各拿一份新的。
+- `from .config import Settings, get_settings` 点开头是包内相对导入,指同一个 `supportpilot` 包里的 `config.py`。所以这个文件只能以 `supportpilot.llm` 的身份被导入,直接 `python llm.py` 会报 `attempted relative import with no known parent package`。
+- `class Usage:` 三个计数器:输入 token、输出 token、调用次数。既用来表示「一次调用花了多少」,也用来当「累计账本」。
+- `def add(self, other: "Usage") -> None:` 类型写成字符串 `"Usage"` 是前向引用:写这一行时 `Usage` 类还没定义完。实测账本的变化:先 `chat` 一次是 `Usage(12, 28, 1)`,再 `structured` 一次变成 `Usage(623, 85, 2)`,再流式一次变成 `Usage(635, 97, 3)`。
+- `def cost_cny(self, s: Settings) -> float:` 单价是「元 / 百万 token」,所以除以 1_000_000(数字里的下划线只是分隔符,等于 1000000)。代入上面最后的账本:635 × 2 / 1e6 + 97 × 8 / 1e6 = 0.00127 + 0.000776 = 0.002046 元,和实测打印的 `0.002046` 一致。
+- `class ChatResult:` 一次调用的结果,把 SDK 的复杂对象压成四个字段,节点代码只跟它打交道。
+- `tool_calls: list[dict] = field(default_factory=list)` 不能写成 `= []`:dataclass 会直接报 `ValueError: mutable default <class 'list'> for field tool_calls is not allowed: use default_factory`。注释里写明了每个元素的三个键,`arguments` 是 JSON 字符串,还没解析。
+- `raw_message: dict = field(default_factory=dict)` 按 OpenAI 协议拼好的 assistant 消息,act 节点下一轮直接 `msgs.append(res.raw_message)`。
+- `self.s = settings or get_settings()` 没传就从 `.env` 读。`or` 在左边是 None 时取右边。
+- `self.model = model or self.s.llm_model` 实测是 `deepseek-flash`。留一个 `model` 参数是给 Day 52 的小模型用的。
+- `self.client = OpenAI(` `max_retries=3` 交给 SDK 做 429/5xx 的指数退避;`timeout=60` 防止一个请求卡死整张工单。
+- `self.ledger = Usage()` 每个 `LLMClient` 实例一本账,初始 0/0/0。`Deps.spent()` 读的就是它。
+- `def _usage(self, u: Any) -> Usage:` 把 SDK 的 usage 对象换成自己的 `Usage`,顺手记进账本。所有调用都经过这里,账就不会漏。
+- `got = Usage(prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,` `getattr(对象, 名字, 默认值)`:`u` 是 None(流式没拿到 usage)时不会抛 AttributeError,而是拿到 0;后面的 `or 0` 再把「属性存在但值是 None」兜成 0。
+- `def chat(self, messages: list[dict], *, tools` 参数列表里单独一个 `*`,表示后面的参数只能用关键字传:`chat(msgs, tools=t)` 可以,`chat(msgs, t)` 会报错。参数多的函数这样写,调用处不会传错位置。
+- `kwargs: dict[str, Any] = {"model"` 先放三个必有的参数,下面按需往里加。
+- `if tools:` 没有工具时干脆不带 `tools` 这个键,请求里少一个空字段。
+- `kwargs["response_format"] = {"type": "json_object"}` 开 JSON mode。test_llm 实测第一次请求带上了它,`temperature` 是 0。
+- `if self.s.llm_extra_body:` 配了就透传,没配(空字典)就不带这个键。实测 `.env` 里是 `{"thinking": {"type": "disabled"}}`,关掉 deepseek-flash 默认的思考。
+- `kwargs["extra_body"] = self.s.llm_extra_body` `extra_body` 是 openai SDK 留的口子:SDK 不认识的厂商专有参数放进去,会原样合并进请求体。
+- `resp = self.client.chat.completions.create(**kwargs)` `**kwargs` 把字典展开成关键字参数,等于写 `create(model=..., messages=..., ...)`。
+- `calls = [{"id": c.id, "name": c.function.name` 把 SDK 的工具调用对象压平成普通字典。`msg.tool_calls or []` 防止没有工具调用时是 None。实测「能退吗」那张工单,act 第一轮一次返回了两个调用:`list_subscriptions {"customer_id": "C0002"}` 和 `list_invoices {"customer_id": "C0002", "limit": 10}`。
+- `raw: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}` 实测问「用一句话说 CloudLedger 是什么」,raw_message 是 `{'role': 'assistant', 'content': 'CloudLedger 是一个基于云端的财务记账与账本管理平台,用于记录、分类和追踪个人或企业的收支流水。'}`。模型没见过我们虚构的 CloudLedger,这句是它看名字猜的(开着思考时它猜成了「分布式账本平台」),所以产品知识一定要靠检索喂给它。
+- `raw["tool_calls"] = [{"id": c["id"], "type": "function",` 有工具调用时按协议格式拼回去。下一轮的 tool 消息靠 `id` 和它对上,对不上 API 会报 400。
+- `return ChatResult(content=msg.content or ""` 实测上面那次问答 usage 是 12 输入、28 输出。关掉思考之前,同一个问题是 38 输入、256 输出:思考的 token 也算在 completion 里计费,一句话的回答多付了近 9 倍。
+- `def stream(self, messages` 流式版本,draft 节点用它给前端推打字机效果。
+- `stream=True, stream_options={"include_usage": True},` 不加 `include_usage`,流式响应里根本没有 usage,账本就漏记了。
+- `extra_body=self.s.llm_extra_body or None,` 流式也要关思考。`or None`:没配时传 None,等于不带这个参数。
+- `parts: list[str] = []` 收集每一段文字,最后拼起来。
+- `for chunk in resp:` 实测流式问「写一句 20 字的客服问候」:关掉思考后一共 14 块,12 块带正文,剩下的是收尾块和 usage 块。不传 extra_body 直接调接口对比了一次:1010 块,只有十几块是正文,其余都是思考内容,`delta.content` 为空,会被下面的 if 跳过。
+- `if chunk.usage:` 实测 DeepSeek 只在最后 1 块带 usage:关思考时是 12 输入 / 12 输出,不关时是 38 输入 / 1009 输出。别的厂商可能每块都带累计值,代码按「只记最后一次」写,两种行为都不会算错。
+- `if chunk.choices and chunk.choices[0].delta.content:` 最后那块 usage 块的 `choices` 是空列表,所以先判断 `chunk.choices` 非空再取 `[0]`,否则会 IndexError。
+- `on_token(piece)` 实测前 5 段依次是 `'您好'`、`'，'`、`'很高兴'`、`'为您'`、`'服务'`。draft 节点传进来的 on_token 会把每段推到 custom 流。
+- `text = "".join(parts)` 12 段拼成 `您好，很高兴为您服务，请问有什么可以帮您？`。
+- `usage = self._usage(last_usage)` 循环结束后只入账一次。这次是 12 / 12。
+- `def structured[T: BaseModel](` Python 3.12 的泛型写法:传进来 `Triage` 类,返回值就是 `Triage` 实例,编辑器能提示 `.category` 这些字段。
+- `hint = ("只输出一个 JSON 对象` 把 schema 转成 JSON 塞进提示词。实测 Triage 的 schema JSON 有 844 个字符,`ensure_ascii=False` 让中文 description 原样出现,不变成 `工` 这种转义。
+- `msgs = [*messages, {"role": "system"` `[*a, x]` 是解包拼新列表,不改调用方传进来的 messages。测试实测第一次请求带 2 条消息:原来的 user 加上这条 system 提示。
+- `for _ in range(retries + 1):` retries=2 就是最多 3 次。`_` 表示循环变量用不上。
+- `return schema.model_validate_json(res.content)` 解析加校验一步完成。实测分诊「上周买的专业版年付,发现用不上,请帮我退款」,一次就过:`{'category': 'refund', 'needs_account_data': True, 'needs_human': False, 'urgency': 'normal', 'summary': '客户要求退上周购买的专业版年付费用', 'search_query': '专业版 年付 退款'}`,这次调用 57 个输出 token。
+- `last_err = str(e)[:800]` 错误信息截到 800 字,太长会白占 token。测试实测的错误是 `1 validation error for Answer / confidence / Field required [type=missing, input_value={'category': 'refund'}, ...]`。
+- `msgs = [*msgs, res.raw_message,` 把模型这次的输出和错误一起贴回去,让它对着改。测试实测第二次请求有 4 条消息:user、system 提示、模型上次的 JSON、「没通过校验」这条。
+- `raise ValueError(f"结构化输出重试` 3 次都不过才放弃。测试里连续 3 次返回 `not json`,实测报错 `结构化输出重试 2 次仍失败:1 validation error for Answer Invalid JSON: expected ident at line 1 column 2 ...`。
+
+</div>
+
+
+
 **成本账本 `ledger`。** 每次调用都把 usage 累加到实例的账本上,`cost_cny()` 按配置的单价换算成人民币。每个节点在开始前记一下账本读数,结束后算差值,就知道这一步花了多少。整张工单的成本在状态里累加,评测报告里就能出现"平均每张工单 ¥0.03"这种数字。
 
 **结构化输出 `structured()`。** 用 JSON mode 加 pydantic 校验。JSON mode 只保证输出是合法 JSON,不保证字段对,所以还要校验。校验失败时把错误信息原样贴回去让模型改,最多重试两次。DeepSeek 的文档特别提醒:开 JSON mode 必须在提示词里说"输出 JSON",否则模型可能一直输出空白直到 token 用完,所以 `hint` 里明确写了"只输出一个 JSON 对象"并附上 schema。
 
 `def structured[T: BaseModel](...)` 是 Python 3.12 的泛型写法,意思是"传进来什么 schema 类型,就返回什么类型的实例",编辑器能正确提示返回值的字段。
 
-**流式输出 `stream()`。** `stream_options={"include_usage": True}` 让流式响应也带上 token 用量。这里有个坑我踩过:有的厂商只在最后一块带 usage,有的(比如 DeepSeek 文档写的)每一块都带。如果每块都入账,成本会被算成好几十倍。所以循环里只记住最后一次的 usage,循环结束后入账一次。
+**流式输出 `stream()`。** `stream_options={"include_usage": True}` 让流式响应也带上 token 用量。DeepSeek 我实测过,只有最后一块带 usage,前面的块都是空的;但不是所有厂商都这样,有的每一块都带一个累计值,那种情况下每块都入账,成本会被算成好几十倍。所以循环里只记住最后一次的 usage,循环结束后入账一次,两种行为都不会算错。
+
+**关掉思考 `extra_body`。** 全课的惯例是用 `.env` 里的 `LLM_EXTRA_BODY` 关掉 deepseek-flash 默认开着的思考(Day 4 的 `llm.py` 就是这么做的)。Day 44 的 `Settings` 里还没有这一项,今天在 `config.py` 的 Settings 类里补一行:
+
+```python
+    # Day 47:透传给大模型接口的额外参数(JSON)。deepseek-flash 默认开思考,填 {"thinking": {"type": "disabled"}} 关掉
+    llm_extra_body: dict = {}
+```
+
+`.env` 里写 `LLM_EXTRA_BODY={"thinking": {"type": "disabled"}}`,pydantic-settings 会把这段 JSON 解析成字典。`chat()` 和 `stream()` 都把它原样透传给接口。不关的代价很实在:我实测问一句「CloudLedger 是什么」,开着思考输出 256 个 token,关掉后 28 个;10 张演示工单全跑一遍,开着思考约 0.26 元,关掉后约 0.17 元。客服回复不需要模型先长篇思考,这钱省得心安理得。
 
 `max_retries=3` 交给 openai SDK,它会对 429 和 5xx 自动做指数退避重试,这是 Day 12 你手写过的逻辑,SDK 已经帮你做好了。
 
@@ -204,6 +268,31 @@ def test_ledger_cost():
     assert llm.ledger.cost_cny(llm.s) == pytest.approx(0.0028)
 ```
 
+<div class="line-notes">
+
+- `from types import SimpleNamespace as NS` SimpleNamespace 能随手造一个带属性的对象:`NS(content="x").content` 就是 `"x"`。用它冒充 SDK 返回的响应对象,不用真联网。
+- `from supportpilot.config import Settings` 测试里直接构造 Settings 传价格,不依赖 `.env`。
+- `class Answer(BaseModel):` 测试专用的小 schema,两个必填字段,方便造「缺字段」的情况。
+- `def fake_client(replies: list[str]):` 造一个假 OpenAI 客户端:每调一次 `create`,按顺序吐出一条预设文字。
+- `calls = []` 记下每次调用传了什么参数,测试拿来断言。
+- `def create(**kw):` 接收任意关键字参数,和真 SDK 的调用方式对上。
+- `text = replies.pop(0)` 从头取一条,取一条少一条。
+- `return NS(choices=[NS(message=msg)], usage=NS(prompt_tokens=1000` 拼出 `resp.choices[0].message.content` 和 `resp.usage.prompt_tokens` 这两条访问路径,LLMClient 只用到这些。每次固定 1000 输入、100 输出,方便心算。
+- `return NS(chat=NS(completions=NS(create=create))), calls` 一层套一层,对应 `client.chat.completions.create`。
+- `llm = LLMClient(Settings(llm_api_key="test"` 真的构造一个 LLMClient(里面会建一个真 OpenAI 对象,但不发请求),单价设成 2 和 8。
+- `llm.client, calls = fake_client(replies)` 把里面的真客户端换成假的。节点和 LLMClient 都不用为测试改一行代码。
+- `llm, calls = make(['{"category": "refund"}'` 第一条故意缺 `confidence`,第二条完整。
+- `out = llm.structured([{"role": "user", "content": "x"}], Answer)` 实测 out 是 `category='refund' confidence=0.9`,一共调用 2 次,两次请求分别带 2 条和 4 条消息。
+- `assert "没通过校验" in calls[1]["messages"][-1]["content"]` 第二次请求的最后一条消息,就是贴回去的校验错误。
+- `assert calls[0]["response_format"] == {"type": "json_object"}` 确认结构化输出走的是 JSON mode。
+- `llm, _ = make(["not json"] * 3)` `[x] * 3` 得到 3 个相同元素的列表,刚好够 3 次尝试用完。
+- `with pytest.raises(ValueError, match="重试 2 次"):` 断言这个 with 块里一定抛 ValueError,而且错误信息能被正则 `重试 2 次` 搜到。
+- `assert llm.ledger.cost_cny(llm.s) == pytest.approx(0.0028)` 浮点数不能直接 `==`,`approx` 允许极小误差。1000 × 2 / 1e6 + 100 × 8 / 1e6 = 0.002 + 0.0008 = 0.0028。顺带实测:上面重试那个测试调了 2 次,账本是 2000 / 200,0.0056 元。
+
+</div>
+
+
+
 ## 状态:工作流里流动的是什么
 
 ```python
@@ -255,6 +344,32 @@ class Review(BaseModel):
     passed: bool
     problems: list[str] = Field(default_factory=list, description="不通过时列出具体问题,每条一句话")
 ```
+
+<div class="line-notes">
+
+- `import operator` 下面用 `operator.add`,它就是 `+` 的函数版:`operator.add([1], [2])` 得到 `[1, 2]`,`operator.add(0.1, 0.2)` 得到 0.3 左右。
+- `Category = Literal["billing"` 类型别名,8 个合法分类。模型输出 `"refunds"` 这种不在列表里的值,pydantic 校验失败,触发重试。
+- `class Ticket(TypedDict):` 工单的四个字段。实测第 3 张演示工单进图时是 `{"id": "T000153", "customer_email": "lina@example.com", "subject": "想退款", "body": "上周买的专业版年付,发现用不上,请帮我退款。"}`。
+- `class SupportState(TypedDict, total=False):` `total=False` 表示每个键都可以不存在。图刚开始只有 `ticket`,其余字段靠节点一步步填,所以节点里读可选字段要用 `state.get(...)`。
+- `customer: dict | None` 实测李娜是 `{"id": "C0002", "name": "李娜", "email": "lina@example.com", "company": "娜美贸易", "region": "上海", "is_vip": false, "created_at": "2025-06-01"}`;`nobody@example.com` 查不到,是 None。
+- `triage: dict` 存的是 `Triage.model_dump()` 之后的普通字典。
+- `hits: list[dict]` 实测李娜退款单第一条是 `{"chunk_id": 127, "doc_id": "KB-refund-003", "title": "年付超过 14 天怎么退", "heading": "计算方法", "score": 0.0323, "via": ["vector", "bm25"], ...}`。
+- `tool_log: Annotated[list[dict], operator.add]` 给字段挂一个 reducer:节点返回的列表会和旧值相加(拼接),不会覆盖。实测李娜退款那单 act 返回 4 条记录,最后状态里 tool_log 长度是 4。
+- `findings: str` act 节点写的调查结论,draft 和 check 都要读。
+- `refund_request: dict | None` act 里 `create_refund_request` 成功时的返回值,路由靠它判断要不要去审批。
+- `revisions: int` 质检没过的次数,超过上限转人工。
+- `outcome: str` 注释里列了三种取值。实测 10 张演示工单里 7 张 resolved、3 张 escalated。
+- `cost_cny: Annotated[float, operator.add]` 每个节点只返回自己这一步花的钱,LangGraph 自动累加。实测李娜那单:classify 0.00168 + act 0.0188 + draft 0.00216 + check 0.00176,合计 0.0244 元。
+- `class Triage(BaseModel):` 分诊的结构化输出,`Field(description=...)` 会进 JSON schema,等于给模型看的字段说明书。
+- `needs_account_data: bool = Field(` 实测「能退吗,先问问」也判成了 true,因为要算这个客户自己能退多少。
+- `urgency: Literal["low", "normal", "high"]` 没写 description,三个值的意思够直白。实测「想退款」判 normal,「能退吗,先问问」判 low。
+- `search_query: str = Field(` 实测「想退款」那单生成 `专业版 年付 退款`,「能退吗」那单是 `年付订阅 退款 退款金额 退款政策`。寒暄和情绪词都去掉了。
+- `class Review(BaseModel):` 质检的结构化输出。
+- `problems: list[str] = Field(default_factory=list` pydantic 里可变默认值同样用 `default_factory`。实测第 6 张(重复扣款)第一次质检退回了两条:「24 小时内自动退回」和调查结论不符;没说明申请还在待审批。
+
+</div>
+
+
 
 LangGraph 的状态是一个字典,每个节点读它、返回一个"要更新哪些字段"的小字典。大部分字段是覆盖:节点返回 `{"draft": "..."}`,状态里的 draft 就被替换。有两个字段用了 `Annotated[..., operator.add]`,意思是累加:
 
@@ -321,6 +436,26 @@ CHECK = """你是客服质检员。检查这封回复草稿能不能发给客户
 全部没问题 passed=true。有任何一条问题 passed=false,并在 problems 里逐条写清楚哪句话有什么问题。"""
 ```
 
+<div class="line-notes">
+
+- `PROMPT_VERSION = "v1"` 评测报告里记这个版本号,分数才能对应到具体的提示词。
+- `CLASSIFY = """你是 CloudLedger` 分诊提示词,实测 475 个字符。分诊结果的例子见 state.py 的注释。
+- `needs_account_data:回答必须依赖` 正反例各给一个,边界就清楚了。
+- `needs_human:客户威胁投诉到监管` 实测第 10 张「再不处理我就去 12315 投诉」被分成 billing,但 needs_human 是 true,直接转人工,整单只花了 0.0017 元。
+- `ACT = """你是 CloudLedger 客服后台的调查员` 379 个字符。「不直接回复客户」这句把调查和写回复分开,act 的输出只给 draft 用。
+- `1. 客户 ID 已经给你了` 实测 10 张工单里 act 一次都没调 get_customer,省了一轮。
+- `3. 只有当客户明确要求退款` 实测有效:「能退吗,先问问」那单查完 check_refund_eligibility 就停了,调查结论写的是「客户只是询问“能退多少”,并未明确要求退款,因此未创建退款申请」。
+- `5. 结束时不再调用工具,输出「调查结论」` 实测模型的结论是 4 条短句:订阅、账单、退款资格(eligible=true,950 元)、为什么没建申请。
+- `DRAFT = """你是 CloudLedger 的客服` 起草提示词。
+- `- 用到帮助中心资料的句子,在句末标注来源编号` 编号格式写死成 `[KB-xxx-000]`,finalize 才能用固定规则把它渲染成 `[1]`。
+- `- 如果有待审批的退款申请:只能说` 提示词要求说「审核通过后会原路退回」。
+- `CHECK = """你是客服质检员` 212 个字符。
+- `1. 草稿里每一个具体事实` 这条很严。实测第 6 张(重复扣款)两版草稿都被挑出和调查结论对不上的句子,最后转了人工。我在开着思考的另一次实跑里还见过它和起草提示词打架:草稿按 DRAFT 的要求写「审核通过后会原路退回」,质检判「退款渠道没有依据」打回。两个提示词口径不一致,就会白花重写的钱。这些都是 Day 47 让你记进问题清单、Day 51 去修的那类问题。
+
+</div>
+
+
+
 所有提示词放一个文件,开头有 `PROMPT_VERSION`。Day 50 的评测报告会记录用的是哪个版本,Day 51 改提示词时就改版本号。提示词就是代码,要能 diff、能回滚、能对应到分数。
 
 几个写法上的考虑:
@@ -378,6 +513,26 @@ class Deps:
             total += self.small_llm.ledger.cost_cny(self.settings)
         return total
 ```
+
+<div class="line-notes">
+
+- `from functools import partial` `partial(f, a)` 返回一个新函数,调用时自动把 `a` 填进第一个参数。
+- `class Deps:` 节点要用的外部依赖全装在这里,测试时整包换成假的。
+- `llm: LLMClient` 起草和 act 用的主力模型。
+- `small_llm: LLMClient` 分诊和质检用。
+- `retriever: Any` 鸭子类型:只要有 `search(query, k)` 方法就行,真的 HybridRetriever 和测试里的 FakeRetriever 都能塞进来。
+- `call_tool: Callable[..., tuple[str, bool]]` `Callable[..., X]` 的 `...` 表示参数不限,只约束返回值是 (文本, 是否出错)。
+- `decide_refund: Callable[[str, bool, str, str], dict]` 四个参数依次是申请号、是否通过、审批人、备注。
+- `def from_conn(cls, conn` `@classmethod` 的第一个参数是类本身,`cls(...)` 就是构造一个 Deps。返回类型写成字符串 `"Deps"` 也是前向引用。
+- `small = LLMClient(s, model=s.llm_small_model) if s.llm_small_model else llm` 实测 `.env` 没配 `LLM_SMALL_MODEL`,`deps.small_llm is deps.llm` 是 True,两个名字指向同一个对象。
+- `retriever=HybridRetriever(conn, settings=s),` Day 45 的混合检索,构造时要数据库连接。
+- `call_tool=partial(call_tool, conn),` 节点里写 `deps.call_tool("get_customer", {...}, ticket_id=...)`,实际执行的是 `call_tool(conn, "get_customer", {...}, ticket_id=...)`。数据库连接在这里一次绑定好,节点代码里看不到它。
+- `def spent(self) -> float:` 两个客户端合起来一共花了多少钱。节点用「结束时读数减开始时读数」算出自己这一步的花费。
+- `if self.small_llm is not self.llm:` `is` 比较的是「是不是同一个对象」,不是值相等。实测是同一个对象,只算一次;不判断的话,同一本账会被算两遍。
+
+</div>
+
+
 
 节点需要的外部东西(大模型、检索器、工具、数据库操作)全装进一个 `Deps`。生产环境用 `from_conn()` 组装真的;测试时塞假的进去,节点代码一行都不用改。
 
@@ -487,7 +642,7 @@ def make_nodes(deps: Deps) -> dict:
             parts.append("【注意】没有找到这个邮箱对应的客户账户。")
         if state.get("refund_request"):
             rr = state["refund_request"]
-            parts.append(f"【待审批退款申请】{rr['id']},金额 {rr['amount_cny']} 元,规则 {rr['rule']}")
+            parts.append(f"【待审批退款申请】{rr['id']},金额 {rr['amount_cny']:.2f} 元,规则 {rr['rule']}")
         if state.get("review") and not state["review"].get("passed"):
             parts.append("【上一版草稿被质检退回,问题如下,请改正】\n" + "\n".join(state["review"]["problems"]))
         res = deps.llm.stream(
@@ -526,7 +681,7 @@ def make_nodes(deps: Deps) -> dict:
         approved = bool(decision.get("approved"))
         result = deps.decide_refund(rr["id"], approved, decision.get("approver", "unknown"), decision.get("note", ""))
         if approved:
-            followup = f"补充:您的退款申请已审核通过,{rr['amount_cny']} 元将原路退回,到账时间以支付渠道为准。"
+            followup = f"补充:您的退款申请已审核通过,{rr['amount_cny']:.2f} 元将原路退回,到账时间以支付渠道为准。"
         else:
             followup = ("补充:很抱歉,您的退款申请经审核未通过" + (f",原因:{decision['note']}" if decision.get("note") else "")
                         + "。如有疑问可以直接回复这个工单。")
@@ -536,6 +691,11 @@ def make_nodes(deps: Deps) -> dict:
         reason = state.get("handoff_reason") or (
             "客户要求人工或涉及投诉/安全" if state.get("triage", {}).get("needs_human")
             else "草稿多次未通过质检:" + ";".join(state.get("review", {}).get("problems", [])))
+        rr = state.get("refund_request")
+        if rr and rr.get("status") == "pending":
+            # act 已经建了申请、但草稿没过质检就转人工:这条申请不会再走到 approval 节点,作废它,
+            # 免得它挂在审批列表里,有人点通过却没有对应的图可以恢复
+            deps.decide_refund(rr["id"], False, "system:handoff", "工单已转人工,这条申请作废,由人工客服重新判断")
         deps.escalate(state["ticket"]["id"], reason)
         reply = "您好,您的问题已经转给人工客服同事,会在 1 个工作日内通过这个工单回复您。"
         return {"outcome": "escalated", "handoff_reason": reason, "reply": reply}
@@ -551,6 +711,73 @@ def make_nodes(deps: Deps) -> dict:
     return {"load_customer": load_customer, "classify": classify, "retrieve": retrieve, "act": act,
             "draft": draft, "check": check, "approval": approval, "handoff": handoff, "finalize": finalize}
 ```
+
+<div class="line-notes">
+
+- `from dataclasses import asdict` `asdict(hit)` 把 Hit 对象转成普通字典,状态里只存字典,checkpointer 才好序列化。
+- `from langgraph.config import get_stream_writer` 拿到当前运行的 custom 流写入函数,节点用它往外推事件。
+- `from langgraph.types import interrupt` 审批节点用它让图停下来等人。
+- `from ..kb.cite import build_context, check_citations, render_sources` 两个点表示上一级包 `supportpilot`,`..kb.cite` 就是 `supportpilot/kb/cite.py`(Day 45 写的)。
+- `PROMISE_RE = re.compile(` 拆开读三段,用 `|` 连起来:<br>① `已(经)?(为您|给您)?(办理|完成)?退款(?!申请)` 匹配「已退款」「已为您退款」「已经为您完成退款」,结尾的 `(?!申请)` 是否定前瞻,后面紧跟「申请」就不算;<br>② `退款已(到账|完成|办理|退回)`;<br>③ `马上到账`。<br>实测「已为您提交退款申请」「已为您办理退款申请」都不命中。但这条规则也会误伤:「账单已是『已退款』状态」命中了 `已退款`。端到端时第 4 张(李娜「先问问」)就栽在这里:第 3 张批准后那张账单已经退了,两版草稿都如实写了「目前状态为已退款」,都被当成违规承诺打回,最后转了人工。描述状态被当成承诺,这是 Day 51 要修的误判。
+- `def _ticket_text(state: SupportState) -> str:` 实测拼出来是 `发件邮箱:lina@example.com\n主题:想退款\n正文:上周买的专业版年付,发现用不上,请帮我退款。`。分诊、act、起草、质检都用这一份。
+- `get_stream_writer()(event)` 两对括号:先调用拿到写入函数,再用 event 调用它。
+- `except RuntimeError:` 单测里直接调节点函数时不在 LangGraph 运行上下文里,`get_stream_writer()` 会抛 RuntimeError,吞掉即可。
+- `def make_nodes(deps: Deps) -> dict:` 九个节点都定义在这个函数里面,形成闭包,每个节点都能直接用 `deps`,图本身不需要知道依赖从哪来。
+- `text, err = deps.call_tool("get_customer"` 用发件邮箱查客户。这一步不调模型,零成本。
+- `customer = None if err else json.loads(text)` 实测李娜返回 C0002 的档案,事件是 `{'found': True}`;第 9 张 `nobody@example.com` 查不到,customer 是 None,事件是 `{'found': False}`。
+- `return {"customer": customer, "revisions": 0, "refund_request": None, "approval": None}` 顺手把几个计数器和标志初始化,后面的节点就不用处处判断键在不在。
+- `before = deps.spent()` 记下账本读数,节点结束时用差值算这一步花了多少。
+- `triage = deps.small_llm.structured(` 实测第 3 张的分诊是 `{"category": "refund", "needs_account_data": true, "needs_human": false, "urgency": "normal", "summary": "客户要求退上周购买的专业版年付费用", "search_query": "专业版 年付 退款"}`。
+- `return {"triage": triage.model_dump(), "cost_cny": deps.spent() - before}` 实测分诊这一步花了 0.00168 元。
+- `query = tr.get("search_query") or f"{state['ticket']['subject']}` 分诊没给检索词时退回用主题加正文。f-string 里取字典值用单引号,因为外层是双引号。
+- `hits = deps.retriever.search(query, k=deps.settings.retrieve_k)` k 是 5。实测「能退吗」那单检索到 `KB-refund-001、KB-refund-001、KB-refund-003、KB-refund-001、KB-refund-002`,分数 0.0328 到 0.0306。分数这么小是因为用的是 RRF 融合分;同一篇 KB-refund-001 出现三次,是命中了它的三个小节。
+- `return {"hits": [asdict(h) for h in hits]}` 存进状态前转成字典。
+- `cust = state["customer"]` 走到 act 一定有客户,路由 `after_retrieve` 保证了这一点,所以这里直接用 `[]` 取。
+- `{"role": "user", "content": f"客户档案:{json.dumps(cust, ensure_ascii=False)}` 客户档案直接放进消息,提示词又说「不用再查 get_customer」,省一轮工具调用。
+- `tools = openai_tools({Level.READ, Level.PROPOSE})` 只给只读和「提申请」两级的工具。实测是 7 个:get_customer、list_subscriptions、list_invoices、check_refund_eligibility、search_past_tickets、create_refund_request、query_customer_data。真正执行退款的工具不在里面,模型想退也退不了。
+- `for step in range(deps.settings.max_act_steps):` 最多 5 轮模型调用。
+- `res = deps.llm.chat(msgs, tools=tools, temperature=0)` 温度 0,调查这一步要稳定,不要发挥。
+- `if not res.tool_calls:` 模型不再调工具,说明它认为查够了,这次的文字就是调查结论,break 跳出循环。
+- `msgs.append(res.raw_message)` 先把 assistant 的工具调用放进历史,下面的 tool 结果才有对应的 id。
+- `for call in res.tool_calls:` 一轮可能有好几个调用。实测「能退吗」:step 0 同时调了 list_subscriptions 和 list_invoices,step 1 调 check_refund_eligibility,step 2 不再调工具,输出结论。一共 3 轮模型调用。
+- `text, err = deps.call_tool(call["name"], call["arguments"], ticket_id=tid, customer_id=cust["id"])` 实测 check_refund_eligibility 返回 `{"invoice_id": "INV-202609-0002", "eligible": true, "rule": "annual_first_14_days", "reason": "年付首次购买第 7 天,在 14 天内,全额退款。", "refund_amount_cny": 950.0, ...}`。
+- `log.append({"step": step, "name": call["name"]` `result` 截到 500 字,日志不至于太大。
+- `if call["name"] == "create_refund_request" and not err:` 实测第 3 张建了 `RF-T000153-INV-202609-0002`,950 元,status 是 pending;「先问问」那张没建,refund_request 保持 None。
+- `msgs.append({"role": "tool", "tool_call_id": call["id"], "content": text})` 工具结果按 id 喂回模型。工具报错(err=True)也照样喂回去,让模型自己改参数。
+- `else:` 这个 else 属于 for,不属于 if:for 循环正常跑完、中间一次都没 break,才会执行它,也就是 5 轮用完模型还在调工具。
+- `findings = "(调查达到步数上限` 把已经查到的结果拼成结论,前面花的钱不白花。实测 10 张演示工单都没有走到这里。
+- `return {"tool_log": log, "findings": findings, "refund_request": refund_request,` 实测「能退吗」这一步花了 0.01329 元,是整单里最贵的一步:三轮调用,每轮都带着越来越长的工具结果。
+- `hits = [Hit(**h) for h in state.get("hits", [])]` 把字典还原成 Hit 对象,`**h` 把字典展开成关键字参数。
+- `parts = [f"【客户工单】` 用中文方括号把几块材料分开,提示词里引用的就是这些标题。
+- `f"【调查结论】\n{state.get('findings') or '(没有查询客户数据)'}"]` 没走 act 的工单(比如专票、报错码)这里就是固定的一句话。
+- `if state.get("customer") is None and state["triage"].get("needs_account_data"):` 实测第 9 张 nobody 走到这里,草稿里写了「请提供注册邮箱」。
+- `if state.get("refund_request"):` 实测第 3 张拼出 `【待审批退款申请】RF-T000153-INV-202609-0002,金额 950.00 元,规则 annual_first_14_days`。`:.2f` 把 float 格式化成两位小数。
+- `if state.get("review") and not state["review"].get("passed"):` 质检打回后再进 draft,会多出这一块。实测第 9 张(找不到客户)第一版被退回三条意见,第二版改成「目前尚未能定位到对应账户,请您提供注册邮箱」,并补上了退款流程,质检通过。
+- `res = deps.llm.stream(` 流式生成,每段文字通过 `_emit` 推出去。实测第 3 张 draft 这一步花了 0.00216 元。
+- `_, fake = check_citations(state["draft"], hits)` `check_citations` 返回两样,第一样用不上,就用 `_` 接住。`fake` 是草稿里出现、但检索结果里没有的编号。
+- `if PROMISE_RE.search(state["draft"]):` 规则二。实测第 4 张两版草稿都在这里被拦,原因见上面 PROMISE_RE 那条。
+- `if not problems:` 规则检查都过了才花钱让模型检查;规则已经发现问题,就不再调模型。
+- `【回复草稿】\n{state['draft']}` 注意质检模型拿到的是工单、资料、调查结论和草稿,**拿不到** draft 那一步加的「【注意】没有找到这个邮箱对应的客户账户」。实测第 9 张第一版写「目前我们未能查询到该邮箱对应的客户账户」,质检判「调查结论为『无』,没有任何依据」打回。这又是一条可以记进问题清单的。
+- `problems.extend(review.problems if not review.passed else [])` 模型判不过时把它列的问题并进来。
+- `"revisions": state.get("revisions", 0) + (0 if passed else 1),` 实测第 3 张一次通过,revisions 保持 0;第 9 张第一次不过变成 1,第二次通过保持 1;第 6 张两次都不过,变成 2,转人工。
+- `decision = interrupt({"type": "refund_approval"` 图在这里停下,这个字典交给外面。实测 payload 的 request 是 `{"id": "RF-T000153-INV-202609-0002", "amount_cny": 950.0, "rule": "annual_first_14_days", "status": "pending", "note": "已创建待审批的退款申请。不要告诉客户退款已完成,只能说已提交审核。", ...}`。
+- `"needs_finance_review": rr["amount_cny"] > deps.settings.refund_review_threshold})` 950 > 1000 是 False,审批面板上不标红。
+- `approved = bool(decision.get("approved"))` 恢复时 `Command(resume=...)` 传进来的字典,就是这里 `interrupt()` 的返回值。
+- `result = deps.decide_refund(rr["id"], approved` 人的决定落到数据库。实测批准后 `result_status` 是 `executed`。
+- `followup = f"补充:您的退款申请已审核通过` 实测是 `补充:您的退款申请已审核通过,950.00 元将原路退回,到账时间以支付渠道为准。`。金额是 float,直接拼会显示成 `950.0 元`;`:.2f` 统一成两位小数,和 Day 23 的 `yuan()` 一个写法。
+- `followup = ("补充:很抱歉,您的退款申请经审核未通过"` 实测第 5 张选了 n,备注是「演示驳回」,得到 `补充:很抱歉,您的退款申请经审核未通过,原因:演示驳回。如有疑问可以直接回复这个工单。`。
+- `reason = state.get("handoff_reason") or (` 实测投诉单的原因是「客户要求人工或涉及投诉/安全」;第 4 张是「草稿多次未通过质检:草稿承诺了退款已完成/马上到账,退款必须经过人工审核」;第 6 张是「草稿多次未通过质检:草稿称『另一笔为正常扣款』,但调查结论明确……」。
+- `rr = state.get("refund_request")` 转人工前先看 act 有没有建过退款申请。
+- `if rr and rr.get("status") == "pending":` 只有「申请建了、草稿两次没过质检」这条路会带着 pending 申请走到这里;直接转人工的工单(投诉、needs_human)根本没进 act,rr 是 None。
+- `deps.decide_refund(rr["id"], False, "system:handoff"` 把申请标成 rejected 并写明原因。实测第 6 张(重复扣款)两次质检不过转人工后,库里这条是 `RF-T000154-INV-202609-0004 | rejected | system:handoff | 工单已转人工,这条申请作废,由人工客服重新判断`,pending 的申请一条都没剩,审批列表里不会再出现它。不作废的话,它会一直挂在 Day 49 的审批列表里,点通过返回 409。
+- `reply = "您好,您的问题已经转给人工客服同事` 转人工时给客户的固定话术,不调模型。
+- `reply = render_sources(state["draft"], hits)` 把 `[KB-refund-001]` 换成 `[1]`,文末加「参考文章」和链接。
+- `deps.finish_ticket(state["ticket"]["id"], "resolved"` 更新工单状态、分类和摘要。
+- `return {"load_customer": load_customer, "classify": classify` 返回节点名到函数的字典,`build_graph` 遍历它注册节点。
+
+</div>
+
+
 
 逐个说。
 
@@ -576,7 +803,7 @@ def make_nodes(deps: Deps) -> dict:
 
 这里有个 LangGraph 的规则一定要记住:**节点恢复时会从头重跑,`interrupt()` 之前的代码会执行两次。**所以 interrupt 之前只放没有副作用的代码(构造 payload),写库、发通知都放在 interrupt 之后或者别的节点里。Day 46 把审批通知放在工具层就是这个原因。
 
-**handoff**:转人工。调 `escalate` 把工单标为 escalated,给客户一句固定的话。原因写进 `handoff_reason`,人工接手时能看到。
+**handoff**:转人工。调 `escalate` 把工单标为 escalated,给客户一句固定的话。原因写进 `handoff_reason`,人工接手时能看到。还有一种情况要收尾:act 已经建了退款申请,草稿却两次没过质检转了人工。这条申请永远走不到 approval 节点,如果留着 pending,它会出现在 Day 49 的审批列表里,有人点通过却没有对应的图可以恢复(Day 49 实测返回 409)。所以转人工前把它作废(标成 rejected 并写明原因),要不要退由接手的人重新判断。
 
 **finalize**:定稿。把草稿里的 `[KB-xxx]` 渲染成 `[1] [2]` 和文末链接,有审批结果的话加上补充说明,更新工单状态。
 
@@ -631,6 +858,26 @@ def build_graph(deps: Deps, checkpointer=None):
     g.add_edge("handoff", END)
     return g.compile(checkpointer=checkpointer)
 ```
+
+<div class="line-notes">
+
+- `from langgraph.graph import END, START, StateGraph` START、END 是图的入口和出口。
+- `def after_classify(state: SupportState) -> str:` 返回下一个节点的名字。实测第 10 张投诉单 needs_human 是 true,走 handoff;其余 9 张走 retrieve。
+- `def after_retrieve(state: SupportState) -> str:` 要查账而且找到了客户才进 act。实测:李娜退款单 → act;第 1 张专票 needs_account_data 是 false → draft;第 9 张 nobody 没有客户 → draft。
+- `def after_check(deps: Deps):` 路由函数要读 `max_revisions`,所以写成「返回一个函数的函数」,用闭包把 deps 带进去。
+- `return "approval" if rr and rr.get("status") == "pending" else "finalize"` 质检过了:有待审批的申请就去审批,没有就定稿。
+- `if state.get("revisions", 0) <= deps.settings.max_revisions:` 实测路由表(max_revisions=1):<br>passed=False、revisions=1 → draft;<br>passed=False、revisions=2 → handoff;<br>passed=True、有 pending 申请 → approval;<br>passed=True、没有申请 → finalize。
+- `n = make_nodes(deps)` 拿到九个节点函数。
+- `g = StateGraph(SupportState)` 用状态的类型建图,reducer(tool_log、cost_cny 的累加)从这里读出来。
+- `for name, fn in n.items():` 逐个注册节点。
+- `g.add_edge(START, "load_customer")` 普通边,固定走向。
+- `g.add_conditional_edges("classify", after_classify, ["retrieve", "handoff"])` 条件边:跑完 classify 调 `after_classify`,按返回的名字走。第三个参数列出所有可能的去处。
+- `g.add_conditional_edges("check", after_check(deps), ["approval", "finalize", "draft", "handoff"])` 注意这里是 `after_check(deps)`,先调用一次拿到真正的路由函数。
+- `return g.compile(checkpointer=checkpointer)` 不传 checkpointer 也能编译,只是遇到 interrupt 停下后状态没处存,无法恢复。
+
+</div>
+
+
 
 <figure>
 <svg viewBox="0 0 640 400" role="img" aria-label="SupportPilot 工作流图">
@@ -769,6 +1016,35 @@ def make_deps(llm: FakeLLM, tools: FakeTools) -> Deps:
                 finish_ticket=lambda *a: tools.finished.append(a), settings=Settings())
 ```
 
+<div class="line-notes">
+
+- `class FakeLLM:` 冒充 LLMClient,只实现节点用到的 `structured`、`chat`、`stream` 三个方法和 `ledger`。
+- `self.triage, self.act_script, self.draft_text, self.review_ok = triage, list(act_script), draft, review_ok` 一行同时给四个属性赋值。`list(act_script)` 复制一份,后面 `pop` 不会改到测试文件里的常量 ACT。
+- `def structured(self, messages, schema, **_):` `**_` 吞掉用不上的关键字参数(retries、model)。
+- `self.ledger.add(Usage(100, 20, 1))` 位置参数依次是输入、输出、次数。每次结构化调用记 100 / 20。
+- `if messages[0]["content"] == prompts.CLASSIFY:` 看系统提示认出是哪个节点在调用:分诊返回预设结果,其余就是质检。
+- `return schema(passed=self.review_ok` 质检结果。`review_ok=False` 时固定返回一条问题「金额没有依据」。
+- `def chat(self, messages, tools=None, **_):` act 用的。每次记 300 / 50。
+- `if not self.act_script:` 剧本用完就返回调查结论,act 循环会 break。
+- `calls = [{"id": f"c{i}", "name": n, "arguments": json.dumps(a)}` 剧本里的一轮转成工具调用列表。`enumerate` 给每个调用编号 c0、c1……
+- `def stream(self, messages, on_token=None, **_):` 起草用的,每次记 800 / 150。
+- `for piece in (self.draft_text[:10], self.draft_text[10:]):` 把草稿切成两段,模拟流式推送。
+- `class FakeRetriever:` 不管问什么都返回同一条资料 KB-refund-002。
+- `return [Hit(1, "KB-refund-002"` 按位置依次是 chunk_id、doc_id、title、heading、text、url_path、category、score、via。
+- `class FakeTools:` 冒充工具层,同时记下调用了什么。
+- `def __call__(self, name, arguments, *, ticket_id, customer_id=None):` 定义了 `__call__`,实例就能像函数一样被调用,所以能直接塞进 `Deps.call_tool`。
+- `args = json.loads(arguments) if isinstance(arguments, str) else arguments` load_customer 传的是字典,act 传的是模型给的 JSON 字符串,两种都接。
+- `if name == "get_customer":` 有客户就返回档案,没有就返回错误。
+- `return json.dumps({"invoice_id": args["invoice_id"], "eligible": True, "refund_amount_cny": 950.0,` 资格检查固定判符合,950 元。
+- `return json.dumps({"id": f"RF-{ticket_id}-{args['invoice_id']}", "status": "pending",` 申请号的拼法和真实工具一致。
+- `def make_deps(llm: FakeLLM, tools: FakeTools) -> Deps:` 用假零件组装一个 Deps,大模型、小模型都是同一个 FakeLLM。
+- `decide_refund=lambda rid, ok, who, note: (tools.decided.append((rid, ok)) or` `append` 返回 None,`None or {...}` 取右边。一行 lambda 里既记录又返回结果,用的就是这个小技巧。
+- `finish_ticket=lambda *a: tools.finished.append(a), settings=Settings())` `*a` 把所有位置参数收成元组。实测退款测试结束后 finished 是 `[('T000900', 'resolved', 'refund', '年付首购想退款')]`。
+
+</div>
+
+
+
 `FakeLLM` 按系统提示判断自己被哪个节点调用:分诊时返回预设的分诊结果,act 时按剧本依次返回工具调用,起草时返回预设草稿。`FakeTools` 模拟工具返回,同时记录被调用了哪些工具、审批了什么、转人工了什么,测试里可以断言。
 
 ```python
@@ -807,6 +1083,14 @@ def test_refund_goes_through_approval_then_resumes():
     assert tools.decided == [("RF-T000900-INV-202609-0001", True)]
     assert "[1]" in out["reply"] and "参考文章" in out["reply"]
     assert out["cost_cny"] > 0
+
+
+def test_handoff_withdraws_pending_refund():
+    tools = FakeTools(customer={"id": "C0002", "email": "lina@example.com"})
+    deps = make_deps(FakeLLM(REFUND_TRIAGE, ACT, DRAFT, review_ok=False), tools)
+    out = build_graph(deps).invoke({"ticket": TICKET})
+    assert out["outcome"] == "escalated"
+    assert tools.decided == [("RF-T000900-INV-202609-0001", False)]   # 申请被作废,不会留在审批列表里
 
 
 def test_policy_question_skips_tools():
@@ -851,9 +1135,41 @@ def test_promise_regex(text, bad):
     assert bool(PROMISE_RE.search(text)) is bad
 ```
 
-前五个测试各守一条底线:
+<div class="line-notes">
+
+- `from fakes import FakeLLM, FakeTools, make_deps` 直接导入同目录的 fakes.py。pytest 收集 tests 目录时会把它加进搜索路径。
+- `from langgraph.checkpoint.memory import InMemorySaver` 内存版存档,审批停下后状态存在这里。
+- `TICKET = {"id": "T000900"` 固定的测试工单。
+- `ACT = [[("list_invoices"` 三轮剧本,每轮一个工具调用:查账单、查资格、建申请。
+- `DRAFT = "您好,您的年付订阅在 14 天内` 合规草稿,带一个引用编号。
+- `def test_refund_goes_through_approval_then_resumes():` 实测 14 个测试(含 test_llm 的 3 个)全部通过,0.99 秒。
+- `cfg = {"configurable": {"thread_id": TICKET["id"]}}` thread_id 区分不同工单的存档,恢复时要用同一个。
+- `out = graph.invoke({"ticket": TICKET}, cfg)` 实测停下时 out 里有 `__interrupt__`,payload 的键是 type、ticket_id、request、draft、needs_finance_review(950 < 1000,所以是 False)。
+- `assert tools.calls == ["get_customer", "list_invoices", "check_refund_eligibility", "create_refund_request"]` 实测完全一致。这时假 LLM 被调了 7 次:分诊 1、act 4(3 轮工具加 1 轮结论)、起草 1、质检 1。cost_cny 是 0.00752:输入 2200 × 2 / 1e6 + 输出 390 × 8 / 1e6。
+- `out = graph.invoke(Command(resume={"approved": True, "approver": "finance-amy"}), cfg)` 带着同一个 cfg 恢复,图从 approval 节点接着跑。
+- `assert tools.decided == [("RF-T000900-INV-202609-0001", True)]` 人点了通过,才真正执行。
+- `assert "[1]" in out["reply"] and "参考文章" in out["reply"]` 实测 reply 是「您好,您的年付订阅在 14 天内,符合全额退款条件 [1]。已提交退款申请,审核通过后会原路退回。」加上「参考文章:[1] 年付 14 天无理由退款 https://help.cloudledger.example/help/refund/002」和那句审核通过的补充。
+- `assert out["cost_cny"] > 0` 恢复之后 approval 和 finalize 都不调模型,实测 cost_cny 还是 0.00752。
+- `def test_handoff_withdraws_pending_refund():` 退款剧本照走,但质检永远不过:申请建了,草稿却过不了关。
+- `deps = make_deps(FakeLLM(REFUND_TRIAGE, ACT, DRAFT, review_ok=False), tools)` 没传 checkpointer,这条路不会停在审批,质检两次不过直接转人工。
+- `assert tools.decided == [("RF-T000900-INV-202609-0001", False)]` 实测 handoff 用 `False` 调了一次 decide_refund,申请被作废。没有这几行代码时 decided 是空列表,申请会一直 pending。
+- `triage = {**REFUND_TRIAGE, "category": "invoice", "needs_account_data": False` `{**旧字典, 键: 新值}` 复制一份再改几个字段。
+- `graph = build_graph(make_deps(FakeLLM(triage, [], DRAFT), tools))` 没传 checkpointer:这条路不会停,用不着存档。
+- `assert tools.calls == ["get_customer"]` 只调了 load_customer 的那一次,没进 act。
+- `def test_angry_customer_goes_to_human():` needs_human 为 true,classify 之后直接转人工。
+- `def test_failed_review_twice_escalates():` 实测假 LLM 一共被调 5 次(分诊、起草、质检、起草、质检),revisions 0 → 1 → 2,handoff_reason 是「草稿多次未通过质检:金额没有依据」。
+- `def test_promise_rule_blocks_draft_without_llm():` 实测假 LLM 只被调了 3 次(分诊加两次起草),两次质检都被正则拦下,一次模型质检都没花。
+- `@pytest.mark.parametrize("text,bad", [` 一个测试函数配 5 组数据,pytest 会展开成 5 个测试。
+- `def test_promise_regex(text, bad):` 5 组全部通过。我另外补测了「账单已是『已退款』状态」,它也会命中 `已退款`,这组不在用例里,端到端时就踩到了。
+
+</div>
+
+
+
+前六个测试各守一条底线:
 
 - 退款工单一定会停在审批节点,人没点之前 `decided` 是空的,一分钱没动;点了通过之后才执行,并且最终回复里引用被渲染成了 `[1]` 和链接。
+- 退款申请已经建了、草稿却两次没过质检转人工时,申请被作废,不会留在审批列表里。
 - 政策问题不进 act,工具只调了 `get_customer`。
 - `needs_human` 直接转人工。
 - 质检两次不过就转人工,revisions 是 2。
@@ -914,7 +1230,7 @@ def show(graph, payload, cfg) -> None:
                 print(f"\n  ▸ {chunk['node']} {info}")
         elif "__interrupt__" in chunk:
             req = chunk["__interrupt__"][0].value["request"]
-            print(f"\n  ⏸ 退款审批:{req['id']} ¥{req['amount_cny']} 规则={req['rule']}")
+            print(f"\n  ⏸ 退款审批:{req['id']} ¥{req['amount_cny']:.2f} 规则={req['rule']}")
 
 
 def main() -> None:
@@ -938,6 +1254,30 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
+<div class="line-notes">
+
+- `"""端到端跑 data/seed/demo_tickets.jsonl` 实测把 10 张全跑了一遍,两次审批依次输入 y、n,10 张合计约 0.17 元(开着思考时约 0.26 元)。
+- `DEMO = Path(__file__).resolve().parent.parent / "data" / "seed" / "demo_tickets.jsonl"` 脚本在 scripts/ 下,往上两级是项目根。
+- `def show(graph, payload, cfg) -> None:` 跑图并把过程打印出来,第一次启动和审批后恢复都用它。
+- `for mode, chunk in graph.stream(payload, cfg, stream_mode=["updates", "custom"]):` stream_mode 传列表时,每次产出一个 (模式, 数据) 二元组。custom 是节点里 `_emit` 推的事件,updates 是节点返回的状态更新。
+- `print(chunk["text"], end="", flush=True)` token 不换行连着打,`flush=True` 让字立刻出现在终端,不等缓冲区满。
+- `print(f"\n  🔧 {chunk['name']}({chunk['args']})` 实测打印 `🔧 check_refund_eligibility({"invoice_id": "INV-202609-0002"})`。
+- `info = {k: v for k, v in chunk.items() if k not in ("type", "node")}` 字典推导式,去掉两个固定键,剩下的原样打印。实测 `▸ retrieve {'docs': ['KB-invoice-001', 'KB-invoice-002', ...]}`。
+- `elif "__interrupt__" in chunk:` updates 模式下,图停下时会产出一个带 `__interrupt__` 键的更新。
+- `print(f"\n  ⏸ 退款审批:{req['id']}` 实测 `⏸ 退款审批:RF-T000153-INV-202609-0002 ¥950.00 规则=annual_first_14_days`。金额同样用 `:.2f`。
+- `tickets = [json.loads(x) for x in DEMO.read_text(encoding="utf-8").splitlines() if x.strip()]` 一行一个 JSON,`if x.strip()` 跳过空行。
+- `tickets = [tickets[int(sys.argv[1]) - 1]]` 命令行写 3 就取下标 2,也就是第 3 张。
+- `graph = build_graph(Deps.from_conn(conn), checkpointer=InMemorySaver())` 真模型、真数据库、内存存档。
+- `tid = biz.create_ticket(conn, t["customer_email"], t["subject"], t["body"])` 先在库里建工单拿到编号。实测 seed 造了 152 张,第一张演示工单就是 T000153。
+- `while graph.get_state(cfg).next:` `next` 是接下来要跑的节点。图跑完是空元组,停在审批前是 `('approval',)`。
+- `ok = input("\n  通过这笔退款吗?[y/N] ").strip().lower() == "y"` 只有输入 y 才通过,直接回车算驳回。`[y/N]` 里大写的 N 表示默认值。
+- `final = graph.get_state(cfg).values` 取最终状态。
+- `print(f"\n----- 最终回复({final.get('outcome')}` 实测 10 张的结果和花费:<br>1 专票 resolved ¥0.0052;2 E2001 resolved ¥0.0052;<br>3 李娜退款(y) resolved ¥0.0241;<br>4 先问问 escalated ¥0.0200,没建申请,但被 PROMISE_RE 误伤;<br>5 王芳按比例退 498.75 元(n) resolved ¥0.0252;<br>6 重复扣款 39 元 escalated ¥0.0357,申请建了,但草稿两次没过质检;<br>7 月付 resolved ¥0.0199,解释不退;<br>8 账套只读 resolved ¥0.0210;<br>9 找不到客户 resolved ¥0.0101,请客户提供注册邮箱;<br>10 投诉 escalated ¥0.0017。
+
+</div>
+
+
 
 ```bash
 uv run python scripts/run_tickets.py 3      # 只跑第 3 张:李娜要退款
@@ -965,7 +1305,7 @@ uv run python scripts/run_tickets.py 3      # 只跑第 3 张:李娜要退款
 您好,您的专业版年付订阅是 9 月 24 日首次购买的,目前在 14 天内,符合全额退款条件 [KB-refund-002]。我们已为您提交退款申请……
   ▸ check {'passed': True, 'problems': []}
 
-  ⏸ 退款审批:RF-T000153-INV-202609-0002 ¥950.0 规则=annual_first_14_days
+  ⏸ 退款审批:RF-T000153-INV-202609-0002 ¥950.00 规则=annual_first_14_days
 
   通过这笔退款吗?[y/N] y
 
@@ -975,7 +1315,7 @@ uv run python scripts/run_tickets.py 3      # 只跑第 3 张:李娜要退款
 参考文章:
 [1] 年付 14 天无理由退款 https://help.cloudledger.example/help/refund/002
 
-补充:您的退款申请已审核通过,950.0 元将原路退回,到账时间以支付渠道为准。
+补充:您的退款申请已审核通过,950.00 元将原路退回,到账时间以支付渠道为准。
 ```
 
 跑全部 10 张,每张都对照预期看一遍:第 4 张(只是问问)不应该建申请,第 7 张(月付)应该解释不退并建议关闭自动续费,第 9 张(找不到客户)应该请客户提供注册邮箱,第 10 张(投诉)应该直接转人工。
@@ -989,7 +1329,7 @@ uv run python scripts/run_tickets.py 3      # 只跑第 3 张:李娜要退款
 
 ## 动手练习
 
-**步骤 1:放文件。** `src/supportpilot/llm.py`,`agent/` 下 `state.py`、`prompts.py`、`deps.py`、`nodes.py`、`graph.py`,`scripts/run_tickets.py`,`data/seed/demo_tickets.jsonl`,`tests/` 下 `fakes.py`、`test_graph_smoke.py`、`test_llm.py`。
+**步骤 1:放文件。** `config.py` 的 Settings 加上 `llm_extra_body`,`.env` 里填好 `LLM_EXTRA_BODY`;`src/supportpilot/llm.py`,`agent/` 下 `state.py`、`prompts.py`、`deps.py`、`nodes.py`、`graph.py`,`scripts/run_tickets.py`,`data/seed/demo_tickets.jsonl`,`tests/` 下 `fakes.py`、`test_graph_smoke.py`、`test_llm.py`。
 
 **步骤 2:跑单测。** `make test`,确认新加的测试全过。这一步不需要 API key。
 
@@ -1001,6 +1341,16 @@ from fakes import FakeLLM, FakeTools, make_deps   # 在 tests 目录下运行
 g = build_graph(make_deps(FakeLLM({}, [], ""), FakeTools()))
 print(g.get_graph().draw_mermaid())
 ```
+
+<div class="line-notes">
+
+- `from fakes import FakeLLM, FakeTools, make_deps` 用假零件建图,画图不需要数据库和 API key。
+- `g = build_graph(make_deps(FakeLLM({}, [], ""), FakeTools()))` 画图只看结构,FakeLLM 的参数随便给空的就行。
+- `print(g.get_graph().draw_mermaid())` 实测输出开头是 `graph TD;`,接着列出 `__start__`、九个节点和 `__end__`,普通边是 `-->`(如 `act --> draft;`),条件边是虚线 `-.->`(如 `check -.-> approval;`)。
+
+</div>
+
+
 
 把输出贴到 mermaid.live 里看,和上面的图对照。
 

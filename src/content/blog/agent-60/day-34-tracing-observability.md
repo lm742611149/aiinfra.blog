@@ -33,7 +33,7 @@ lang: 'zh'
 <svg viewBox="0 0 640 300" role="img" aria-label="一次工单处理的 trace 树:根 span 是工作流,下面有分类、检索、模型调用和工具调用等子 span">
 <rect x="0" y="0" width="640" height="300" fill="var(--paper-raised)"/>
 <g font-family="var(--font-mono)" font-size="11">
-<text x="16" y="22" fill="var(--ink-soft)">trace 7f3a… · session = 会话 · user = C009</text>
+<text x="16" y="22" fill="var(--ink-soft)">trace 7f3a… · session = 会话 · user = C023</text>
 <text x="470" y="22" fill="var(--ink-faint)">时间 →</text>
 <rect x="16" y="34" width="600" height="22" fill="none" stroke="var(--ink-soft)"/>
 <text x="22" y="49" fill="var(--ink)">invoke_workflow ticket_router            8.4s</text>
@@ -70,7 +70,7 @@ session(会话):多个 trace 的集合。同一个客户的多轮对话,每一�
 
 score(分数):挂在 trace 或某个 span 上的评价。可以来自离线评测(Day 29–33 的 grader),来自线上的 LLM 评分器,也可以来自用户点赞点踩。
 
-还有一个容易被忽略的概念:**user(用户)**。把客户编号作为 user_id 挂上去,你就能回答「C009 这个客户这个月花了公司多少钱」「哪些客户反复来问同一个问题」。
+还有一个容易被忽略的概念:**user(用户)**。把客户编号作为 user_id 挂上去,你就能回答「C023 这个客户这个月花了公司多少钱」「哪些客户反复来问同一个问题」。
 
 ## 选 Langfuse,以及云版还是自托管
 
@@ -104,7 +104,7 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com   # 欧盟区;美国区是 https://
 uv add langfuse
 ```
 
-注意:老教程里写的是 `LANGFUSE_HOST`,现在的 SDK(2026 年 10 月是 4.x)把它标成了已废弃,改用 `LANGFUSE_BASE_URL`。旧变量名目前还能用,但别再往新项目里写。这类「教程里的写法过时了」的问题在 Agent 生态里非常常见,遇到报错先看你装的版本号,再去官方文档对一下。
+注意:老教程里写的是 `LANGFUSE_HOST`,现在的 SDK(2026 年 10 月 PyPI 上最新是 5.0.4,v4 起就这样)把它标成了已废弃,改用 `LANGFUSE_BASE_URL`。旧变量名目前还能用,但别再往新项目里写。这类「教程里的写法过时了」的问题在 Agent 生态里非常常见,遇到报错先看你装的版本号,再去官方文档对一下。
 
 ### 2. LangGraph 一行接入
 
@@ -137,17 +137,37 @@ def traced_case(case: dict, run_tag: str = "dev") -> tuple:
 
 
 if __name__ == "__main__":
-    case = {"id": "smoke-02", "customer_id": "C009",
-            "ticket": "我们年付的,下个月起不用了,剩下几个月的钱能退吗?"}
+    case = {"id": "smoke-02", "customer_id": "C023",
+            "ticket": "我们公司年付的企业版,下个月起不用了。请帮我们取消,剩余月份的钱按规定退回来。"}
     run, trace_id = traced_case(case)
     print(run.category, run.pending_approval, trace_id)
     print(langfuse.get_trace_url(trace_id=trace_id))
     langfuse.flush()   # 脚本马上退出,不 flush 的话后台还没发出去的数据会丢
 ```
 
+<div class="line-notes">
+
+- `from langfuse import get_client, propagate_attributes` `get_client()` 拿进程里唯一的 Langfuse 客户端(单例),`propagate_attributes` 用来给这次运行的所有 span 挂上 user_id、session_id。
+- `from langfuse.langchain import CallbackHandler` LangChain 回调处理器。LangGraph 每个节点、每次模型调用都会触发回调,它把这些回调翻译成 Langfuse 的 span。
+- `load_dotenv()` 必须在 `get_client()` 之前:客户端构造时读 `LANGFUSE_PUBLIC_KEY` 等环境变量。
+- `langfuse = get_client()` 没配 key 时不会报错,只会打一行 `Authentication error: Langfuse client initialized without public_key. Client will be disabled.`,然后整个客户端变成空操作。我实跑时没有 Langfuse 账号,就是这个状态(下面的 trace 数据都是在这种状态下拿的,界面部分未实跑)。
+- `def traced_case(case: dict, run_tag: str = "dev") -> tuple:` 返回 `(AgentRun, trace_id)`。`run_tag` 用来区分是 dev 集、回归集还是线上。
+- `handler = CallbackHandler()` 每条用例新建一个,`last_trace_id` 才不会串到上一条。
+- `with propagate_attributes(user_id=case.get("customer_id") or "anonymous",` 代入 smoke-02:`user_id="C023"`。没有客户编号就记 `anonymous`,不要留空,否则按用户筛选时这批 trace 找不到。
+- `session_id=f"{run_tag}-{case['id']}",` 代入得 `dev-smoke-02`。同一个 session 的多个 trace 在界面上会排在一起。
+- `tags=["w5", run_tag],` 标签是列表,筛选用。
+- `metadata={"case_id": case["id"]}):` 任意键值,点开 trace 能看到。
+- `run = run_case(case["id"], case["ticket"], case.get("customer_id"), callbacks=[handler])` 复用 Day 29 的 `run_case`,只多传一个回调。实测 smoke-02(C023 企业版年付,想退剩余月份):`category='refund'`,工具 `['find_customer', 'get_subscription', 'list_invoices', 'search_kb', 'create_refund_request']`,输入 7815、输出 435 token(Day 29 的 adapter 用 `UsageMetadataCallbackHandler` 统计,含 classify 那次),耗时 9.2 秒,停在审批上(`pending_approval=True`)。退款参数是 `INV-2026-0091`、6578 元,理由里写着「当前周期 2026-10-09 至 2027-10-09,已使用当月不退,剩余 11 个整月,598 × 11 = 6578 元」,和 Day 31 判题器一致。
+- `return run, handler.last_trace_id` 回调处理器记着刚才那次运行的 trace_id。没配 key 时实测是 32 个 0:`'00000000000000000000000000000000'`。
+- `case = {"id": "smoke-02", "customer_id": "C023",` 冒烟用例,和 Day 29 的 smoke-02 一样。C023 是企业版年付 2 席位(种子 42 的真实数据)。
+- `print(langfuse.get_trace_url(trace_id=trace_id))` 拼出界面上的 trace 链接。要先查项目 id,所以没配 key 时这一行直接抛 `AttributeError: Langfuse client is not initialized`。看到这个报错先检查 `.env`。
+- `langfuse.flush()` 把后台队列里还没发出去的数据立刻发完。原因见代码下面的正文。
+
+</div>
+
 最后那行 `flush()` 很重要。Langfuse SDK 是在后台线程批量发送数据的,短脚本跑完就退出,不 flush 的话你会发现界面上什么都没有,然后开始怀疑 key 配错了。我第一次就在这里浪费了二十分钟。长期运行的服务(比如 Day 36 的 FastAPI)不用每次 flush,在进程退出时调一次 `shutdown()` 即可。
 
-`propagate_attributes` 是 v4 SDK 设置 trace 级属性的推荐方式。它是一个上下文管理器,在它里面创建的所有 span 都会带上这些属性。文档里专门强调要「尽早调用」:在它之前就已经创建的 span 不会被补上,统计「C009 花了多少钱」时就会漏掉。
+`propagate_attributes` 是 v4 SDK 设置 trace 级属性的推荐方式。它是一个上下文管理器,在它里面创建的所有 span 都会带上这些属性。文档里专门强调要「尽早调用」:在它之前就已经创建的 span 不会被补上,统计「C023 花了多少钱」时就会漏掉。
 
 跑一下,打开打印出来的链接。你会看到一棵树:LangGraph 的每个节点是一个 span,模型调用是 generation(带 token 和估算费用),工具调用也在里面。点开任何一个节点能看到完整的输入输出。
 
@@ -173,6 +193,14 @@ def judge_facts(ticket: str, reply: str, facts: list[str]):
     ...
 ```
 
+<div class="line-notes">
+
+- `from langfuse import observe` 装饰器,给普通函数套一个 span,函数的参数和返回值会作为输入输出记录下来。
+- `@observe(as_type="evaluator")` 实测 5.0.4 里 `as_type` 能取的值是 `generation`、`embedding`、`span`、`agent`、`tool`、`chain`、`retriever`、`evaluator`、`guardrail`。不写就是普通 `span`。
+- `def judge_facts(ticket: str, reply: str, facts: list[str]):` 函数体不用改。注意参数会被原样记录,工单原文里有手机号的话也会进 Langfuse,隐私处理见文末。
+
+</div>
+
 `as_type` 可以是 `span`、`generation`、`tool`、`retriever`、`evaluator`、`agent` 等,Langfuse 界面会用不同图标显示,筛选时也方便。
 
 ### 4. 把评测分数写回 trace
@@ -191,6 +219,16 @@ def push_scores(trace_id: str, graders: dict[str, bool], dataset_version: str) -
         langfuse.create_score(trace_id=trace_id, name=name, value=1 if ok else 0,
                               data_type="BOOLEAN", metadata={"dataset": dataset_version})
 ```
+
+<div class="line-notes">
+
+- `from langfuse import get_client` 和 `traced_run.py` 拿到的是同一个客户端单例。
+- `def push_scores(trace_id: str, graders: dict[str, bool], dataset_version: str) -> None:` `graders` 就是 `check()` 返回的结果字典,比如 Day 33 那张 C007 工单的 `{"traj:order": True, "traj:scope": True, ...}`。
+- `for name, ok in graders.items():` 每个 grader 写成一个独立的 score,名字沿用 `traj:scope` 这种 key,界面上按名字筛。
+- `langfuse.create_score(trace_id=trace_id, name=name, value=1 if ok else 0,` 布尔值转成 1/0。实测 5.0.4 的签名里 `value` 是 `float | str`,不收 bool。
+- `data_type="BOOLEAN", metadata={"dataset": dataset_version})` `data_type` 可选值实测是 `NUMERIC / CATEGORICAL / BOOLEAN / TEXT / CORRECTION`。`metadata` 记数据集版本,换了测试集后两次的分数不能直接比,靠它区分。没有 Langfuse 账号,这一段未实跑。
+
+</div>
 
 `run_case` 换成上面的 `traced_case`,拿到 `trace_id` 后调 `push_scores`。跑完一轮评测,在 Langfuse 里按 score 筛选「`traj:scope` = 0」,就能直接点进所有越权的 trace,比在 JSONL 里搜方便太多了。Langfuse 也有自己的数据集和实验功能(`run_experiment`),可以把测试集上传上去、在界面上对比两次实验,这和我们自己写的 `run_eval.py` 做的是同一件事。我的建议是评测逻辑先留在自己的代码里(它要进 CI,Day 35),Langfuse 用来看和分享。
 
@@ -283,6 +321,29 @@ def setup_otel(service_name: str = "cloudledger-agent") -> None:
     _done = True
 ```
 
+<div class="line-notes">
+
+- `"""OpenTelemetry 初始化:` docstring 里写清楚调用顺序要求:必须在 `langfuse.get_client()` 之前。
+- `from opentelemetry import metrics, trace` 两个 API 入口:`trace` 管 span,`metrics` 管指标。API 和 SDK 是分开的包,库代码只依赖 API,应用启动时装上 SDK(就是这个文件做的事)。
+- `from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter` 用 OTLP/HTTP 协议把 span 发出去,Jaeger、Tempo、Langfuse 都收这个格式。
+- `from opentelemetry.exporter.prometheus import PrometheusMetricReader` 把指标转成 Prometheus 文本格式,等 Prometheus 来拉。
+- `from prometheus_client import start_http_server` 起一个只提供 `/metrics` 的小 HTTP 服务,跑在后台线程里。
+- `_done = False` 模块级标志,防止重复初始化。
+- `def setup_otel(service_name: str = "cloudledger-agent") -> None:` 默认服务名就是你在 Jaeger 下拉框里选的那个。
+- `global _done` 函数里要给模块级变量重新赋值,必须先声明 `global`,否则 `_done = True` 只会建一个局部变量。
+- `if _done:` 实测连调两次 `setup_otel()`,第二次直接返回。不加这个判断,第二次 `start_http_server` 会因为端口被占用报 `OSError: [Errno 48] Address already in use`。
+- `resource = Resource.create({` resource 描述「是谁产生的数据」,会附在每个 span 和指标上。
+- `"deployment.environment.name": os.getenv("APP_ENV", "dev"),` 区分 dev / staging / prod,没设就是 `dev`。
+- `tp = TracerProvider(resource=resource)` trace 的 SDK 实现。
+- `jaeger = os.getenv("JAEGER_OTLP_ENDPOINT")` 没设就不导出 span。我实跑时没有 Docker、没起 Jaeger,这一项留空,span 只在内存里(用测试用的 `InMemorySpanExporter` 收集来看)。
+- `tp.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=jaeger)))` `BatchSpanProcessor` 攒一批再发,不阻塞业务代码。一个 provider 可以挂多个 processor,这就是「一份 span 发两个地方」的原理。
+- `trace.set_tracer_provider(tp)` 设成全局。之后任何地方 `trace.get_tracer(...)` 拿到的都挂在它上面。全局只能设一次,第二次会被忽略并打警告。
+- `reader = PrometheusMetricReader()` 指标读取器。
+- `metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[reader]))` 指标的全局 provider。
+- `start_http_server(int(os.getenv("METRICS_PORT", "9464")))` 默认端口 9464。实测起来后 `curl localhost:9464/metrics` 能看到 `gen_ai_` 开头的指标(具体内容见下面 `genai_otel.py` 的注释)。
+
+</div>
+
 ### 2. 三种 span 和两个指标
 
 ```python
@@ -304,10 +365,14 @@ meter = metrics.get_meter("cloudledger.agent")
 
 PROVIDER = os.getenv("GENAI_PROVIDER", "deepseek")   # 按标准取值表填
 
+# 默认桶边界是 0、5、10、25……750、1000,按毫秒设计的,秒级耗时全挤在第一个桶里。用语义约定建议的边界
+DURATION_BUCKETS = [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92]
 OP_DURATION = meter.create_histogram("gen_ai.client.operation.duration", unit="s",
-                                     description="GenAI operation duration")
+                                     description="GenAI operation duration",
+                                     explicit_bucket_boundaries_advisory=DURATION_BUCKETS)
 TOOL_DURATION = meter.create_histogram("gen_ai.execute_tool.duration", unit="s",
-                                       description="Tool execution duration")
+                                       description="Tool execution duration",
+                                       explicit_bucket_boundaries_advisory=DURATION_BUCKETS)
 INPUT_TOKENS = meter.create_counter("gen_ai.client.inference.usage.input_tokens", unit="{token}")
 OUTPUT_TOKENS = meter.create_counter("gen_ai.client.inference.usage.output_tokens", unit="{token}")
 
@@ -327,7 +392,9 @@ def traced_chat(client, *, model: str, messages: list[dict], **kwargs):
     """包一层 openai 兼容的 chat.completions.create。"""
     attrs = {"gen_ai.operation.name": "chat", "gen_ai.provider.name": PROVIDER,
              "gen_ai.request.model": model}
-    with tracer.start_as_current_span(f"chat {model}", kind=SpanKind.CLIENT, attributes=attrs) as span:
+    # record_exception=False:异常由下面的 except 自己记,不关掉的话 SDK 会再记一遍,span 上出现两个 exception 事件
+    with tracer.start_as_current_span(f"chat {model}", kind=SpanKind.CLIENT, attributes=attrs,
+                                      record_exception=False) as span:
         t0 = time.perf_counter()
         error_type = None
         try:
@@ -360,7 +427,7 @@ def traced_tool(fn):
 
     def _start():
         return tracer.start_as_current_span(f"execute_tool {name}", kind=SpanKind.INTERNAL,
-                                            attributes=attrs)
+                                            attributes=attrs, record_exception=False)
 
     def _fail(span, e):
         span.record_exception(e)
@@ -395,6 +462,57 @@ def traced_tool(fn):
     return wrapper
 ```
 
+<div class="line-notes">
+
+- `import functools` 下面用 `functools.wraps` 保留被装饰函数的名字和 docstring。
+- `import inspect` 用 `inspect.iscoroutinefunction` 判断是不是 `async def`。
+- `from contextlib import contextmanager` 把一个带 `yield` 的生成器函数变成可以 `with` 的上下文管理器。
+- `from opentelemetry.trace import SpanKind, Status, StatusCode` `SpanKind` 标明 span 的角色(CLIENT 是调外部服务,INTERNAL 是进程内部);`Status` 标记成功还是失败。
+- `tracer = trace.get_tracer("cloudledger.agent")` 名字是埋点库的名字(instrumentation scope),不是服务名。实测它会以 `otel_scope_name="cloudledger.agent"` 的 label 出现在指标里。
+- `PROVIDER = os.getenv("GENAI_PROVIDER", "deepseek")` 按语义约定的取值表填。实测没设环境变量时是 `deepseek`。
+- `DURATION_BUCKETS = [0.01, 0.02,` 直方图的桶边界,从 10 毫秒到 82 秒,每格翻倍。为什么要显式写:实测不写时,SDK 用的默认边界是 `0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, …`,那是为毫秒设计的。我们记的是秒,一次 0.67 秒的模型调用落进 `le="5.0"` 这一格,比它小的只有 `le="0"`,P50、P95 全算不出来。加上之后实测一次 0.64 秒的调用,`le="0.32"` 计数 0、`le="0.64"` 计数 1,分辨得很清楚。
+- `OP_DURATION = meter.create_histogram("gen_ai.client.operation.duration", unit="s",` 模型调用耗时的直方图,名字和单位都按语义约定。
+- `explicit_bucket_boundaries_advisory=DURATION_BUCKETS)` 「advisory」意思是建议值:用户在 SDK 里配了 View 会覆盖它,没配就用它。
+- `TOOL_DURATION = meter.create_histogram("gen_ai.execute_tool.duration", unit="s",` 工具耗时,和上面同一套桶。
+- `INPUT_TOKENS = meter.create_counter("gen_ai.client.inference.usage.input_tokens", unit="{token}")` counter 只增不减,适合累计 token。`{token}` 是 UCUM 的写法,花括号表示「这是个计数单位的说明」。
+- `@contextmanager` 下面的函数就能写成 `with workflow_span(...) as span:`。
+- `def workflow_span(name: str, conversation_id: str):` 整张工单的根 span,其他 span 都挂在它下面。
+- `"gen_ai.conversation.id": conversation_id}` 实测我传的是 `eval-C007-1a2b3c4d`。按它能把一次对话的所有 span 找出来。
+- `with tracer.start_as_current_span(f"invoke_workflow {name}", kind=SpanKind.INTERNAL,` 「current」的意思是:这个 span 在 with 块里是当前活动的 span,块里新建的 span 自动成为它的子 span。实测根 span 的 `parent` 是 None,块里的 `chat` 和 `execute_tool` 的 `parent` 都等于根 span 的 id。
+- `yield span` `yield` 之前是进入 with,之后是退出 with。调用方在 with 块里做的事,都发生在 yield 暂停的这段时间里。
+- `def traced_chat(client, *, model: str, messages: list[dict], **kwargs):` `*` 后面的参数只能用关键字传,防止把 model 和 messages 的位置传反。`**kwargs` 原样转给 SDK,比如 `extra_body`、`tools`。
+- `attrs = {"gen_ai.operation.name": "chat", "gen_ai.provider.name": PROVIDER,` 低基数属性,span 和指标都用。
+- `with tracer.start_as_current_span(f"chat {model}", kind=SpanKind.CLIENT, attributes=attrs,` span 名按约定是 `chat {模型名}`,实测为 `chat deepseek-flash`。
+- `record_exception=False) as span:` 不让 SDK 自动记异常。实测原来不加这个参数时,一次失败调用的 span 上有两个 `exception` 事件:一个是下面 `except` 里手动记的,另一个是异常穿出 with 块时 SDK 自动记的。加上之后只剩一个。
+- `t0 = time.perf_counter()` 高精度计时器,只适合算时间差,不是钟表时间。
+- `error_type = None` 先置空,成功时保持 None。
+- `resp = client.chat.completions.create(model=model, messages=messages, **kwargs)` 真正的调用。实测问「用一句话说你好」,回复「你好!很高兴见到你,有什么我可以帮忙的吗?」,输入 8、输出 11 token。
+- `except Exception as e:` 实测把 model 写成不存在的 `no-such-model`,DeepSeek 返回 400,这里捕到 `BadRequestError`。
+- `span.record_exception(e)` 把异常类型、消息、堆栈作为一个事件记到 span 上。
+- `span.set_status(Status(StatusCode.ERROR, str(e)))` 标红。实测失败那个 span 的状态是 `StatusCode.ERROR`,成功的是 `UNSET`(UNSET 就表示没出错,不需要显式设 OK)。
+- `span.set_attribute("error.type", error_type)` 实测值 `BadRequestError`。
+- `raise` 记完再抛,不吞掉异常,调用方该重试还是该报错照旧。
+- `finally:` 成功失败都要记耗时。
+- `OP_DURATION.record(time.perf_counter() - t0,` 实测成功那次 0.64 秒、失败那次 0.09 秒。
+- `{**attrs, **({"error.type": error_type} if error_type else {})})` 只有失败时才多一个 `error.type` 属性。实测指标里出现两条序列:`error_type=""` 的是成功调用(Prometheus 导出时同一个指标里缺的 label 会补空串),`error_type="BadRequestError"` 的是失败调用。
+- `span.set_attribute("gen_ai.response.model", resp.model)` 厂商实际用的模型,可能和请求的不一样(比如请求别名、返回具体版本)。实测两者都是 `deepseek-flash`。
+- `span.set_attribute("gen_ai.response.finish_reasons", [c.finish_reason for c in resp.choices])` 列表属性,实测为 `('stop',)`。
+- `if resp.usage:` 有的厂商流式返回时没有 usage,判断一下。
+- `labels = {**attrs, "gen_ai.token.modality": "text"}` token 指标多一个 modality 属性。
+- `INPUT_TOKENS.add(resp.usage.prompt_tokens, labels)` 实测 `/metrics` 里 `gen_ai_client_inference_usage_input_tokens_total{...} 8.0`。名字被 Prometheus 改了:点换成下划线,counter 加 `_total` 后缀。
+- `def traced_tool(fn):` 装饰器:接收函数,返回包装后的函数。
+- `name = fn.__name__` 工具名直接用函数名。
+- `def _start():` 每次调用都要新开 span,所以包成函数,不能在装饰时就开好。
+- `attributes=attrs, record_exception=False)` 和 `traced_chat` 同一个原因,关掉自动记异常。
+- `def _fail(span, e):` 同步和异步两个包装都要用的失败处理,抽出来写一次。
+- `if inspect.iscoroutinefunction(fn):` `async def` 定义的函数走这个分支。直接用同步包装会出错:调用 async 函数只会立刻返回一个协程对象,span 在协程真正执行之前就结束了,耗时永远接近 0。
+- `@functools.wraps(fn)` 实测包装后 `list_invoices.__name__` 仍然是 `list_invoices`,不加的话会变成 `wrapper`,依赖函数名生成工具 schema 的代码(比如 Day 9 的注册表)就会出错。
+- `return await fn(*args, **kwargs)` 在 span 里等协程执行完。实测一个 `sleep(0.05)` 的 async 工具,耗时记为 0.051 秒。
+- `TOOL_DURATION.record(time.perf_counter() - t0, attrs)` 实测同步的 `list_invoices`(直接返回假数据)只有 3.5 微秒,`/metrics` 里是 `gen_ai_execute_tool_duration_seconds_sum{gen_ai_tool_name="list_invoices",...} 3.547e-06`。
+- `def wrapper(*args, **kwargs):` 同步版本,结构和上面一样,只是没有 await。实测一个抛 `ValueError("库连不上")` 的工具:异常照常抛给调用方,span 状态 ERROR,`error.type=ValueError`,一个 exception 事件。
+
+</div>
+
 几个实现细节:
 
 `traced_chat` 里,不管成功失败都记录耗时(放在 `finally` 里),失败时带上 `error.type`。这样你在指标里能分别看到成功调用和 429、超时这类失败调用的耗时分布。只统计成功调用,会让你低估用户实际等待的时间。
@@ -414,6 +532,14 @@ from w5.genai_otel import workflow_span
         with workflow_span("ticket_router", conversation_id=config["configurable"]["thread_id"]):
             state = graph.invoke({"ticket": ticket, "customer_id": customer_id}, config=config)
 ```
+
+<div class="line-notes">
+
+- `from w5.genai_otel import workflow_span` 放在 `run_case` 函数里导入也可以,我实跑时就是放在函数里的。
+- `with workflow_span("ticket_router", conversation_id=config["configurable"]["thread_id"]):` 用 thread_id 当 conversation.id,形如 `eval-otel-C009-5c1e…`。LangGraph 里所有模型调用、MCP 调用的 span 都在这个 with 块里产生,自动挂到它下面。
+- `state = graph.invoke({"ticket": ticket, "customer_id": customer_id}, config=config)` 原来那行缩进一层放进 with 块,其他不变。
+
+</div>
 
 模型调用这一层有个选择要做。W4 里如果是 LangChain 的 `ChatOpenAI` 在调模型,你没法直接把 `traced_chat` 塞进去。两个办法:
 
@@ -453,8 +579,24 @@ langfuse.flush()
 input("打开 http://localhost:16686 和 http://localhost:9464/metrics 看看,回车退出")
 ```
 
+<div class="line-notes">
+
+- `load_dotenv()` 放在最前面,后面几个 import 在导入时就会读环境变量。
+- `from w5.otel_setup import setup_otel  # noqa: E402` `E402` 是 Ruff/flake8 的「import 不在文件顶部」警告。这里是故意的:必须先跑完 `load_dotenv()` 和 `setup_otel()` 再导入后面的模块,`noqa` 告诉检查器别报。
+- `setup_otel()   # 先于 Langfuse 初始化` 全局 TracerProvider 先设好,Langfuse 初始化时发现已有 provider,就把自己的处理器挂上去。
+- `from opentelemetry.instrumentation.openai_v2 import OpenAIInstrumentor  # noqa: E402` 官方的 OpenAI 自动埋点库。实测 2.4b0 配 `opentelemetry-util-genai` 1.2b0 时这一行直接报 `ModuleNotFoundError: No module named 'opentelemetry.util.genai.instruments'`,把 util-genai 限制在 1.2 以下(我用 1.1b0)才能导入,见代码下面的安装命令。
+- `OpenAIInstrumentor().instrument()` 给 `openai` SDK 打猴子补丁,之后所有 `chat.completions.create` 都自动产生 span。`ChatOpenAI` 底层用的就是它,所以 LangGraph 里的模型调用也被覆盖了。
+- `langfuse = get_client()` 我没有 Langfuse 账号,这里是禁用状态,不影响 OTel 那边。
+- `for cid, ticket in [("C009", "我们年付的,` 三张工单。实测输出 `C009 refund 8.092`、`C007 refund 6.68`、`C002 refund 6.952`:三张都被分到 refund,每张 6–8 秒。
+- `run = run_case(f"otel-{cid}", ticket, cid)` 用的是上面加了 `workflow_span` 的 adapter。实测三张工单一共产生 44 个 span:`chat deepseek-flash` 11 个(每张工单里第一个是 classify 那次,它用 function calling 做结构化输出,所以 `finish_reasons` 是 `tool_calls`),`invoke_workflow ticket_router` 3 个,另外还有 `MCP send tools/list`、`MCP send tools/call list_invoices` 这类 span 共 30 个,是 MCP Python SDK 2.x 自己埋的点,不用你写。`execute_tool` span 没有出现,因为 W4 的工具函数还没加 `@traced_tool`,这一步要你自己加。
+- `print(cid, run.category, run.latency_s)` 自动埋点产生的 `chat` span 属性实测有 `gen_ai.provider.name='openai'`(它只认 SDK,不认背后是 DeepSeek)、`gen_ai.request.temperature=0.0`、`gen_ai.usage.input_tokens=414` 等。练习 6 要对的数,我在这里多打了 `run.input_tokens` 又跑了一遍同样三张:adapter 累加是输入 17458、输出 1393,`/metrics` 里的 `gen_ai_client_token_usage_sum` 也是 17458 和 1393,一个不差。两边统计的是同一批调用:Day 29 的 adapter 用 `UsageMetadataCallbackHandler` 记每一次 `ChatOpenAI` 调用,自动埋点记每一次 `openai` SDK 调用,classify 都在里面。如果把 adapter 换回「从 `messages` 里每条 AI 消息累加」的旧写法,同样三张实测是 16196 对 17426,差 1230 个输入 token,约等于 3 次 classify 的量:分类结果不进消息列表,旧写法漏掉了它。
+- `langfuse.flush()` 没账号时什么也不发。
+- `input("打开 http://localhost:16686` 让进程别退出,`/metrics` 的 HTTP 服务跑在这个进程里,进程退了就看不到了。Jaeger 需要 Docker,我没有实跑那一侧;`/metrics` 实测内容见代码下面的说明。
+
+</div>
+
 ```bash
-uv add opentelemetry-instrumentation-openai-v2
+uv add opentelemetry-instrumentation-openai-v2 "opentelemetry-util-genai<1.2"
 JAEGER_OTLP_ENDPOINT=http://localhost:4318/v1/traces \
 OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental \
 uv run python -m w5.otel_demo
@@ -475,6 +617,8 @@ gen_ai_client_inference_usage_input_tokens_total{gen_ai_operation_name="chat",ge
 gen_ai_client_operation_duration_seconds_bucket{...,le="2.5"} 5.0
 gen_ai_execute_tool_duration_seconds_count{gen_ai_tool_name="list_invoices",...} 3.0
 ```
+
+上面第二、三行来自我们自己的 `traced_chat` 和 `traced_tool`。只靠自动埋点跑 W4 的话,看到的会不一样。我 2026 年 10 月实跑 `otel_demo`(三张工单、11 次模型调用)拿到的是 `gen_ai_client_operation_duration_seconds_count{...,gen_ai_provider_name="openai",...} 11.0` 和 `gen_ai_client_token_usage_sum{...,gen_ai_token_type="input"} 14708.0`:自动埋点库(2.4b0)即使设了 `OTEL_SEMCONV_STABILITY_OPT_IN`,token 指标仍是老的 `gen_ai.client.token.usage` 直方图,`provider` 也按 SDK 记成了 `openai` 而不是 `deepseek`。另外 `uv add` 时要顺手把 `opentelemetry-util-genai` 限制在 1.2 以下:它的 1.2b0 改了内部模块名,和 openai-v2 2.4b0 不兼容,import 时报 `No module named 'opentelemetry.util.genai.instruments'`。
 
 有了这些指标,接上 Prometheus 和 Grafana 就能画「每分钟 token 用量」「模型调用 P95 延迟」「各工具耗时」这些面板,设告警(比如 token 用量一小时内翻倍,很可能是某个 Agent 在死循环)。Grafana 的部署 Day 41 再说,今天能在 `/metrics` 里看到数字就够了。
 
@@ -519,6 +663,17 @@ def mask(*, data, **kwargs):
 langfuse = Langfuse(mask=mask)
 ```
 
+<div class="line-notes">
+
+- `PHONE = re.compile(r"1[3-9]\d{9}")` 大陆手机号:1 开头,第二位 3–9,后面 9 位数字,共 11 位。预编译一次,每次调用不用重新解析正则。
+- `EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")` 粗略的邮箱规则,够脱敏用,不是严格校验。
+- `def mask(*, data, **kwargs):` Langfuse 调用时用关键字传 `data`,以后可能多传别的参数,所以收一个 `**kwargs` 兜住。
+- `if isinstance(data, str):` 只处理字符串。dict、list 原样返回,实测 `mask(data={"phone": "13812345678"})` 原样返回 `{'phone': '13812345678'}`,结构化数据里的手机号漏掉了,生产里要递归处理。
+- `return EMAIL.sub("<email>", PHONE.sub("<phone>", data))` 先换手机号再换邮箱。实测输入「我是刘静,手机 13812345678,邮箱 user007@example.com,发票 INV-2026-0123」,输出「我是刘静,手机 &lt;phone&gt;,邮箱 &lt;email&gt;,发票 INV-2026-0123」。座机 `010-62345678` 不会被换掉;一串 17 位的订单号 `20261008123456789` 也没被误伤,因为它不是以 1 开头。
+- `langfuse = Langfuse(mask=mask)` 实测 5.0.4 的构造函数里 `mask` 和 `should_export_span` 两个参数都在。
+
+</div>
+
 - 数据放在哪里要和公司确认。用海外云版,客户数据就出境了;国内业务很可能要求自托管。
 - trace 保留期限要设,不要无限期保存。
 
@@ -531,7 +686,7 @@ Day 40 讲数据脱敏时会更完整地处理这个问题。
 3. 在 Langfuse 里找出 dev 集里最慢和最贵的各 3 条 trace,写下它们慢和贵的原因。
 4. 起 Jaeger,完成第二部分:`otel_setup.py`、`genai_otel.py`,把 `@traced_tool` 加到 W4 的工具调用层,`workflow_span` 加到 adapter。关掉 `CallbackHandler`,打开 OpenAI 自动埋点,跑 `otel_demo.py`。
 5. 在 Jaeger 和 Langfuse 里分别看同一个 trace,写下两边看到的东西有什么不同(提示:哪边有 token 费用、哪边有业务 span)。
-6. `curl localhost:9464/metrics`,找到三次运行的输入 token 总数,和 adapter 里 `run.input_tokens` 的累加值对一下,差多少、为什么。
+6. `curl localhost:9464/metrics`,找到三次运行的输入 token 总数,和 adapter 里 `run.input_tokens` 的累加值对一下。两边应该一样;如果不一样,差在哪几次模型调用、为什么(提示:看看你的 adapter 统计 token 时有没有算上 classify 那一步)。
 7. 给 `mask` 函数写两个单元测试:手机号和邮箱都被替换,普通文本不变。
 
 ### 验收标准

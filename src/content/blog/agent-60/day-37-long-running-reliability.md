@@ -135,6 +135,22 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+<div class="line-notes">
+
+- `from arq import create_pool` `create_pool` 连上 Redis,返回一个能入队的连接(`ArqRedis`)。
+- `async def slow_add(ctx, a: int, b: int) -> int:` 任务函数必须是 `async def`,第一个参数固定是 `ctx`,后面才是你入队时传的参数。
+- `print(f"job {ctx['job_id']} try {ctx['job_try']}")` 实测 worker 终端打印 `job add-1-2 try 1`:`job_id` 是入队时指定的 `add-1-2`,`job_try` 是第几次执行,第一次是 1。这行 `print` 输出在 **worker** 那个终端,不在入队的终端。
+- `await asyncio.sleep(2)` 假装干了 2 秒活。实测 worker 日志是 `2.00s ← add-1-2:slow_add ● 3`,意思是执行了 2.00 秒、返回 3。
+- `class WorkerSettings:` arq 的约定:命令行 `arq 模块.WorkerSettings` 会读这个类的属性来启动 worker。
+- `functions = [slow_add]` 这个 worker 能执行哪些任务。实测启动日志第一行是 `Starting worker for 1 functions: slow_add`。
+- `redis_settings = RedisSettings()` 不传参数就是 `localhost:6379`、第 0 号库。
+- `job = await redis.enqueue_job("slow_add", 1, 2, _job_id="add-1-2")` 按**名字**入队,不是传函数对象,因为入队的进程和执行的进程可以不在一台机器上。实测返回 `<arq job add-1-2>`。
+- `dup = await redis.enqueue_job("slow_add", 1, 2, _job_id="add-1-2")` 同一个 id 再入队一次。
+- `print("same id again:", dup)` 实测打印 `same id again: None`。还有一个实测细节:结果默认在 Redis 里保留 1 小时(`arq:result:add-1-2` 这个键的 TTL 是 3599 秒),这一小时内再用 `add-1-2` 入队都返回 None。我第一次跑时 worker 没起来,任务留在了 Redis 里,重跑脚本时连第一次入队都返回了 None,紧接着 `job.result` 报 `'NoneType' object has no attribute 'result'`。想反复练习,就每次换个 id,或者清空 Redis。
+- `print("result:", await job.result(timeout=10))` 等 worker 执行完拿结果,最多等 10 秒。实测打印 `result: 3`,整个脚本用了 2.76 秒。
+
+</div>
+
 开两个终端:
 
 ```bash
@@ -185,6 +201,19 @@ def is_retryable(exc: BaseException) -> bool:
     return False      # 不认识的错误默认不重试,宁可让人看一眼
 ```
 
+<div class="line-notes">
+
+- `class PermanentError(Exception):` 自己定义一个异常类型,业务代码确定「重试也没用」时抛它。
+- `def is_retryable(exc: BaseException) -> bool:` 输入一个异常,输出要不要重试。下面每个分支我都造了真实的异常对象喂进去,结果列在对应行。
+- `if isinstance(exc, (openai.RateLimitError, openai.APITimeoutError, openai.APIConnectionError)):` `isinstance` 的第二个参数可以是元组,命中任意一个就算。实测 429 的 `RateLimitError`、`APITimeoutError`、`APIConnectionError` 都返回 True。顺序很重要:`APITimeoutError` 是 `APIConnectionError` 的子类,`RateLimitError` 是 `APIStatusError` 的子类,所以要先判断它们,再判断下面那个笼统的 `APIStatusError`。
+- `if isinstance(exc, openai.InternalServerError):` 5xx 都是 `InternalServerError`。实测 503 返回 True。
+- `if isinstance(exc, openai.APIStatusError):` 走到这里的是剩下的 4xx。实测 400 的 `BadRequestError`、401 的 `AuthenticationError` 都返回 False。我还拿一个错误的 key 真调了一次 DeepSeek,拿到的是 `AuthenticationError`,状态码 401,结果也是 False。
+- `if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError)):` 不经过 OpenAI SDK 的 HTTP 调用(比如 MCP 工具)抛的是 httpx 的异常。实测 `httpx.ReadTimeout`(`TimeoutException` 的子类)和 `httpx.ConnectError` 都返回 True。
+- `if isinstance(exc, PermanentError):` 实测返回 False。
+- `return False      # 不认识的错误默认不重试,宁可让人看一眼` 实测 `KeyError` 返回 False。另外注意一点:LangChain 包装过的模型调用抛的是 `langchain_openai` 的 `OpenAIConnectionError`,它继承自 `openai.APIConnectionError`,所以照样能被第一个分支认出来。下面 `jobs.py` 的实测就是这么走的。
+
+</div>
+
 最后一行我想多说一句。很多人的默认是「不认识的错误也重试几次,万一好了呢」。对只读操作这么干问题不大,对 Agent 这种会调写操作工具的系统,不认识的错误意味着你不知道副作用有没有发生,盲目重试比停下来更危险。
 
 ### 重试放在哪一层
@@ -213,6 +242,15 @@ llm = AsyncOpenAI(
     max_retries=2,
 )
 ```
+
+<div class="line-notes">
+
+- `from openai import AsyncOpenAI` 异步版客户端,在 FastAPI 和 arq 的事件循环里用,调用时 `await`。
+- `base_url=settings.llm_base_url,` 配置都从 Day 36 的 `settings` 来。实测 `llm.base_url` 是 `https://api.deepseek.com`。
+- `timeout=60.0,` 单次 HTTP 请求最多等 60 秒。SDK 默认是 600 秒,一个卡住的请求能把一个 worker 槽位占 10 分钟。
+- `max_retries=2,` 实测 `llm.max_retries` 是 2,也就是一次调用最多发 3 个请求,这是网络抖动那一层的重试。应用层和任务层的重试另算,所以三层乘起来要心里有数。
+
+</div>
 
 退避间隔要加随机抖动(jitter)。300 个任务同时撞上 429,如果都是「等 2 秒再试」,2 秒后它们会再整齐地撞一次。`等待 = 基数 × 2^尝试次数 × random(0.5, 1.5)` 这种写法能把它们打散。
 
@@ -272,6 +310,15 @@ CREATE TABLE IF NOT EXISTS refund_requests (
 );
 ```
 
+<div class="line-notes">
+
+- `id               TEXT PRIMARY KEY,` 退款单号,`tools_refund.py` 生成,形如 `R-86a4ae58`。
+- `idempotency_key  TEXT NOT NULL UNIQUE,` 整个幂等方案就靠这个 `UNIQUE`:同一个 key 只能有一行,第二次插入会冲突,而这个判断是数据库原子地做的。
+- `amount_cents     INTEGER NOT NULL CHECK (amount_cents > 0),` `CHECK` 约束让金额必须大于 0。实测传 `amount_cents=0`,数据库报 `CheckViolation`(违反 `refund_requests_amount_cents_check`)。
+- `status           TEXT NOT NULL DEFAULT 'pending_approval',` 和 Day 23 一样,新建的退款都是待审批。
+
+</div>
+
 ```python
 # agent-60-lab/w6/app/tools_refund.py
 import hashlib
@@ -306,6 +353,20 @@ async def create_refund_request(
     return {"refund_id": row[0], "status": row[1], "amount_cents": row[2], "deduplicated": row[0] != rid}
 ```
 
+<div class="line-notes">
+
+- `def refund_key(ticket_id: str, invoice_id: str) -> str:` 幂等键只由「哪张工单、哪张发票、做退款」决定,和时间、随机数、模型输出都无关。
+- `return hashlib.sha256(f"{ticket_id}:{invoice_id}:refund".encode()).hexdigest()` `.encode()` 把字符串变成字节,`sha256` 只收字节;`hexdigest()` 输出 64 位十六进制字符串。实测 `refund_key("T1041", "INV-2026-0123")` 是 `1ddad6b78e21f056…`,算多少次都一样;换成 `INV-2026-0026` 就变成 `cb0a014923676a6f…`。
+- `pool: AsyncConnectionPool, *, ticket_id: str, invoice_id: str, customer_id: str, amount_cents: int` 参数列表里单独的 `*` 表示后面的参数**只能按名字传**。写成 `create_refund_request(pool, ticket_id="T1041", invoice_id=…)` 可以,按位置传会报错。四个字符串挨着,按位置传很容易把发票号和客户号传反,这样写就不会。
+- `key = refund_key(ticket_id, invoice_id)` 每次调用都现算一遍 key,重试时算出来还是同一个。
+- `rid = f"R-{uuid.uuid4().hex[:8]}"` 退款单号每次随机生成。这个随机号只在真正插入成功时才会用上。
+- `ON CONFLICT (idempotency_key) DO NOTHING` key 已经存在就什么也不做,不报错。
+- `"SELECT id, status, amount_cents FROM refund_requests WHERE idempotency_key = %s", (key,)` 不管刚才插没插进去,都按 key 再查一次,拿到的一定是表里那唯一的一行。
+- `row = await cur.fetchone()` 实测第一次调用拿到 `('R-86a4ae58', 'pending_approval', 239200)`。
+- `return {"refund_id": row[0], "status": row[1], "amount_cents": row[2], "deduplicated": row[0] != rid}` 判断是不是命中了已有记录:查回来的 id 不等于这次新生成的 `rid`,说明这次没插进去。实测同样的参数调两次:第一次 `{'refund_id': 'R-86a4ae58', …, 'deduplicated': False}`,第二次 `refund_id` 还是 `R-86a4ae58`,`deduplicated` 变成 True。再用 `asyncio.gather` 对另一张发票同时并发调 5 次,5 个结果的 `refund_id` 全是 `R-7d67cdd6`,其中正好 1 个 `deduplicated` 是 False。表里最后只有 2 行。
+
+</div>
+
 `ON CONFLICT DO NOTHING` 之后再查一次,而不是先查再插。先查再插在并发下有窗口期:两个 worker 同时查,都发现没有,然后都插入。唯一约束加冲突处理把这个判断交给了数据库,它是原子的。
 
 `deduplicated` 字段告诉调用方这次是不是命中了已有记录。返回给模型时可以带上,模型看到「这笔退款之前已经申请过」会写出更合适的回复。
@@ -331,6 +392,8 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from .retry import is_retryable
+
 
 async def guarded(name: str, fn: Callable[..., Awaitable[Any]], timeout_s: float = 20.0, **kwargs) -> dict:
     """工具调用统一外壳:超时和临时故障变成模型能读懂的结果,而不是异常。"""
@@ -338,8 +401,28 @@ async def guarded(name: str, fn: Callable[..., Awaitable[Any]], timeout_s: float
         async with asyncio.timeout(timeout_s):
             return {"ok": True, "result": await fn(**kwargs)}
     except TimeoutError:
-        return {"ok": False, "error": f"{name} 在 {timeout_s:.0f} 秒内没有返回,可以稍后重试或转人工"}
+        return {"ok": False, "error": f"{name} 在 {timeout_s:g} 秒内没有返回,可以稍后重试或转人工"}
+    except Exception as exc:
+        if not is_retryable(exc):
+            raise  # 参数错、权限错这类不是「临时」的,照常抛出去
+        return {"ok": False, "error": f"{name} 暂时不可用({type(exc).__name__}),可以稍后重试或转人工"}
 ```
+
+<div class="line-notes">
+
+- `from collections.abc import Awaitable, Callable` `Callable[..., Awaitable[Any]]` 读作「一个参数随意、调用后返回可以 await 的东西的函数」,也就是任意 `async def` 函数。
+- `from .retry import is_retryable` 复用上面写好的错误分类,哪些算「临时故障」只在 `retry.py` 一处定义。
+- `async def guarded(name: str, fn: Callable[..., Awaitable[Any]], timeout_s: float = 20.0, **kwargs) -> dict:` `**kwargs` 把剩下的关键字参数原样收进一个字典,下面再原样传给 `fn`。所以调用方写 `guarded("get_invoice", get_invoice, invoice_id="INV-2026-0123")`。
+- `async with asyncio.timeout(timeout_s):` 超过 `timeout_s` 秒,里面的 `await` 会被取消,并在块的出口抛 `TimeoutError`。
+- `return {"ok": True, "result": await fn(**kwargs)}` 实测一个正常返回的工具:`{'ok': True, 'result': {'id': 'INV-2026-0123', 'amount_cents': 239200}}`。
+- `except TimeoutError:` 超时单独处理,提示语里带上等了多久。
+- `return {"ok": False, "error": f"{name} 在 {timeout_s:g} 秒内没有返回,可以稍后重试或转人工"}` `:g` 是「去掉多余零」的数字格式:20.0 显示成 `20`,0.5 显示成 `0.5`。实测一个要睡 3 秒的工具配 `timeout_s=0.5`,返回 `{'ok': False, 'error': 'get_invoice 在 0.5 秒内没有返回,可以稍后重试或转人工'}`。最初我写的是 `:.0f`,0.5 就被四舍五入成了「0 秒」。
+- `except Exception as exc:` 其他异常先接住,再看是不是临时故障。
+- `if not is_retryable(exc):` 不是临时故障,比如参数格式不对、权限不够,说明调用本身有问题,包成「稍后重试」反而会误导模型。
+- `raise  # 参数错、权限错这类不是「临时」的,照常抛出去` 单独一个 `raise` 表示把正在处理的这个异常原样重新抛出。实测一个抛 `ValueError("invoice_id 格式不对")` 的工具,`guarded` 没有吞掉,`ValueError` 照样冒出来。
+- `return {"ok": False, "error": f"{name} 暂时不可用({type(exc).__name__}),可以稍后重试或转人工"}` 连接失败、5xx 这类临时故障变成一条模型读得懂的结果。实测:手动抛 `httpx.ConnectError` 和 503 的 `openai.InternalServerError`,分别返回 `get_invoice 暂时不可用(ConnectError)` 和 `get_invoice 暂时不可用(InternalServerError)`;真去连一个没人监听的端口(127.0.0.1:9),也是 `ConnectError` 这条。
+
+</div>
 
 超时还有一个容易忽略的问题:**超时不等于没执行**。你等订单系统 20 秒没等到响应,放弃了,但订单系统可能在第 21 秒把退款建好了。这又回到了幂等:只要写操作有幂等键,下一次重试拿到的就是已经建好的那条。所以超时和幂等总是要一起设计的。
 
@@ -354,6 +437,35 @@ LangGraph 的 checkpoint 天然就能解决这个问题。只要用 Postgres che
 这里有一个参数要知道:`durability`,控制 checkpoint 什么时候写。LangGraph 文档里有三档:`"exit"` 只在整个运行结束时(成功、出错或者 interrupt)写一次,性能最好,但进程崩溃时中间进度全丢;`"async"` 在执行下一步的同时异步写上一步,快,但崩溃瞬间可能丢最后一步;`"sync"` 每一步写完才开始下一步,最稳,稍慢。批量处理工单这种场景,我选 `"sync"`。每步多几毫秒的数据库写入,和一次模型调用的几秒钟比起来可以忽略。
 
 ## 把它们拼起来:工单处理 worker
+
+worker 处理完要把结果写回工单表,让坐席在工单系统里看得到。真实公司里这张表在工单系统那边(Zendesk、自研工单系统都有类似字段),练习时我们在同一个 Postgres 里建一张最小的:
+
+```sql
+-- agent-60-lab/w6/sql/003_tickets.sql
+-- 工单系统那边的工单表(演示用最小版本)。worker 只回写 agent_status / agent_note 两列
+CREATE TABLE IF NOT EXISTS tickets (
+    id            TEXT PRIMARY KEY,
+    customer_id   TEXT NOT NULL,
+    text          TEXT NOT NULL,
+    agent_status  TEXT NOT NULL DEFAULT 'queued',  -- queued | awaiting_approval | draft_ready | needs_human
+    agent_note    TEXT NOT NULL DEFAULT '',
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+<div class="line-notes">
+
+- `CREATE TABLE IF NOT EXISTS tickets (` 演示用的最小工单表。下面 `jobs.py` 的 `_set_ticket` 会 `UPDATE tickets`,不先建这张表,worker 第一次回写就会报 `relation "tickets" does not exist`。
+- `agent_status  TEXT NOT NULL DEFAULT 'queued',` 四个取值和 `jobs.py` 里 `_set_ticket` 写的一一对应。实测 T1041 依次经过 `queued` → `awaiting_approval` → `draft_ready`。
+- `agent_note    TEXT NOT NULL DEFAULT '',` 失败原因写在这里,坐席打开工单就能看到。
+- `updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()` worker 每次回写都刷新它,按它排序就知道哪些工单最近有动静。
+
+</div>
+
+```bash
+psql "$DATABASE_URL" -f w6/sql/002_refunds.sql -f w6/sql/003_tickets.sql
+psql "$DATABASE_URL" -c "INSERT INTO tickets (id, customer_id, text) VALUES ('T1041', 'C007', '你好,10 月 8 号我被扣了两次款,INV-2026-0026 和 INV-2026-0123 金额一模一样,麻烦把多扣的那笔退给我。')"
+```
 
 ```python
 # agent-60-lab/w6/app/jobs.py
@@ -371,6 +483,12 @@ from .config import settings
 from .retry import is_retryable
 
 log = logging.getLogger("jobs")
+# arq 只给自己的 logger 配了输出,jobs 这个 logger 要自己配一个,worker 终端里才看得到
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s: [jobs] %(message)s", "%H:%M:%S"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
 
 
 async def startup(ctx):
@@ -394,10 +512,12 @@ async def _thread_has_progress(graph, config) -> bool:
 
 async def _set_ticket(pool, ticket_id: str, status: str, note: str = "") -> None:
     async with pool.connection() as conn:
-        await conn.execute(
+        cur = await conn.execute(
             "UPDATE tickets SET agent_status = %s, agent_note = %s, updated_at = now() WHERE id = %s",
             (status, note, ticket_id),
         )
+    if cur.rowcount == 0:  # 工单表里没有这一行,UPDATE 不报错,结果会悄悄丢掉
+        log.warning("ticket %s not found in tickets, status %s not saved", ticket_id, status)
 
 
 async def process_ticket(ctx, ticket_id: str, customer_id: str, text: str) -> str:
@@ -406,7 +526,7 @@ async def process_ticket(ctx, ticket_id: str, customer_id: str, text: str) -> st
     try:
         # 第一次跑:正常输入。重试时:如果已经有中间进度,传 None 从断点继续。
         resume = ctx["job_try"] > 1 and await _thread_has_progress(graph, config)
-        graph_input = None if resume else {"messages": [("user", text)]}
+        graph_input = None if resume else {"ticket": text, "customer_id": customer_id, "messages": [("user", text)]}
         log.info("ticket %s try %s resume=%s", ticket_id, ctx["job_try"], resume)
 
         result = await graph.ainvoke(graph_input, config=config, durability="sync")
@@ -443,6 +563,50 @@ class WorkerSettings:
     max_tries = 3
 ```
 
+<div class="line-notes">
+
+- `from arq import Retry` 在任务里 `raise Retry(defer=秒数)`,arq 就会在指定的秒数后重新执行这个任务,`job_try` 加 1。
+- `from w4.ticket_agent import build_graph` 和 Day 36 用的是同一张 W4 的图。
+- `log = logging.getLogger("jobs")` 按名字拿一个 logger,同名的在整个进程里是同一个对象。
+- `if not log.handlers:` 已经有 handler 就不重复加。模块被 import 两次时(比如测试里)不会每行日志打两遍。
+- `_h = logging.StreamHandler()` StreamHandler 默认写到 stderr,worker 终端里能看到。arq 启动时只给名叫 `arq` 的 logger 配了这样一个 handler,`jobs` 不配的话,下面的 `log.info` 一行都不会显示。
+- `_h.setFormatter(logging.Formatter("%(asctime)s: [jobs] %(message)s", "%H:%M:%S"))` 时间格式和 arq 自己的日志一样,加一个 `[jobs]` 前缀方便区分。
+- `log.setLevel(logging.INFO)` logger 默认级别是 WARNING,不改的话 `info` 会被丢掉。
+- `async def startup(ctx):` worker 进程启动时执行一次,把共享资源放进 `ctx`,之后每个任务的 `ctx` 里都能拿到。
+- `ctx["saver_cm"] = AsyncPostgresSaver.from_conn_string(settings.database_url)` `from_conn_string` 返回的是一个异步上下文管理器,不是 saver 本身。worker 的生命周期分成 startup 和 shutdown 两个函数,没法用一个 `async with` 包住,所以手动调 `__aenter__`,再在 shutdown 里调 `__aexit__`。
+- `saver = await ctx["saver_cm"].__aenter__()` 这一步才真正连上数据库,拿到 saver。
+- `ctx["graph"] = build_graph(checkpointer=saver)` 实测 worker 启动日志:`Starting worker for 2 functions: process_ticket, resume_after_approval`。
+- `async def shutdown(ctx):` 进程退出时关掉 checkpointer 的连接和连接池。
+- `async def _thread_has_progress(graph, config) -> bool:` 判断这个 thread 是不是「跑了一半」。
+- `return bool(snap.values) and bool(snap.next)   # 有状态且还有没跑的节点` `snap.next` 是接下来要跑的节点。实测我在第 4 秒取消一次运行来模拟 worker 崩溃,这时 `snap.next` 是 `('tools',)`,状态里已经有 `category`、`kb_hits`、`messages` 等字段,函数返回 True。正常跑完的 thread,`next` 是空元组,返回 False。
+- `async def _set_ticket(pool, ticket_id: str, status: str, note: str = "") -> None:` 把 Agent 的处理结果回写到工单表,表结构见上面的 `003_tickets.sql`。
+- `cur = await conn.execute(` 留着 `cur`,下面要看这条 UPDATE 改了几行。
+- `"UPDATE tickets SET agent_status = %s, agent_note = %s, updated_at = now() WHERE id = %s",` 工单 id 在表里不存在时,`UPDATE` 改了 0 行,数据库并不报错。
+- `if cur.rowcount == 0:  # 工单表里没有这一行,UPDATE 不报错,结果会悄悄丢掉` `rowcount` 是这条语句影响的行数。这里不抛异常,因为 `_set_ticket` 经常在 `except` 分支里被调用,再抛一个只会把原来的错误盖掉;记一条 warning,让它在终端和日志系统里显眼。
+- `log.warning("ticket %s not found in tickets, status %s not saved", ticket_id, status)` 实测往 webhook 推一张表里没有的 `T3001`,worker 终端打出 `08:09:35: [jobs] ticket T3001 not found in tickets, status awaiting_approval not saved`。改之前这一步是完全没声音的。
+- `async def process_ticket(ctx, ticket_id: str, customer_id: str, text: str) -> str:` 处理一张工单的主任务,返回值会存进 arq 的结果里,`/api/jobs/{id}` 查得到。
+- `config = {"configurable": {"thread_id": f"ticket-{ticket_id}", "customer_id": customer_id}}` thread_id 固定成 `ticket-T1041` 这种形式,重试时才能找回同一条 checkpoint。实测处理完 T1041 后,`checkpoints` 表里 `ticket-T1041` 这个 thread 有 9 行。
+- `resume = ctx["job_try"] > 1 and await _thread_has_progress(graph, config)` `and` 是短路求值:第一次执行时 `job_try` 是 1,前半句为 False,后面那个查数据库的 `await` 根本不会执行。
+- `graph_input = None if resume else {"ticket": text, "customer_id": customer_id, "messages": [("user", text)]}` 第一次给完整输入。这里要和 Day 36 一样传 `ticket` 和 `customer_id`,只传 `messages` 的话 W4 的图报 `KeyError: 'ticket'`。续跑时传 `None`,LangGraph 就从最新的 checkpoint 接着跑。实测模拟崩溃后第 2 次执行只用了 4.1 秒就到 `draft_ready`,跑完后 `llm_calls` 是 3,消息里只有 1 条 human,说明前面跑过的节点没有重跑。
+- `log.info("ticket %s try %s resume=%s", ticket_id, ctx["job_try"], resume)` 实测 worker 终端里是 `08:09:27: [jobs] ticket T1041 try 1 resume=False`,和 arq 自己的日志交错在一起,能看出两张工单是同时开跑的。
+- `result = await graph.ainvoke(graph_input, config=config, durability="sync")` `durability="sync"` 让每一步都写完 checkpoint 再往下走,上面的断点续跑就是靠它。实测 T1041 这次运行 9.45 秒结束。
+- `if "__interrupt__" in result:` 图停在审批处时,`ainvoke` 的返回值里会带 `__interrupt__` 键。
+- `await _set_ticket(pool, ticket_id, "awaiting_approval")` 实测 T1041 第一次跑完,任务结果是 `'awaiting_approval'`,`/api/jobs/ticket-T1041` 返回 `{"status": "complete", "result": "awaiting_approval"}`,工单表里也是 `awaiting_approval`。注意 arq 的任务状态是 `complete`,业务上的「等审批」是靠返回值和工单表表达的。
+- `except Exception as exc:` 任何异常都先到这里分类。
+- `if is_retryable(exc) and ctx["job_try"] < 3:` 能重试的错误、而且还没到第 3 次,就交给 arq 重试。
+- `raise Retry(defer=10 * ctx["job_try"] ** 2) from exc` `**` 比 `*` 先算:第 1 次失败等 10×1=10 秒,第 2 次失败等 10×4=40 秒。`from exc` 把原始异常挂在 `__cause__` 上,日志里看得到根因。实测把模型地址指向一个连不上的端口,第 1 次执行抛出 `Retry`,`defer_score` 是 10000(毫秒),`__cause__` 是 `OpenAIConnectionError`。
+- `log.exception("ticket %s failed permanently", ticket_id)` `log.exception` 会把当前异常的堆栈一起打出来,只能在 `except` 块里用。
+- `await _set_ticket(pool, ticket_id, "needs_human", f"{type(exc).__name__}: {exc}"[:500])` 实测同样的连接错误到第 3 次(`job_try=3`),不再重试,任务返回 `needs_human`。`[:500]` 截断是因为有些异常的消息很长,工单备注里放不下。
+- `async def resume_after_approval(ctx, ticket_id: str, customer_id: str, approved: bool, note: str) -> str:` 主管审批后由 API 入队这个任务。
+- `await graph.ainvoke(Command(resume={"approved": approved, "note": note}), config=config, durability="sync")` 实测入队 `approve-T1041`,2.74 秒跑完,返回 `draft_ready`;`cloudledger.db` 里多了 1 条 `pending_approval` 的退款申请,图的最终状态里 `citations` 是 `['kb-002#2', 'kb-002#3', 'kb-002#4']`。同一个 job id 再入队一次返回 None,主管手抖点两下也只执行一次。
+- `functions = [process_ticket, resume_after_approval]` 这个 worker 能执行的两种任务。
+- `redis_settings = RedisSettings.from_dsn("redis://localhost:6379")` 用 URL 的形式写 Redis 地址,方便以后改成从环境变量读。
+- `max_jobs = 8          # 同时跑的任务数 = 打给模型 API 的最大并发` 一个 worker 进程最多同时跑 8 个任务。
+- `job_timeout = 300` 单个任务超过 300 秒就被取消。实测一张退款工单一次 9 秒多,离这个上限很远。
+- `max_tries = 3` arq 最多执行 3 次,和上面 `job_try < 3` 的判断配套。
+
+</div>
+
 这段代码里藏着几个刻意的决定。
 
 `max_jobs = 8` 不是随便写的。它决定了一个 worker 进程同时处理几张工单,也就间接决定了你对模型 API 的并发压力。DeepSeek、OpenAI 这些平台都有按账户的速率限制,超过就是 429。批量处理 300 张工单时,宁可慢一点稳稳跑完,也别开 50 个并发然后一半任务在 429 和重试之间打转。
@@ -459,10 +623,10 @@ from arq import create_pool
 from arq.connections import RedisSettings
 from arq.jobs import Job
 
-
-@app.on_event("startup")
-async def _arq():
-    app.state.arq = await create_pool(RedisSettings.from_dsn("redis://localhost:6379"))
+# 连接 Redis 的那一行要放进 Day 36 的 lifespan 里,紧挨着 `yield` 前面,`yield` 后面关掉:
+#         app.state.arq = await create_pool(RedisSettings.from_dsn("redis://localhost:6379"))
+#         yield
+#         await app.state.arq.aclose()
 
 
 class WebhookTicket(BaseModel):
@@ -488,7 +652,23 @@ async def job_status(job_id: str):
     return {"job_id": job_id, "status": status.value, "result": info.result if info else None}
 ```
 
-`on_event("startup")` 在新版 FastAPI 里已经不推荐了,正式代码应该合并进 Day 36 的 `lifespan`。这里为了让追加的部分看得清楚,单独写了。
+<div class="line-notes">
+
+- `from arq.jobs import Job` 用 job id 构造一个 `Job` 对象,就能查这个任务的状态和结果。
+- `#         app.state.arq = await create_pool(RedisSettings.from_dsn("redis://localhost:6379"))` 这一行写在 Day 36 的 `lifespan` 里,`yield` 之前。实测改成这样以后,webhook 正常返回 202。
+- `class WebhookTicket(BaseModel):` 工单系统推过来的请求体。
+- `@app.post("/webhooks/tickets", status_code=202)` 202 的意思是「收到了,还没处理完」。webhook 接口只负责入队,要马上返回,工单系统那边通常几秒没收到响应就会重发。
+- `job = await app.state.arq.enqueue_job(` 按任务名入队,参数依次是工单 id、客户 id、正文。
+- `"process_ticket", t.ticket_id, t.customer_id, t.text, _job_id=f"ticket-{t.ticket_id}"` job id 用工单 id 拼出来。
+- `return {"accepted": True, "duplicate": job is None}` 实测同一张 T1041 连发两次,第一次返回 `{"accepted":true,"duplicate":false}`,第二次 `{"accepted":true,"duplicate":true}`,两次都是 202。
+- `@app.get("/api/jobs/{job_id}")` 查任务进度。
+- `status = await job.status()` 返回一个枚举,`.value` 是字符串。实测刚入队、worker 还没取走时是 `queued`,跑完是 `complete`,随便写一个不存在的 id 是 `not_found`。
+- `info = await job.result_info()` 任务还没跑完时是 None。
+- `return {"job_id": job_id, "status": status.value, "result": info.result if info else None}` 实测跑完以后返回 `{"job_id":"ticket-T1041","status":"complete","result":"awaiting_approval"}`。
+
+</div>
+
+为什么不另写一个 `@app.on_event("startup")` 钩子?因为 Day 36 已经用了 `lifespan`,两种写法不能混用:有了 `lifespan`,`on_event("startup")` 注册的函数根本不会执行。我一开始就是这么写的,结果第一个 webhook 请求直接 500,日志里是 `KeyError: 'arq'`,`app.state` 上压根没有这个属性。所以连接 Redis 这一行老老实实放进 `lifespan`,关闭时顺手 `aclose()`。
 
 ## worker 怎么上线和扩容
 

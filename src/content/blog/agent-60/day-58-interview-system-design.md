@@ -322,15 +322,17 @@ MAX_REPEAT = 3
 async def run_one(call) -> dict:
     name = call.function.name
     try:
-        fn, _ = TOOLS[name]
-        args = json.loads(call.function.arguments or "{}")
-        result = await asyncio.wait_for(fn(**args), timeout=TOOL_TIMEOUT)
+        fn, _ = TOOLS[name]  # 同 Day 57:try 只包查找,工具内部的 KeyError 照实报告
     except KeyError:
         result = {"error": f"没有名为 {name} 的工具"}
-    except asyncio.TimeoutError:
-        result = {"error": f"{name} 超过 {TOOL_TIMEOUT} 秒未返回"}
-    except Exception as e:
-        result = {"error": f"{type(e).__name__}: {e}"}
+    else:
+        try:
+            args = json.loads(call.function.arguments or "{}")
+            result = await asyncio.wait_for(fn(**args), timeout=TOOL_TIMEOUT)
+        except asyncio.TimeoutError:
+            result = {"error": f"{name} 超过 {TOOL_TIMEOUT} 秒未返回"}
+        except Exception as e:
+            result = {"error": f"{type(e).__name__}: {e}"}
     return {
         "role": "tool",
         "tool_call_id": call.id,
@@ -356,6 +358,31 @@ async def run(user_msg: str, model: str, max_steps: int = 8) -> str:
         messages.extend(await asyncio.gather(*(run_one(c) for c in msg.tool_calls)))
     return "步数超限,已转人工"
 ```
+
+<div class="line-notes">
+
+- `from collections import Counter` 用来统计「同一个工具 + 同样的参数」出现了几次。
+- `from openai import AsyncOpenAI` 异步客户端,`create` 返回协程,要 `await`。
+- `TOOLS: dict = {}  # name -> (async 函数, schema),注册方式同 Day 57` 这里的工具必须是 `async def`,因为下面要 `await fn(...)`。实测我注册了两个假工具:`fast_weather` 里 `await asyncio.sleep(2)` 后返回气温;`slow_news` 里 `await asyncio.sleep(20)`,用来测超时。
+- `TOOL_TIMEOUT = 10` 每个工具最多等 10 秒。为了少等一会儿,实测时我改成了 3 秒。
+- `MAX_REPEAT = 3` 同样的调用出现 3 次就停。
+- `async def run_one(call) -> dict:` 执行一个工具调用,不管成功还是失败,都返回一条 `role: tool` 消息。永远不往外抛异常,这样 `gather` 不会因为一个工具出错就整体失败。
+- `fn, _ = TOOLS[name]  # 同 Day 57` 和 Day 57 一样,`try` 只包查找,工具不存在才报「没有这个工具」。
+- `else:` 找到工具才往下执行。实测异步版的 `get_temp(city="拉萨")` 在工具内部抛 `KeyError`,`run_one` 返回 `{"error": "KeyError: '拉萨'"}`;调不存在的 `get_weather` 返回 `{"error": "没有名为 get_weather 的工具"}`。两种错误各说各的,模型才知道下一步是换参数还是换工具。
+- `args = json.loads(call.function.arguments or "{}")` `or "{}"`:没有参数的工具,有的模型会给空字符串,而 `json.loads("")` 会报错。
+- `result = await asyncio.wait_for(fn(**args), timeout=TOOL_TIMEOUT)` `wait_for` 到时间还没返回就取消任务,并抛 `TimeoutError`。实测 `slow_news` 要睡 20 秒,3 秒时被取消。
+- `except asyncio.TimeoutError:` Python 3.11 起 `asyncio.TimeoutError` 就是内置的 `TimeoutError`,两种写法都能捕获。实测返回 `{"error": "slow_news 超过 3 秒未返回"}`(用的是改成 3 秒后的值)。
+- `async def run(user_msg: str, model: str, max_steps: int = 8) -> str:` 实测问的是「同时查一下北京和上海的气温,再查北京今日新闻,然后简单总结」,整个过程用了 12.2 秒。
+- `seen: Counter = Counter()` key 是 `(工具名, 参数字符串)`。注意比较的是原始字符串,`{"city":"北京"}` 和 `{"city": "北京"}` 多一个空格就算两种不同的参数。
+- `resp = await client.chat.completions.create(model=model, messages=messages, tools=specs)` 实测共 4 次调用模型,分别在第 1.53 秒、4.39 秒、8.24 秒、12.20 秒返回。
+- `messages.append(msg.model_dump(exclude_none=True))` 和 Day 57 一样。
+- `if not msg.tool_calls:` 第 4 次调用时模型不再调工具,给出总结:北京 4.5°C、上海 16.2°C;北京新闻「查询超时,暂时……」。工具失败的情况被模型如实转告给了用户,没有编造一条新闻。
+- `seen[(call.function.name, call.function.arguments)] += 1` `Counter` 遇到不存在的 key 默认是 0,所以可以直接 `+= 1`。实测真模型的轨迹:第 1 轮两个 `fast_weather`;第 2 轮 `slow_news({"city": "北京"})` 超时;第 3 轮模型又试了一次同样的调用,计数变成 2,还没到 3;第 4 轮放弃重试,直接总结。
+- `if max(seen.values()) >= MAX_REPEAT:` 用假客户端让模型每轮都调 `news({"city": "北京"})`,第 3 次时计数到 3,返回「检测到重复调用同一工具,已停止并转人工」,此时一共只调了 3 次模型。判断放在执行工具之前,第 3 次重复调用根本不会真的执行。
+- `messages.extend(await asyncio.gather(*(run_one(c) for c in msg.tool_calls)))` 并行执行这一轮的所有调用。实测第 1 轮两个 `fast_weather` 各要睡 2 秒,两个都在第 3.53 秒完成,也就是模型在 1.53 秒返回后再过 2 秒;串行的话要 4 秒。`gather` 返回结果的顺序和传入顺序一致,和 `tool_call_id` 一一对应,谁先跑完不影响顺序。
+- `return "步数超限,已转人工"` 8 步都用完了还没有结论,就转人工。
+
+</div>
 
 写完补充两点:一是并行只适用于互不依赖的调用,模型在同一轮里一起发出的调用通常是它认为可以并行的,但有副作用的工具仍然要幂等;二是 `wait_for` 超时后底层任务会被取消,如果工具内部是同步阻塞的调用(比如没用异步客户端的数据库查询),取消不了,要用 `asyncio.to_thread` 包起来或者换异步库。能说出第二点,面试官会知道你真的写过 async 代码。
 

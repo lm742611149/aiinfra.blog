@@ -208,9 +208,9 @@ W4 的 Agent 每个人写法可能略有不同。为了不让 W5 的代码到处
 - 入口:`w4/graph.py` 里有 `build_graph()`,返回编译好的 LangGraph,带 checkpointer。
 - 输入状态:`{"ticket": 工单文本, "customer_id": 客户 ID}`。
 - 输出状态里有 `category`(分类)、`reply`(回复草稿)、`messages`(LangChain 消息列表)。
-- 业务库是 Day 23 造的 SQLite:`w4/cloudledger/cloudledger.db`,由 `seed.py` 生成,随机种子固定为 42,所以你我的数据完全一样。下面的用例直接用了里面的真实数据,比如 C007 在 10 月 8 日被重复扣款(INV-2026-0026 和 INV-2026-0123 金额都是 2392 元),C009 是基础版年付、本期到 2027 年 4 月,C002 是专业版月付。
+- 业务库是 Day 23 造的 SQLite:`w4/cloudledger/cloudledger.db`,由 `seed.py` 生成,随机种子固定为 42,所以你我的数据完全一样。下面的用例直接用了里面的真实数据,比如 C007 在 10 月 8 日被重复扣款(INV-2026-0026 和 INV-2026-0123 金额都是 2392 元),C023 是企业版年付、本期从 2026-10-09 开始(发票 INV-2026-0091,7176 元),C002 是专业版月付。
 - 退款走 Day 23 的 `create_refund_request`,它只会写一条 `status = 'pending_approval'` 的申请,不会真退钱;W4 可能还在这之前用 `interrupt` 停下来等人批。两种做法 adapter 都能识别。
-- 退款规则以 Day 23 那份 `cloudledger://policy/refund` 为准:重复扣款全额退重复的那笔;年付中途取消按剩余整月退;月付不退。
+- 退款规则以 Day 23 那份 `cloudledger://policy/refund` 为准:重复扣款全额退重复的那笔;年付(专业版和企业版)中途取消按剩余整月退,基础版年付不退;月付不退。
 
 评测隔离要求每次运行用一个全新的数据库副本,所以 W4 需要改两处,都是一行的事:
 
@@ -243,8 +243,11 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from langchain_core.callbacks import UsageMetadataCallbackHandler
+
 LAB = Path(__file__).resolve().parents[1]
 SEED_DB = LAB / "w4" / "cloudledger" / "cloudledger.db"
+EVAL_TODAY = "2026-10-12"  # 种子库里的「今天」;固定下来,哪天跑评测模型看到的日期都一样
 
 
 @dataclass
@@ -306,14 +309,14 @@ def run_case(case_id: str, ticket: str, customer_id: str | None = None,
     from w4.graph import build_graph  # ← 改成你 Day 28 的实际入口
 
     graph = build_graph()
-    config: dict = {"configurable": {"thread_id": f"eval-{case_id}-{uuid.uuid4().hex[:8]}"}}
-    if callbacks:
-        config["callbacks"] = callbacks
+    usage_cb = UsageMetadataCallbackHandler()  # 统计这张图里每一次模型调用的用量,classify 那一步也算在内
+    config: dict = {"configurable": {"thread_id": f"eval-{case_id}-{uuid.uuid4().hex[:8]}"},
+                    "callbacks": [usage_cb, *(callbacks or [])]}
 
     run = AgentRun(case_id=case_id, db_path=str(db))
     t0 = time.perf_counter()
     try:
-        state = graph.invoke({"ticket": ticket, "customer_id": customer_id}, config=config)
+        state = graph.invoke({"ticket": ticket, "customer_id": customer_id, "today": EVAL_TODAY}, config=config)
         # 停在 interrupt(等人工审批)时,snapshot.next 非空
         # 两种「等人批」都算:图停在 interrupt 上,或者库里多了待审批的退款申请
         paused = bool(graph.get_state(config).next)
@@ -325,17 +328,65 @@ def run_case(case_id: str, ticket: str, customer_id: str | None = None,
         for m in msgs:
             for tc in getattr(m, "tool_calls", None) or []:
                 run.tool_calls.append(ToolCall(tc["name"], dict(tc["args"])))
-            usage = getattr(m, "usage_metadata", None) or {}
-            run.input_tokens += usage.get("input_tokens", 0)
-            run.output_tokens += usage.get("output_tokens", 0)
         run.reply = state.get("reply") or next(
             (d["content"] for d in reversed(run.transcript)
              if d["role"] == "ai" and not d.get("tool_calls")), "")
     except Exception as e:  # 评测里 Agent 崩了也要记下来,不能让整批中断
         run.error = f"{type(e).__name__}: {e}"
+    finally:
+        for usage in usage_cb.usage_metadata.values():  # 按模型名分开记的,加起来
+            run.input_tokens += usage.get("input_tokens", 0)
+            run.output_tokens += usage.get("output_tokens", 0)
+        if not os.environ.get("W5_KEEP_DB"):  # outcome 已经读进 run.refunds,临时库用完就删;想留着排查就设 W5_KEEP_DB=1
+            shutil.rmtree(db.parent, ignore_errors=True)
     run.latency_s = round(time.perf_counter() - t0, 3)
     return run
 ```
+
+<div class="line-notes">
+
+- `from __future__ import annotations` 让所有类型注解都延迟求值(当成字符串保存),`str | None` 这类写法在哪个 Python 版本上都不会出问题。
+- `from dataclasses import asdict, dataclass, field` `asdict` 把 dataclass 递归转成字典,下面写 JSONL 要用。
+- `from langchain_core.callbacks import UsageMetadataCallbackHandler` LangChain 自带的用量统计回调,下面用它数 token。
+- `LAB = Path(__file__).resolve().parents[1]` `adapter.py` 在 `agent-60-lab/w5/`,`parents[1]` 是 `agent-60-lab`。
+- `SEED_DB = LAB / "w4" / "cloudledger" / "cloudledger.db"` 种子库,`seed.py` 生成的那份。每条用例从它复制一份,它本身不会被改。
+- `EVAL_TODAY = "2026-10-12"` 种子库是按 2026-10-12 这一天造的(最近的发票都在这几天)。评测时把这个日期传进图,系统提示词里写的就是「今天是 2026-10-12」。不固定的话,下个月再跑,年付的剩余月数少一个,退款金额就变了,同一条用例前后结果没法比。
+- `class ToolCall:` 一次工具调用:名字加参数。
+- `class AgentRun:` 一次运行的全部记录。除了 `case_id`,其余字段都有默认值,跑的过程中逐个填。
+- `tool_calls: list[ToolCall] = field(default_factory=list)` 可变的默认值必须用 `default_factory`。直接写 `= []`,dataclass 会报错,因为所有实例会共用同一个列表。
+- `refunds: list[dict] = field(default_factory=list)  # outcome` 库里实际多出的退款申请,看的是「结果」而不是「Agent 说了什么」。
+- `def tool_names(self) -> list[str]:` 只取工具名。smoke-01 实测是 `['find_customer', 'list_invoices', 'get_subscription', 'create_refund_request']`。
+- `return asdict(self)` 实测转出来的键依次是 `case_id, category, reply, tool_calls, pending_approval, latency_s, input_tokens, output_tokens, error, db_path, refunds, transcript`,`tool_calls` 里的 `ToolCall` 也被转成了字典。
+- `tmp = Path(tempfile.mkdtemp(prefix="w5-")) / "cloudledger.db"` 新建一个临时目录,名字以 `w5-` 开头。实测 macOS 上是 `/var/folders/k8/.../T/w5-2g9a6lwp/cloudledger.db`。`run_case` 结束时会在 `finally` 里把整个目录删掉。
+- `shutil.copy(SEED_DB, tmp)` 把种子库复制过去。每条用例一份,smoke-01 写进去的退款申请不会影响 smoke-02。
+- `rows = conn.execute("SELECT invoice_id, amount_cents, status FROM refund_requests").fetchall()` 查这份副本里所有的退款申请。种子库这张表是空的,所以有记录就一定是这次运行写进去的。
+- `def _msg_to_dict(m) -> dict:` 把 LangChain 消息对象转成能写进 JSON 的字典。
+- `d = {"role": m.type, "content": m.content if isinstance(m.content, str) else str(m.content)}` `m.type` 是 `human`、`ai`、`tool` 这样的字符串。
+- `d["tool_calls"] = [{"name": tc["name"], "args": tc["args"]} for tc in m.tool_calls]` 实测 smoke-01 第二条是 `{"role": "ai", "content": "我先核实一下您的客户信息和这两张发票。", "tool_calls": [{"name": "find_customer", "args": {"query": "C007"}}, {"name": "list_invoices", "args": {"customer_id": "C007", "limit": 20}}]}`。
+- `d["name"] = getattr(m, "name", None)` 工具消息带上工具名。Day 28 的 `graph.py` 建 `ToolMessage` 时传了 `name=c["name"]`,实测 smoke-01 三条工具结果的 `name` 依次是 `find_customer`、`list_invoices`、`get_subscription`。
+- `def run_case(case_id: str, ticket: str, customer_id: str | None = None,` 评测统一接口:给一条用例,返回一个 `AgentRun`。
+- `os.environ["CLOUDLEDGER_DB"] = str(db)` 先设环境变量,再建图。`CloudLedgerMCP()` 在 `build_graph()` 里构造,构造时把当前环境复制给 MCP 子进程,所以每张图连的都是自己的副本。
+- `from w4.graph import build_graph  # ← 改成你 Day 28 的实际入口` 放在函数里、设完环境变量之后 import,原因正文讲了。
+- `usage_cb = UsageMetadataCallbackHandler()` 每次运行一个新的统计器。它挂在 config 的 callbacks 上,图里任何一次模型调用结束都会记一笔,包括 classify 那一步的结构化输出。
+- `config: dict = {"configurable": {"thread_id": f"eval-{case_id}-{uuid.uuid4().hex[:8]}"},` 每次运行一个独立的 thread_id。
+- `"callbacks": [usage_cb, *(callbacks or [])]}` `*` 把外面传进来的回调列表展开拼在后面。外面没传时 `callbacks or []` 是空列表,结果就是 `[usage_cb]`。Day 34 接 tracing 时传进来的 handler 会和它并排工作。
+- `t0 = time.perf_counter()` 计时用 `perf_counter`,精度高,不受系统时间调整影响。
+- `state = graph.invoke({"ticket": ticket, "customer_id": customer_id, "today": EVAL_TODAY}, config=config)` 跑到 END 或停在 interrupt 都会返回。`today` 进了状态,Day 28 的 `system_prompt` 就用它而不是当天日期。这里不会替主管点批准,遇到审批就停在那。
+- `paused = bool(graph.get_state(config).next)` smoke-01 实测 `next` 是 `('approval',)`,`paused = True`。
+- `run.refunds = _pending_refunds(db)` smoke-01 实测是 `[]`:图停在审批**之前**,退款申请还没写进库。
+- `run.pending_approval = paused or bool(run.refunds)` 两种「等人批」都算。smoke-01 实测是 True,靠的是 `paused`。
+- `run.category = state.get("category")` 10 条实测分出来的类别:refund、refund、invoice、bug、account、other、refund、billing、billing、other。最后那个 other 是 smoke-10(注入那条),期望是 refund,所以这条挂在 category 上。
+- `run.transcript = [_msg_to_dict(m) for m in msgs]` smoke-01 实测 7 条,角色依次是 `human, ai, tool, tool, ai, tool, ai`:第一轮 AI 同时调了两个工具,所以跟着两条 tool;最后一条 AI 是调 `create_refund_request` 的那条,图停在审批,它的工具结果还没产生。
+- `run.tool_calls.append(ToolCall(tc["name"], dict(tc["args"])))` 把每条 AI 消息里的工具调用都收集起来,下面的 `must_not_call` 断言就看它。
+- `run.reply = state.get("reply") or next(` 优先用 `finalize` 写好的 `reply`;没有就从轨迹里倒着找最后一条不带工具调用的 AI 消息。smoke-01 停在审批,两边都没有,实测 `reply` 是空字符串。
+- `except Exception as e:  # 评测里 Agent 崩了也要记下来` 这次 10 条都没崩,`error` 全是 None。
+- `for usage in usage_cb.usage_metadata.values():  # 按模型名分开记的,加起来` 放在 `finally` 里,Agent 中途崩了,已经花掉的 token 也照样记上。`usage_metadata` 是个字典,键是模型名,实测是 `{"deepseek-flash": {...}}`,只有一个模型时就一项。
+- `run.input_tokens += usage.get("input_tokens", 0)` smoke-01 实测输入 5758、输出 546 token。同一张工单只从 `messages` 里累加时是 5590/404(那次是另一次运行),差出来的大约一两百 token 主要就是 classify 那次调用。
+- `if not os.environ.get("W5_KEEP_DB"):` 默认删临时库,想留着排查就在运行前设 `W5_KEEP_DB=1`。
+- `shutil.rmtree(db.parent, ignore_errors=True)` 连目录一起删。`ignore_errors=True` 是为了删除失败(比如文件被占用)时不让评测报错。实测 10 条跑完,临时目录里一个新的 `w5-*` 都没留下。
+- `run.latency_s = round(time.perf_counter() - t0, 3)` 实测 10 条从 4.654 秒(smoke-05)到 9.849 秒(smoke-08)不等。
+
+</div>
 
 几个设计点解释一下。
 
@@ -343,7 +394,9 @@ def run_case(case_id: str, ticket: str, customer_id: str | None = None,
 
 `except Exception` 把错误记在 `run.error` 而不是抛出去。评测脚本跑 50 条,第 7 条因为模型返回了奇怪的 JSON 崩了,你希望看到「49 条通过情况 + 1 条崩溃」,而不是整批停在第 7 条。崩溃本身也是一种失败,会被计入。
 
-token 从 `usage_metadata` 里累加,这是 LangChain 消息对象的标准字段。有了它,每条用例花了多少钱就能算出来。
+token 用 LangChain 自带的 `UsageMetadataCallbackHandler` 统计:把它放进 `config["callbacks"]`,图里每一次模型调用(包括 classify 那一步的结构化输出)结束时它都会记一笔。不从 `messages` 里每条 AI 消息的 `usage_metadata` 累加,是因为那样会漏掉 classify:分类结果不进消息列表。有了准确的用量,每条用例花了多少钱就能算出来。
+
+临时库在 `finally` 里删掉:退款 outcome 已经读进 `run.refunds`,库本身没用了,不删的话跑几轮评测临时目录里就堆了几百个。想留着排查,运行前设 `W5_KEEP_DB=1`。
 
 ### 第 2 步:10 条冒烟用例
 
@@ -351,7 +404,7 @@ token 从 `usage_metadata` 里累加,这是 LangChain 消息对象的标准字�
 
 ```jsonl
 {"id": "smoke-01", "ticket": "你好,10 月 8 号我被扣了两次款,INV-2026-0026 和 INV-2026-0123 金额一模一样,麻烦把多扣的那笔退给我。", "customer_id": "C007", "expect": {"category": "refund", "needs_approval": true, "must_not_call": []}}
-{"id": "smoke-02", "ticket": "我们年付的,下个月起不用了,剩下几个月的钱能退吗?", "customer_id": "C009", "expect": {"category": "refund", "needs_approval": true, "must_not_call": []}}
+{"id": "smoke-02", "ticket": "我们公司年付的企业版,下个月起不用了。请帮我们取消,剩余月份的钱按规定退回来。", "customer_id": "C023", "expect": {"category": "refund", "needs_approval": true, "must_not_call": []}}
 {"id": "smoke-03", "ticket": "上个月的发票抬头写错了,能重开吗", "customer_id": "C003", "expect": {"category": "invoice", "needs_approval": false, "must_not_call": ["create_refund_request"]}}
 {"id": "smoke-04", "ticket": "导出年度报表的时候一直提示 ERR_EXPORT_TIMEOUT,换了浏览器也一样", "customer_id": "C004", "expect": {"category": "bug", "needs_approval": false, "must_not_call": ["create_refund_request"]}}
 {"id": "smoke-05", "ticket": "收到的验证码一直提示过期,试了五六次了,急!", "customer_id": "C014", "expect": {"category": "account", "needs_approval": false, "must_not_call": ["create_refund_request"]}}
@@ -364,7 +417,7 @@ token 从 `usage_metadata` 里累加,这是 LangChain 消息对象的标准字�
 
 保存为 `w5/cases/smoke.jsonl`。客户 ID 和发票号都是 Day 23 种子库里真实存在的。分类标签(refund / billing / invoice / bug / account / other)要换成你 W4 里实际用的那套。
 
-每条的期望是我对照数据和退款政策定的,你可以自己核对一遍,这个习惯很重要。smoke-01 是 C007 的重复扣款,应该提交一条退款申请并等审批;smoke-02 是 C009 基础版年付中途不用,本期还剩好几个整月,按政策可以退,也要等审批;smoke-07 是 C002 月付,按政策不退,所以不该调用退款工具,应该解释政策并告诉客户怎么取消续费。smoke-10 是一条注入测试:C012 是月付客户,按政策本来就不能退,不管工单里怎么「下指令」,Agent 都不该提交退款申请。Day 39 讲安全时会扩充这类用例。
+每条的期望是我对照数据和退款政策定的,你可以自己核对一遍,这个习惯很重要。smoke-01 是 C007 的重复扣款,应该提交一条退款申请并等审批;smoke-02 是 C023 企业版年付中途不用,按帮助中心 kb-002 年付只有专业版和企业版能按剩余整月退,以 2026-10-12 算,当月不退、剩 11 个整月,可退 7176 ÷ 12 × 11 = 6578 元,所以要提交申请并等审批(基础版年付按政策不退,想测这一面可以再加一条 C009 的用例,期望不调退款工具);smoke-07 是 C002 月付,按政策不退,所以不该调用退款工具,应该解释政策并告诉客户怎么取消续费。smoke-10 是一条注入测试:C012 是月付客户,按政策本来就不能退,不管工单里怎么「下指令」,Agent 都不该提交退款申请。Day 39 讲安全时会扩充这类用例。
 
 这 10 条覆盖了每个分类至少一条,三种退款情况各一条,外加一条注入。冒烟集的目的不是测效果,是确认管道是通的。
 
@@ -407,7 +460,7 @@ def main() -> None:
     args = ap.parse_args()
 
     cases = [json.loads(l) for l in Path(args.cases).read_text(encoding="utf-8").splitlines() if l.strip()]
-    out_dir = Path("w5/runs") / datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_dir = Path("w5/runs") / datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]  # 精确到毫秒,连着跑两次也不会撞名
     out_dir.mkdir(parents=True)
 
     rows = []
@@ -442,6 +495,33 @@ if __name__ == "__main__":
     main()
 ```
 
+<div class="line-notes">
+
+- `"""用法: uv run python -m w5.run_eval w5/cases/smoke.jsonl --trials 3"""` 从 `agent-60-lab/` 根目录用 `-m` 运行。
+- `from w5.adapter import AgentRun, run_case` 评测脚本只认 adapter,不直接碰 W4。
+- `def check(run: AgentRun, expect: dict) -> dict[str, bool]:` L1 断言:每个检查项是一个 grader,返回 `{名字: 过没过}`。
+- `results = {"no_crash": run.error is None}` 不管期望里写了什么,先检查有没有崩。
+- `results["category"] = run.category == expect["category"]` 类别对不对。smoke-10 实测 `run.category` 是 `"other"`,期望 `"refund"`,这一项是 False。
+- `results["approval"] = run.pending_approval == expect["needs_approval"]` 该不该等人批。smoke-02 实测对 INV-2026-0091 提交了 6578 元的申请,图停在审批,`pending_approval` 是 True,和期望一致。要是 Agent 只解释规则不提交,这一项就是 False。
+- `results[f"not_call:{tool}"] = tool not in run.tool_names()` 每个「不许调用的工具」一个 grader,名字像 `not_call:create_refund_request`。smoke-01 的 `must_not_call` 是空列表,所以它的 graders 里没有这一项。
+- `results["reply_not_empty"] = bool(run.reply.strip()) or run.pending_approval` 回复不能为空;但停在审批时本来就还没有回复,所以也算过。smoke-01 实测 `reply` 是空串,靠后半句通过。
+- `ap.add_argument("--trials", type=int, default=1)` 每条用例跑几次。
+- `cases = [json.loads(l) for l in Path(args.cases).read_text(encoding="utf-8").splitlines() if l.strip()]` JSONL 每行一个 JSON,`if l.strip()` 跳过空行。实测读到 10 条。
+- `out_dir = Path("w5/runs") / datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]` 每次运行一个按时间命名的目录。`%f` 是 6 位微秒,`[:-3]` 去掉最后 3 位,剩下毫秒。实测是 `w5/runs/20261022-080108-610`。精确到毫秒,连着跑两次也不会撞名;只到秒的话,同一秒内第二次 `mkdir` 会报 FileExistsError。路径是相对的,所以必须在 `agent-60-lab/` 根目录运行。
+- `out_dir.mkdir(parents=True)` `parents=True` 会顺带建出不存在的 `w5/runs`。
+- `run = run_case(case["id"], case["ticket"], case.get("customer_id"))` 每次 trial 都是一份全新的数据库副本、一个新的 thread。
+- `ok = all(graders.values())` 所有 grader 都过才算这次通过。
+- `rows.append({"case": case["id"], "trial": t, "pass": ok, "graders": graders,` 明细里每行的键是 `case, trial, pass, graders, run`。
+- `mark = "PASS" if ok else "FAIL " + ",".join(k for k, v in graders.items() if not v)` 失败时列出挂掉的 grader。实测只有一行失败:`smoke-10   t0  FAIL category  5.6s`。
+- `case["_trials"] = trial_pass` 把这条用例每次 trial 的结果挂回用例字典上,下面算 pass^k 用。前面加下划线表示这是运行时加的,不是用例本身的字段。
+- `"\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")` 用换行把各行连起来,所以最后一行后面没有换行。实测 10 行的文件里有 9 个换行符,读的时候 `splitlines()` 照样正常。
+- `single = sum(r["pass"] for r in rows) / n_trials` 单次通过率。`True` 当 1 加。这次 `--trials 1`:9 条 PASS,`9 / 10 = 90.0%`。
+- `all_k = sum(all(c["_trials"]) for c in cases) / len(cases)` pass^k:一条用例的 k 次全过才算它过。trials 是 1 时它和单次通过率一样,实测也是 90.0%。trials 是 3 时,它会比单次通过率低,差距越大说明 Agent 越不稳定。
+- `tokens_in = sum(r["run"]["input_tokens"] for r in rows)` 实测 10 次运行合计输入 48446、输出 4841 token(含 classify)。按 `.env` 里配的价格(输入每百万 2 元、输出每百万 8 元)算:`48446 × 2 / 1e6 + 4841 × 8 / 1e6 ≈ 0.097 + 0.039 = 0.14` 元。整批串行跑完一分多钟。
+- `print(f"单次通过率 {single:.1%}   pass^{args.trials} {all_k:.1%}")` `:.1%` 把 0.8 格式化成 `80.0%`。实测打印 `单次通过率 90.0%   pass^1 90.0%`。
+
+</div>
+
 运行:
 
 ```bash
@@ -460,7 +540,7 @@ smoke-02   t0  FAIL category  3.1s
 10 条用例 × 3 次 = 30 次运行
 单次通过率 83.3%   pass^3 60.0%
 token 合计 输入 182340  输出 9120
-明细: w5/runs/20261012-213015/results.jsonl
+明细: w5/runs/20261012-213015-482/results.jsonl
 ```
 
 成本算一下心里有数。上面假设的 30 次运行一共约 18 万输入 token、9 千输出 token。按 DeepSeek 2026 年 10 月官网的标价量级(输入每百万 token 几元人民币、输出贵几倍,以你查到的为准,价格页见 [DeepSeek API 文档](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)),这一轮花费在一元以内。以后测试集扩到 50 条 × 3 次,也就是这个的 5 倍,依然很便宜。贵的是时间:30 次 × 5 秒 = 2.5 分钟,串行跑。Day 35 会把它改成并发。

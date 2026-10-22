@@ -197,6 +197,29 @@ def from_openai_usage(model: str, usage) -> CallCost:
     return CallCost(model, u.get("prompt_tokens", 0), cached or 0, u.get("completion_tokens", 0))
 ```
 
+<div class="line-notes">
+
+- `from dataclasses import dataclass` 用 dataclass 定义一个只装数据的类,`__init__` 和打印格式都自动生成。
+- `PRICES = {` 单位是「美元 / 百万 token」。`in` 是没命中缓存的输入价,`cached` 是命中缓存的输入价,`out` 是输出价。
+- `"deepseek-flash":  {"in": 0.30, "cached": 0.006, "out": 1.20},` 命中缓存的输入只要 0.006,是未命中的五十分之一,这就是正文一直强调缓存的原因。
+- `class CallCost:` 一次模型调用的用量,外加两个算出来的属性:花了多少钱、命中率多少。
+- `cached_tokens: int` 输入里有多少 token 命中了缓存。它包含在 `input_tokens` 里,不是另外加的。
+- `@property` 加了 `@property` 的方法当属性用,写 `cc.usd`,不用写 `cc.usd()`。
+- `p = PRICES.get(self.model)` 用 `get` 而不是 `[]`,价格表里没有的模型不会抛 KeyError。
+- `return float("nan")` 不认识的模型返回 NaN(不是数字),而不是 0。返回 0 会让你以为这次调用免费,NaN 在汇总时会把总和也变成 NaN,一眼就能看出价格表漏了。实测 `CallCost("gpt-x", 1000, 0, 100).usd` 是 `nan`。
+- `miss = self.input_tokens - self.cached_tokens` 没命中的输入。实测第 2 次调用 2031 − 1792 = 239。
+- `return (miss * p["in"] + self.cached_tokens * p["cached"] + self.output_tokens * p["out"]) / 1e6` 三块分别乘单价,再除以一百万。代入正文的例子:(6820×0.30 + 10200×0.006 + 730×1.20) / 1e6 = 0.002983,和上面手算的 $0.00298 一致。
+- `def hit_rate(self) -> float:` 命中率 = 命中的输入 / 全部输入。
+- `return self.cached_tokens / self.input_tokens if self.input_tokens else 0.0` `input_tokens` 为 0 时直接返回 0,避免除以零。
+- `def from_openai_usage(model: str, usage) -> CallCost:` 把 SDK 返回的 `usage` 对象转成 `CallCost`。下面用一段 2031 token 的固定前缀连着问了 DeepSeek 两次,两次的真实数据都列在对应行。
+- `u = usage.model_dump() if hasattr(usage, "model_dump") else dict(usage)` SDK 返回的是 pydantic 对象,有 `model_dump`;测试时传的普通 dict 走后半句。两种都能用。
+- `cached = u.get("prompt_cache_hit_tokens")` DeepSeek 自己的字段。实测第 1 次是 0(前缀第一次出现,缓存是空的),第 2 次是 1792。1792 = 14 × 128,DeepSeek 按 128 token 一块缓存,2031 个 token 里前 1792 个凑满了 14 块。
+- `if cached is None:` 只有字段**不存在**时才去读 OpenAI 的格式。注意这里判断的是 `is None`,不是 `not cached`:DeepSeek 第一次返回的 0 也是一个有效值,用 `not cached` 的话 0 会被当成「没有这个字段」。
+- `cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens", 0)` OpenAI 把命中数放在 `prompt_tokens_details.cached_tokens`。`or {}` 处理 `prompt_tokens_details` 为 None 的情况。实测传 OpenAI 形状的 `{"prompt_tokens": 2000, …, "prompt_tokens_details": {"cached_tokens": 1536}}`,得到 `cached_tokens=1536`;`prompt_tokens_details` 是 None 时得到 0。顺带一提,DeepSeek 现在两套字段都给,实测第 2 次的 `prompt_tokens_details.cached_tokens` 也是 1792。
+- `return CallCost(model, u.get("prompt_tokens", 0), cached or 0, u.get("completion_tokens", 0))` 实测两次调用:第 1 次 `CallCost(input_tokens=2031, cached_tokens=0, output_tokens=60)`,`usd=0.00068130`,命中率 0;第 2 次 `CallCost(input_tokens=2031, cached_tokens=1792, output_tokens=34)`,`usd=0.00012325`,命中率 0.882。同样的问题,第二次便宜了八成多。
+
+</div>
+
 把它接到 Day 34 的 Langfuse 里,每次调用记一个 `cost_usd` 和 `cache_hit_rate`。上线第一周每天看一眼命中率,如果低于你的预期,十有八九是前缀里混进了会变的东西。我遇到过最隐蔽的一次是工具描述里写了「今天是星期几」,花了半天才找到。
 
 ## 模型路由:不是所有活都要最好的模型
@@ -221,6 +244,16 @@ NODE_MODELS = {
 def model_for(node: str) -> str:
     return NODE_MODELS.get(node, os.getenv("LLM_MODEL", "deepseek-flash"))
 ```
+
+<div class="line-notes">
+
+- `NODE_MODELS = {` 节点名到模型名的映射。键要和 LangGraph 图里的节点名一致。
+- `"classify":   os.getenv("MODEL_CLASSIFY", "deepseek-flash"),` `os.getenv(名字, 默认值)`:环境变量没设就用默认值。上线后想把某个节点换成贵模型,改环境变量就行,不用改代码、不用重新发版。
+- `"draft_reply": os.getenv("MODEL_DRAFT", "deepseek-flash"),` 实测设了 `MODEL_DRAFT=deepseek-v4-pro` 以后,`NODE_MODELS` 变成 `{'classify': 'deepseek-flash', 'agent': 'deepseek-flash', 'draft_reply': 'deepseek-v4-pro', 'self_check': 'deepseek-flash'}`。注意这个字典是在 **import 时**读环境变量的,进程跑起来以后再改环境变量不会生效,要重启。
+- `def model_for(node: str) -> str:` 节点调模型之前先问一下该用哪个。
+- `return NODE_MODELS.get(node, os.getenv("LLM_MODEL", "deepseek-flash"))` 不在表里的节点用全局默认模型。实测 `model_for("retrieve")` 返回 `deepseek-flash`。
+
+</div>
 
 注意默认值全是便宜模型。这是我想强调的思路:**升级模型要有评测数据支撑**,而不是凭感觉「起草很重要,用最好的」。
 
@@ -286,6 +319,21 @@ async def run_tool_calls(tool_calls, registry: dict) -> list[dict]:
 
     return await asyncio.gather(*(one(tc) for tc in tool_calls))
 ```
+
+<div class="line-notes">
+
+- `async def run_tool_calls(tool_calls, registry: dict) -> list[dict]:` 输入是模型返回的 `tool_calls` 和「工具名 → async 函数」的注册表,输出是可以直接追加进 messages 的工具消息列表。下面我让 DeepSeek 真的返回了一组调用来跑:问「同时查客户 C007 和发票 INV-2026-0123、INV-9999」,它一次给了 3 个调用:`get_customer({"customer_id": "C007"})`、`get_invoice({"invoice_id": "INV-2026-0123"})`、`get_invoice({"invoice_id": "INV-9999"})`。三个工具是我写的假工具,分别睡 1.0、1.5、1.5 秒,其中 INV-9999 会抛异常。
+- `async def one(tc):` 处理单个调用的内部函数。定义在里面,是为了能直接用外层的 `registry`。
+- `fn = registry[tc.function.name]` 按名字找到工具函数。
+- `args = json.loads(tc.function.arguments or "{}")` 模型给的参数是 JSON **字符串**,要先解析成字典。实测第一个是 `'{"customer_id": "C007"}'`,解析后是 `{"customer_id": "C007"}`。`or "{}"` 防的是无参工具返回空串的情况。
+- `result = await fn(**args)` `**args` 把字典展开成关键字参数,等于 `await get_customer(customer_id="C007")`。
+- `content = json.dumps(result, ensure_ascii=False)` 实测是 `'{"id": "C007", "name": "刘静"}'`。`ensure_ascii=False` 让中文原样输出,不变成 `刘静`,模型读起来也省 token。
+- `except Exception as exc:  # noqa: BLE001` 一个工具出错,只影响它自己那条结果。
+- `content = json.dumps({"error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False)` 实测 INV-9999 那个调用得到 `'{"error": "LookupError: 发票 INV-9999 不存在"}'`,另外两个结果照常返回。
+- `return {"role": "tool", "tool_call_id": tc.id, "content": content}` `tool_call_id` 必须和模型给的调用 id 对上,比如 `call_00_4wuSf0ZlXOGx5YZZs6so4555`,否则下一轮请求会报 400(Day 8 讲过)。
+- `return await asyncio.gather(*(one(tc) for tc in tool_calls))` `one(tc) for tc in tool_calls` 先造出 3 个协程,`*` 把它们展开成 `gather` 的 3 个参数,`gather` 让它们同时跑,等全部结束,再按**传入的顺序**返回结果。实测 3 个工具总共耗时 1.5 秒,也就是最慢那个的时间;串行的话要 1.0 + 1.5 + 1.5 = 4 秒。返回的列表顺序和 `tool_calls` 一致,不是谁先完成谁排前面。
+
+</div>
 
 **流式输出。** 它不缩短总时间,但把用户感知的等待从「总时间」变成「首字时间」。昨天已经做了。
 

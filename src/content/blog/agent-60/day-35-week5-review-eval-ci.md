@@ -134,6 +134,12 @@ def rule_graders(run: AgentRun, case: dict) -> dict[str, tuple[bool, str]]:
 
     want = exp.get("refund")
     got = [r for r in run.refunds if r["status"] == "pending_approval"]
+    if not got and run.pending_approval:
+        # 图停在主管审批的 interrupt 上时,申请还没写进库,拿等待审批的那次工具调用来比
+        got = [{"invoice_id": tc.args.get("invoice_id"),
+                "amount_cents": round(float(tc.args.get("amount_yuan", 0)) * 100),
+                "status": "pending_approval"}
+               for tc in run.tool_calls if tc.name == "create_refund_request"][-1:]
     if want is None:
         g["refund_none"] = (not got, f"不该退款却产生了 {got}")
     else:
@@ -162,7 +168,42 @@ def all_graders(run: AgentRun, case: dict, use_judge: bool = False) -> dict[str,
     return g
 ```
 
+<div class="line-notes">
+
+- `from w5.trajectory import trajectory_graders` Day 33 的五个轨迹检查,下面整体并进来。
+- `CRITICAL = {"no_crash", "traj:scope", "refund_none", "refund_match", "not_call:create_refund_request"}` 关键 grader 的名字集合。用 set 是因为门禁里要频繁判断 `k in CRITICAL`,set 查找是 O(1)。
+- `def rule_graders(run: AgentRun, case: dict) -> dict[str, tuple[bool, str]]:` 确定性规则检查。每项是 `(是否通过, 失败说明)`,说明在通过时也写,反正报告只打印失败的。
+- `g: dict[str, tuple[bool, str]] = {"no_crash": (run.error is None, run.error or "")}` 先检查有没有崩。`run.error or ""`:没崩时 error 是 None,换成空串。
+- `if run.error:` 崩了就直接返回,只有 `no_crash` 一项,而且是关键 grader,门禁一定拦。
+- `g["category"] = (run.category == exp["category"], f"得到 {run.category},期望 {exp['category']}")` 实测 dev 集里 syn-seats-008(客户觉得席位算多了,想退)两次都被分成 refund,期望是 billing,说明是 `得到 refund,期望 billing`。这条到底是 Agent 错还是用例期望值有争议,值得读一读(工单里确实写了「能不能退」)。
+- `g["approval"] = (run.pending_approval == exp.get("needs_approval", False),` 该不该停下等主管批。实测 syn-cancel-013(C020 基础版年付想退剩余月份)两次都是 `pending_approval=False`,期望也是 False:按退款政策第 2 条,基础版年付不退,Agent 查完订阅和发票、读了 kb-002 后回复「基础版年付不退,取消后用到本期结束」,没提交申请,这一项通过。
+- `names = run.tool_names()` 下面 `must_call`、`must_not_call` 都用它。
+- `g[f"call:{tool}"] = (tool in names, f"没有调用 {tool}")` 每个必须调用的工具单独一个 key,比如 `call:list_invoices`。合成用例里这个列表多数是空的。
+- `g[f"not_call:{tool}"] = (tool not in names, f"调用了不该调的 {tool}")` 非退款类用例都带 `must_not_call: ["create_refund_request"]`,生成的 key 正好是 `CRITICAL` 里的 `not_call:create_refund_request`。
+- `want = exp.get("refund")` 判题器算出的正确退款。syn-duplicate-007 是 `{'invoice_id': 'INV-2026-0123', 'amount_yuan': 2392.0}`,非退款用例是 None。
+- `got = [r for r in run.refunds if r["status"] == "pending_approval"]` 临时库里实际产生的待审批退款。
+- `if not got and run.pending_approval:` 库里没有,但图停在审批上。原因和实测见代码下面的正文。
+- `got = [{"invoice_id": tc.args.get("invoice_id"),` 把等待审批的那次工具调用拼成和库里记录一样的形状,下面的比较代码就不用分两套。
+- `"amount_cents": round(float(tc.args.get("amount_yuan", 0)) * 100),` 工具参数是元,库里存分,这里换算成分。用 `round` 不用 `int`,`19.99 * 100` 是 `1998.9999999999998`,`int` 会少 1 分(Day 23 讲过)。
+- `for tc in run.tool_calls if tc.name == "create_refund_request"][-1:]` `[-1:]` 只取最后一次调用,结果仍是列表(0 或 1 个元素),和 Day 33 的「只看最后一次,允许自我纠正」一致。实测 syn-duplicate-007 加上这段后两次都通过。
+- `g["refund_none"] = (not got, f"不该退款却产生了 {got}")` 不该退的用例:库里和待审批调用里都必须一条没有。
+- `ok = (len(got) == 1 and got[0]["invoice_id"] == want["invoice_id"]` 恰好一条,发票号一致。
+- `and abs(got[0]["amount_cents"] / 100 - want["amount_yuan"]) < 0.01)` 金额误差不超过 1 分钱。
+- `g["refund_match"] = (ok, f"库里 {got},期望 {want}")` 失败时的说明要能直接看懂。这次 dev 集里没有挂在这一项上的;用例期望还按旧规则「基础版年付也按剩余整月退」写的时候,实测 syn-cancel-013 挂在这里,说明是 `库里 [],期望 {'invoice_id': 'INV-2026-0077', 'amount_yuan': 1617.0}`。
+- `g[f"include:{s}"] = (s in run.reply, f"回复缺少「{s}」")` 回复必须出现的字样。
+- `g[f"exclude:{s}"] = (s not in run.reply, f"回复不该出现「{s}」")` 退款类用例都带 `["已退款", "已经退给您"]`:钱还没批,不能对客户说已经退了。
+- `def all_graders(run: AgentRun, case: dict, use_judge: bool = False)` 规则 + 轨迹 + 可选的 LLM 评分器。
+- `g.update(trajectory_graders(run, case))` `dict.update` 把五个 `traj:*` 合进来。
+- `facts = case["expect"].get("facts") or []` `or []` 同时处理没有这个 key 和值为 None 两种情况。
+- `if use_judge and facts and run.reply.strip():` 三个条件都满足才调评分器,省钱。实测合成用例的 `facts` 都是空列表,所以加了 `--judge` 报告里也没有 `judge:facts` 这一项。
+- `from w5.judge import judge_facts` 局部导入,不开 judge 时不用加载评分器的客户端。
+- `if v.verdict != "unknown":` 评分器拿不准的不计入通过与否,Day 32 讲过。
+
+</div>
+
 `CRITICAL` 这个集合是今天的设计重点之一,下面讲门禁时细说。
+
+`if not got and run.pending_approval:` 那一段是实跑之后补上的。Day 28 的图在提交退款前会停在主管审批的 `interrupt` 上,这时 `create_refund_request` 还没真正执行,库里没有记录,`run.refunds` 是空列表。不补这段的话,Agent 处理得完全正确的退款工单,`refund_match` 也会判失败,而且它是关键 grader,门禁对每一条该退款的用例都会拦。我第一次跑 dev 集就是这样:C007 重复扣款那条,轨迹检查 `traj:refund_args` 通过了,`refund_match` 却报「库里 [],期望 {'invoice_id': 'INV-2026-0123', 'amount_yuan': 2392.0}」。
 
 ### 2. evaluate.py:总入口
 
@@ -286,6 +327,53 @@ if __name__ == "__main__":
     main()
 ```
 
+<div class="line-notes">
+
+- `"""W5 评测总入口。` 四种用法写在 docstring 里,`--help` 看不到这么全,打开文件第一眼就能看到。
+- `from concurrent.futures import ProcessPoolExecutor` 进程池。为什么不用线程池见代码下面的正文。
+- `CASES = Path("w5/cases/golden.jsonl")` 相对路径,所以要在练习仓根目录运行。
+- `PRICE_IN = float(os.getenv("PRICE_IN_PER_M", "2"))` 环境变量读出来是字符串,要 `float`。我实跑时没设,用的是默认的 2 元 / 百万输入 token。
+- `def run_one(job: tuple[dict, int, bool]) -> dict:` 子进程里执行的函数。参数打包成一个元组,因为 `pool.map` 只给每个任务传一个参数。
+- `from w5.adapter import run_case` 写在函数里:子进程启动后才导入,每个进程各有一份。
+- `case, trial, use_judge = job` 拆元组。
+- `run = run_case(case["id"], case["ticket"], case.get("customer_id"))` 实测每张工单 4.9–11.2 秒。
+- `graders = all_graders(run, case, use_judge)` 上面 `checks.py` 的总入口。
+- `"pass": all(ok for ok, _ in graders.values()),` 所有 grader 都过才算这次 trial 通过。`_` 丢掉说明文字。
+- `"failed": {k: why for k, (ok, why) in graders.items() if not ok},` 只留失败项。实测 syn-seats-008 第一次:`{'category': '得到 refund,期望 billing'}`;通过的用例是空字典 `{}`。
+- `"latency_s": run.latency_s, "tokens_in": run.input_tokens, "tokens_out": run.output_tokens}` 实测 syn-login-004 第一次:4.929 秒,输入 2482、输出 475 token(含 classify 那次模型调用)。
+- `def git_rev(path: Path) -> str:` 记录用例文件和 W4 代码各自最后一次提交的哈希,报告里写出来,以后对比两次结果时知道是不是同一份数据、同一版代码。
+- `out = subprocess.run(["git", "log", "-1", "--format=%h", "--", str(path)],` `-1` 只要最近一条,`%h` 短哈希,`--` 后面是路径,只看动过这个路径的提交。
+- `return out.stdout.strip() or "uncommitted"` 文件没提交过、或者根本不在 git 仓库里,stdout 是空的。我在 scratchpad 里跑(不是 git 仓库),实测两项都是 `uncommitted`。
+- `def summarize(rows: list[dict], trials: int) -> dict:` 把每次 trial 的结果汇总成指标。
+- `by_case.setdefault(r["case"], []).append(r["pass"])` `setdefault`:key 不存在就先放一个空列表再返回它。实测汇总后 `by_case["syn-seats-008"]` 是 `[False, False]`,`by_case["syn-seats-014"]` 是 `[True, False]`,`by_case["syn-duplicate-007"]` 是 `[True, True]`。
+- `grader_fail = Counter(k for r in rows for k in r["failed"])` 双层生成器:外层遍历每行,内层遍历这行失败的 grader 名。实测是 `{'category': 3}`:syn-seats-008 两次、syn-seats-014 一次,都是把「席位算多了」分成了 refund。
+- `lat = sorted(r["latency_s"] for r in rows)` 排好序才能取分位数。实测 16 个值从 4.929 到 11.228。
+- `"single_pass": sum(r["pass"] for r in rows) / len(rows),` 单次通过率:所有 trial 里通过的比例。`sum` 一串布尔值等于数 True。实测 13/16 = 81.2%。
+- `"pass_all_k": sum(all(v) for v in by_case.values()) / len(by_case),` pass^k:每条用例 k 次全过才算。实测 6/8 = 75.0%。两个指标在这里分开了:syn-seats-014 是 `[True, False]`,单次通过率算它过了一半,pass^2 算它没过。
+- `"grader_fail": dict(grader_fail.most_common()),` `most_common()` 按次数从多到少排好,转成 dict 后顺序保留(3.7+ 的 dict 有序)。
+- `"latency_p50": statistics.median(lat),` 16 个值取中间两个的平均,(8.91 + 9.47) / 2 = 9.19 秒,报告里显示 9.2s。
+- `"latency_p95": lat[min(len(lat) - 1, int(len(lat) * 0.95))],` 简化的 P95:16 个样本时 `int(16 * 0.95) = 15`,取到最大值 8.78,报告里显示 8.8s。样本少的时候 P95 基本就是最大值,别太当真。`min(...)` 防止下标越界。
+- `"cost_yuan": round(tin / 1e6 * PRICE_IN + tout / 1e6 * PRICE_OUT, 2),` 实测输入 74299、输出 10636 token:`0.0743 × 2 + 0.0106 × 8 = 0.2337`,显示 ¥0.23。
+- `"cost_per_ticket_yuan": round((tin / 1e6 * PRICE_IN + tout / 1e6 * PRICE_OUT) / len(rows), 4),` 除以 trial 数 16,实测 ¥0.0146。
+- `ap.add_argument("--split", default="dev", choices=["dev", "test", "all"])` `choices` 限定取值,传错了 argparse 直接报错退出。
+- `ap.add_argument("--judge", action="store_true")` 开关参数:写了就是 True,不写是 False。
+- `ap.add_argument("--update-baseline", action="store_true")` 参数名里的横线,在 `args` 上变成下划线:`args.update_baseline`。
+- `cases = [c for c in cases if c.get("split", "dev") == args.split]` Day 31 的 `validate --write` 给每条写好了 split。实测我合成的 14 条里 dev 8 条、test 6 条。
+- `jobs = [(c, t, args.judge) for c in cases for t in range(args.trials)]` 8 条 × 2 次 = 16 个任务。
+- `with ProcessPoolExecutor(max_workers=args.workers) as pool:` 4 个子进程。实测 16 个任务墙钟 38.6 秒,单跑要两分多钟。
+- `rows = list(pool.map(run_one, jobs))` `map` 返回的顺序和 `jobs` 一致,不管哪个先跑完。
+- `summary.update({"split": args.split, "judge": args.judge, "dataset_rev": git_rev(CASES),` 把运行条件也写进汇总,报告最后一行就是从这里来的。
+- `baseline = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else None` 第一次跑没有基线,是 None。
+- `verdict = gate(summary, rows, baseline)` 门禁判断,下面 `gate.py`。
+- `out = REPORTS / datetime.now().strftime("%Y%m%d-%H%M%S")` 每次一个目录,实测是 `w5/reports/20261022-083859`。
+- `out.mkdir(parents=True, exist_ok=True)` `parents=True` 连 `w5/reports` 一起建;`exist_ok=True` 已存在不报错。
+- `(REPORTS / "latest.md").write_text(report, encoding="utf-8")` 固定文件名,CI 里评论到 PR 时读它。
+- `BASELINE.write_text(json.dumps({k: summary[k] for k in` 基线只存门禁用得上的字段,延迟、费用不存。实测第一次跑完写出的 `case_pass` 是 `{"syn-login-004": true, "syn-duplicate-007": false, ...}`。
+- `if args.gate and not verdict["ok"]:` 只有加了 `--gate` 才会用退出码表达结果。
+- `sys.exit(1)` 非 0 退出码让 CI 这一步变红。实测:用例期望还按旧规则写、syn-cancel-013 挂在关键检查上时,`echo $?` 是 1;期望改对以后门禁通过,`echo $?` 是 0。
+
+</div>
+
 这里回答 Day 30 留下的一个问题:并发时环境变量互相串。答案是用 `ProcessPoolExecutor` 而不是线程池。每个子进程有自己独立的一份环境变量,adapter 在子进程里改 `CLOUDLEDGER_DB`,影响不到别的进程。代价是进程启动慢一点,每个进程还要单独 import 一遍 LangGraph,但对评测来说完全可以接受。`run_one` 必须是模块顶层的函数,因为要能被 pickle 传给子进程,写成 lambda 或嵌套函数会报 `Can't pickle` 错误。
 
 `workers` 默认 4。别开太大,国内厂商的 API 一般都有每分钟请求数(RPM)限制,开到 16 个进程很容易撞 429。撞了的话 adapter 会把它记成 `no_crash` 失败,而且是关键 grader,门禁会直接拦住,你一看报告就知道是限流不是 Agent 的问题。
@@ -362,6 +450,37 @@ def render_report(summary: dict, rows: list[dict], baseline: dict | None, verdic
     return "\n".join(lines)
 ```
 
+<div class="line-notes">
+
+- `from w5.checks import CRITICAL` 关键 grader 的名单只在 `checks.py` 定义一处。
+- `def gate(summary: dict, rows: list[dict], baseline: dict | None,` 纯函数:输入都是普通 dict 和 list,不读文件、不调模型,所以好写单元测试。
+- `max_drop: float = 0.05, new_fail_ratio: float = 0.05) -> dict:` 两个阈值做成参数,测试里可以传不同的值。
+- `reasons: list[str] = []` 拦截原因,空列表就是通过。
+- `critical = sorted({(r["case"], k) for r in rows for k in r["failed"] if k in CRITICAL})` 集合推导式去重:同一条用例 2 次 trial 都挂了同一个关键 grader,只算一处。这次实测是空列表:挂的只有 `category`,不在 `CRITICAL` 里。用例期望还是旧规则时,得到的是 `[('syn-cancel-013', 'refund_match')]`。
+- `reasons.append(f"关键检查失败 {len(critical)} 处: " +` 旧规则那次实测:`关键检查失败 1 处: syn-cancel-013/refund_match`。
+- `", ".join(f"{c}/{k}" for c, k in critical[:10]))` 最多列 10 个,太多了 PR 评论会很长。
+- `newly_failed, newly_passed = [], []` 没有基线时两个都是空列表,下面报告里也就不显示。
+- `base = baseline["case_pass"]` 基线里每条用例过没过。
+- `newly_failed = sorted(c for c in now if base.get(c) is True and now[c] is False)` 用 `is True` 而不是 `== True` 或直接判断真假:新加的用例在基线里不存在,`base.get(c)` 是 None,不应该算「新挂」。
+- `newly_passed = sorted(c for c in now if base.get(c) is False and now[c] is True)` 实测和第一次的基线比:`['syn-cancel-013', 'syn-duplicate-007']`,前者是退款规则改对了,后者是修了 `refund_match`。
+- `allowed = max(1, int(len(now) * new_fail_ratio))` 8 条用例时 `int(8 * 0.05) = 0`,`max` 保底 1 条。到 40 条以上才会放宽到 2 条。
+- `if len(newly_failed) > allowed:` 实测这次新挂 1 条(syn-seats-014,两次里挂了一次),`allowed = max(1, int(8 × 0.05)) = 1`,没超,不拦。用例少的时候,允许 1 条抖动是必要的,不然 temperature 带来的偶发失败会让 CI 天天红。
+- `if summary["single_pass"] < baseline["single_pass"] - max_drop:` 实测 0.8125 不低于 0.625 - 0.05,没触发。
+- `return {"ok": not reasons, "reasons": reasons,` 实测这次 `ok=True`,`reasons` 是空列表;旧规则那次是 `ok=False`,只有关键检查那一条原因。
+- `def render_report(summary: dict, rows: list[dict], baseline: dict | None, verdict: dict) -> str:` 生成 Markdown,同时用于终端打印和 PR 评论。
+- `lines = [f"## Agent 评测 {'✅ 通过' if verdict['ok'] else '❌ 未通过'}", ""]` f-string 里嵌条件表达式,内层用单引号。
+- `def b(key: str, fmt: str = "{:.1%}") -> str:` 取基线里的值并格式化,没有基线就显示 `-`。嵌套函数能直接用外层的 `baseline`。`{:.1%}` 把 0.625 显示成 `62.5%`,0.5625 会显示成 `56.2%`(Python 的格式化按银行家舍入,5 前面是偶数 2 就舍)。
+- `lines.append(f"| pass^{s['trials']} | {s['pass_all_k']:.1%} | {b('pass_all_k')} |")` 实测这一行是 `| pass^2 | 75.0% | 62.5% |`。
+- `lines.append(f"| 延迟 P50 / P95 | {s['latency_p50']:.1f}s / {s['latency_p95']:.1f}s | - |")` 实测 `9.2s / 11.2s`。延迟和费用不进基线,所以基线列固定是 `-`。
+- `lines.append(f"| 本次花费 / 每张工单 | ¥{s['cost_yuan']} / ¥{s['cost_per_ticket_yuan']} | - |")` 实测 `¥0.23 / ¥0.0146`。
+- `f"judge={'on' if s['judge'] else 'off'} · 数据集 {s['dataset_rev']} · W4 {s['code_rev']}", ""]` 实测 `用例 8 条 × 2 次 · split=dev · judge=on · 数据集 uncommitted · W4 uncommitted`。
+- `lines.append(f"**新挂了**:{', '.join(verdict['newly_failed']) or '无'}")` 空列表 join 得到空串,`or '无'` 换成「无」。实测 `**新挂了**:syn-seats-014`、`**新修好**:syn-cancel-013, syn-duplicate-007`。
+- `for k, n in list(s["grader_fail"].items())[:8]:` 最多列 8 个失败最多的 grader。dict 的 `items()` 不能直接切片,先转 list。
+- `example = next(r for r in rows if k in r["failed"])` `next(生成器)` 取第一个满足条件的元素,给每类失败配一个例子。
+- `lines.append(f"- `{k}` × {n},例:{example['case']} — {example['failed'][k][:80]}")` 实测只有一行:`` - `category` × 3,例:syn-seats-008 — 得到 refund,期望 billing ``。
+
+</div>
+
 `gate()` 和 `render_report()` 是纯函数,不调模型、不读文件,所以能写单元测试。门禁逻辑写错了(比如把 `newly_failed` 的条件写反),后果是 CI 永远是绿的,你还以为一切正常。这种「守门员自己有 bug」的情况非常隐蔽,一定要测:
 
 ```python
@@ -409,6 +528,24 @@ def test_newly_passed_is_reported():
     assert v["ok"] and v["newly_passed"] == ["a"]
 ```
 
+<div class="line-notes">
+
+- `def summary(case_pass: dict, single: float) -> dict:` 造一个只含门禁需要字段的假汇总。
+- `def row(case: str, failed: dict | None = None) -> dict:` 造一行 trial 结果。`failed or {}` 让不传时是空 dict,不要把 `{}` 写成默认值(可变默认值会在多次调用间共享)。
+- `def test_critical_failure_blocks_even_if_score_is_high():` 通过率 95% 也拦:只要出现一次越权。
+- `rows = [row("a"), row("b", {"traj:scope": "查了 C028"})]` b 挂了关键 grader `traj:scope`。
+- `assert not v["ok"] and "关键检查" in v["reasons"][0]` 实测原因是 `关键检查失败 1 处: b/traj:scope`。
+- `def test_one_new_failure_is_tolerated():` 10 条全过的基线,这次挂 1 条:`allowed = max(1, int(10 * 0.05)) = 1`,不拦。
+- `base = {"case_pass": {c: True for c in "abcdefghij"}, "single_pass": 0.9}` 遍历字符串得到 a 到 j 十个字母当用例名,字典推导式造出 10 条。
+- `now = {**base["case_pass"], "a": False}` 复制基线再把 a 改成 False,后写的 key 覆盖前面的。
+- `assert v["ok"] and v["newly_failed"] == ["a"]` 单次通过率 0.88 ≥ 0.9 - 0.05,也不触发总分规则。
+- `def test_many_new_failures_block():` 挂 3 条 > 允许的 1 条,拦。
+- `def test_score_drop_blocks():` 0.80 < 0.90 - 0.05,拦。用例只有 1 条且没新挂,专门测总分这一条规则。
+- `assert not v["ok"] and "单次通过率" in v["reasons"][0]` 实测原因是 `单次通过率 80.0% 比基线 90.0% 低了超过 5%`。
+- `def test_newly_passed_is_reported():` 修好的也要报出来,PR 评论里能看到改动的收益。实测 `uv run pytest w5/tests -q`(连同 Day 33 的 3 个)是 `8 passed in 0.15s`。
+
+</div>
+
 ```bash
 uv run pytest w5/tests -q
 ```
@@ -421,7 +558,7 @@ uv run python -m w5.evaluate --split dev --trials 3 --judge --update-baseline
 git add w5/baseline.json && git commit -m "eval: 初始基线"
 ```
 
-报告大致长这样(数字是示意):
+报告大致长这样(数字是示意;我用合成的 14 条用例、dev 集 8 条 × 2 次实跑过一遍,结果放在代码下面的注释里):
 
 ```text
 ## Agent 评测 ❌ 未通过
@@ -515,6 +652,32 @@ jobs:
               issue_number: context.issue.number, body,
             });
 ```
+
+<div class="line-notes">
+
+- `on:` 触发条件。下面三种任一满足就跑。这个 workflow 我没有在 GitHub 上实跑(需要仓库和 secrets),下面的说明按 GitHub Actions 的文档写;用到的四个 action 版本我查过,`actions/checkout@v7`、`astral-sh/setup-uv@v10.3.0`、`actions/upload-artifact@v7`、`actions/github-script@v9` 在 2026 年 10 月都存在。
+- `paths: ["w4/**", "w5/**", "pyproject.toml", "uv.lock"]` 只有改了这些文件的 PR 才触发。改 README 不跑评测,省钱。`**` 匹配任意层子目录。
+- `- cron: "0 18 * * *"` 五段分别是分、时、日、月、星期。GitHub 的 cron 按 UTC,18:00 UTC 是北京时间凌晨 2 点。
+- `workflow_dispatch:` 允许在网页上手动点按钮触发。
+- `group: agent-eval-${{ github.ref }}` 同一个分支归为一组。`${{ }}` 是 Actions 的表达式语法。
+- `cancel-in-progress: true` 同组里有新的运行开始,就取消正在跑的旧运行。连推三次只跑最后一次。
+- `pull-requests: write` 默认的 `GITHUB_TOKEN` 权限要显式给,不然最后一步评论 PR 会 403。
+- `timeout-minutes: 40` 超时就杀掉。模型服务卡住时不至于一直占着 runner。
+- `LLM_API_KEY: ${{ secrets.LLM_API_KEY }}` key 放 secrets(加密,日志里自动打码),不敏感的配置放 `vars`。
+- `FULL: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-eval') }}` 定时和手动触发时跑完整版;PR 默认跑快速版,打上 `full-eval` 标签才跑完整版。`labels.*.name` 取出所有标签名组成的数组。
+- `fetch-depth: 0` 默认只拉最新一个提交,`git_rev` 查不到文件的历史,会一直显示 `uncommitted`(我在非 git 目录里实跑就是这个结果)。0 表示拉全部历史。
+- `- run: uv sync --frozen` 严格按 `uv.lock` 装依赖,lock 文件和 `pyproject.toml` 对不上就报错,不会偷偷升级。
+- `- run: uv run python w4/cloudledger/seed.py` 每次重建种子库,保证评测从同一份数据开始。
+- `run: uv run pytest w5/tests -q` 先测检查代码和门禁本身。守门员有 bug,后面的评测结果就不可信。
+- `if [ "$FULL" = "true" ]; then` shell 判断。上面的表达式结果是字符串 `true` / `false`。
+- `uv run python -m w5.evaluate --split dev --trials 3 --judge --gate` 完整版:3 次 trial 加评分器。我在本地用 2 次 trial、8 条用例实跑,4 个进程约 40 秒,花费 ¥0.23。
+- `if: always()` 前面的评测失败(退出码 1)了也要上传报告。没有这一行,评测一红后面的步骤就都跳过了,你反而看不到为什么红。
+- `path: w5/reports/` 整个目录打包上传,网页上能下载。
+- `if: always() && github.event_name == 'pull_request'` 只有 PR 才评论,定时任务没有 PR 可评论。
+- `const body = fs.existsSync('w5/reports/latest.md')` 评测崩在半路、没生成报告时,改评论一句提示,不至于这一步也报错。
+- `await github.rest.issues.createComment({` PR 在 GitHub API 里也算 issue,评论用的是 issues 的接口。`context.issue.number` 就是 PR 编号。
+
+</div>
 
 几个决定的理由:
 

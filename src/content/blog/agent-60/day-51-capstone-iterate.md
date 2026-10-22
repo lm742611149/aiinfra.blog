@@ -91,6 +91,23 @@ if __name__ == "__main__":
     main(sys.argv[1])
 ```
 
+<div class="line-notes">
+
+- `"""把一份评测报告里的失败用例导成 CSV` 下面的数据来自我在本机临时库里真跑的一份小报告:只跑了 `refund_ask_only`、`past_due`、`legal_threat`、`import_format` 四个场景,共 13 条,4 条全通过、9 条失败,花了大约 ¥0.26。
+- `import csv` 标准库的 CSV 读写。中文、逗号、换行都会被自动加引号转义,比自己拼字符串可靠。
+- `report = json.load(open(path, encoding="utf-8"))` `json.load` 读文件对象(`json.loads` 读字符串)。报告顶层有 `results` 列表,每条的键是 `id, scenario, expect_category, scores, all_pass, run`。
+- `w = csv.writer(sys.stdout)` 直接写到标准输出,命令行里用 `> failures.csv` 重定向到文件。
+- `w.writerow(["id", "failed_checks", "category", "tools", "refund_created", "outcome", "reply",` 表头 11 列,最后 `note` 和 `bucket` 两列留空给你手填。
+- `if r["all_pass"]:` 全通过的跳过。实测 13 条里 `import_format-2` 和 `legal_threat-1/2/3` 被跳过,导出 9 行。
+- `failed = [k for k, v in r["scores"].items() if v is False]` 用 `is False` 而不是 `not v`:`scores` 里 `None` 表示「这条用例不考这一项」(比如 `must_call: None`),不能算失败。实测 `past_due-3` 得到 `['retrieval_hit', 'judge_grounded', 'judge_resolved']`。
+- `critique = " / ".join(v for k, v in run.get("judge", {}).items() if k.endswith("critique"))` 评审结果里 `grounded`、`resolved` 是布尔值,`grounded_critique`、`resolved_critique` 是理由文字,只取理由。没跑评审的用例 `judge` 不存在,`.get(..., {})` 给空字典,join 出空串。
+- `w.writerow([r["id"], ",".join(failed), run["category"], " > ".join(run["tool_names"]),` 工具调用顺序用 ` > ` 连起来。实测 `refund_ask_only-1` 这一列是 `list_invoices > list_subscriptions > check_refund_eligibility`,`import_format-1` 是空的(纯知识问答,没调工具)。
+- `run["refund_created"], run["outcome"], run["text"][:300], run["findings"][:300],` 回复和调查结论各截 300 字,表格里够判断了。实测 `past_due-1` 这一行:`failed_checks` 是 `handoff,facts`,`outcome` 是 `escalated`,回复是转人工的固定话术。回到报告里看,它的 `revisions` 是 2:草稿两次没过质检被转了人工,而这条用例期望不转人工,所以 `handoff` 挂了;转人工时不检查事实,`facts` 也跟着挂。
+- `critique[:300], "", ""])` 最后两个空串就是留给你的 `note` 和 `bucket`。实测这 9 行里有 7 行挂在 `judge_grounded`,理由多是「Pro 无直接依据」「客户未提供报错码」这类,也就是回复里写了资料没给的细节。这就是错误分析该从哪一类先看的线索。
+- `main(sys.argv[1])` 命令行第一个参数是报告路径。注意 CSV 里的回复带换行,用 `wc -l` 数行会多出很多(实测 9 条失败数出 74 行),用表格软件打开才是 9 行。
+
+</div>
+
 ```bash
 uv run python -m evals.failures_to_csv evals/reports/xxx-dev-baseline.json > failures.csv
 ```
@@ -192,6 +209,15 @@ def extract_keywords(text: str) -> str:
     return " ".join(dict.fromkeys(m.upper() for m in ERROR_CODE_RE.findall(text)))
 ```
 
+<div class="line-notes">
+
+- `# 不用 \b:中文字符也算"单词字符","还有E5001"里 E 前面没有词边界` 实测旧写法 `\bE\d{4}\b` 在 `"又是e3001,还有E5001和E3001"` 上一个都没抓到,返回 `[]`;`"导入报错E2001"` 也是 `[]`。只有前面带空格的 `"报错码 E3001。"` 才抓得到。
+- `ERROR_CODE_RE = re.compile(r"(?<![A-Za-z0-9])E\d{4}(?!\d)", re.I)` `(?<!...)` 是否定后顾:E 前面不能是英文字母或数字;`(?!\d)` 是否定前瞻:4 位数字后面不能再跟数字;`re.I` 忽略大小写。实测同一句话抓到 `['e3001', 'E5001', 'E3001']`;`"订单号E30012345"` 不抓(后面还有数字),`"LE3001"` 不抓(前面是字母)。
+- `def extract_keywords(text: str) -> str:` 返回空格分隔的字符串,直接拼进 BM25 的查询里。
+- `return " ".join(dict.fromkeys(m.upper() for m in ERROR_CODE_RE.findall(text)))` 先统一转大写,再用 `dict.fromkeys` 去重。它和 `set` 的区别是保留第一次出现的顺序:`dict.fromkeys(["E3001", "E5001", "E3001"])` 的键是 `['E3001', 'E5001']`。实测结果是 `"E3001 E5001"`,和下面那条测试的期望一致。
+
+</div>
+
 ```python
     def search(self, query: str, k: int | None = None, pool: int = 20, keywords: str = "") -> list[Hit]:
         """query 走向量检索;query + keywords 走 BM25。keywords 放报错码、账单号这类必须字面命中的词。"""
@@ -201,6 +227,25 @@ def extract_keywords(text: str) -> str:
         vec_ids = self.vector_search(query, pool)
         kw_ids = self.bm25_search(f"{query} {keywords} {keywords}".strip(), pool)  # 关键词重复一次 = 加权
 ```
+
+<div class="line-notes">
+
+- `def search(self, query: str, k: int | None = None, pool: int = 20, keywords: str = "") -> list[Hit]:` 新增 `keywords` 参数,默认空串,Day 45 的老调用不用改。
+- `k = k or self.s.retrieve_k` 没传 k 就用配置里的 5。
+- `if self._bm25 is None:` BM25 索引第一次用到时才从数据库把所有块读进内存建好。
+- `vec_ids = self.vector_search(query, pool)` 向量那一路只用模型改写后的查询,报错码对语义向量帮助不大。
+- `kw_ids = self.bm25_search(f"{query} {keywords} {keywords}".strip(), pool)  # 关键词重复一次 = 加权` BM25 的分数随查询里词出现的次数累加,写两遍就是给报错码双倍权重。实测 `search("导入银行流水报错", keywords="E3001")` 时传给 BM25 的字符串是 `'导入银行流水报错 E3001 E3001'`。`.strip()` 处理 keywords 为空时末尾多出的空格。<br>顺带一个实测:我的环境开着 rerank,`"导入报错怎么办"` 加不加 `keywords="E3001"`,前三名都是 KB-error-003、KB-error-004、KB-error-003,只是分数从 0.4116 微调到 0.4162。rerank 会在融合之后重新打分,所以加权的效果要用评测集整体看,别拿一两条查询下结论。
+
+</div>
+
+改完 `retrieve` 节点(下一节的代码)之后,节点会用 `keywords=` 调检索器,Day 47 `tests/fakes.py` 里的假检索器也要跟着加这个参数,否则原来的冒烟测试会报 `TypeError: FakeRetriever.search() got an unexpected keyword argument 'keywords'`:
+
+```python
+class FakeRetriever:
+    def search(self, query, k=5, keywords=""):
+```
+
+真实的类和假的类签名要保持一致,这是用假对象写测试时最容易漏的地方。
 
 ### v2-b:投诉和人工关键词强制转人工
 
@@ -229,6 +274,21 @@ HUMAN_RE = re.compile(r"转人工|人工客服|真人|12315|投诉|律师|起诉
         _emit({"type": "step", "node": "retrieve", "docs": [h.doc_id for h in hits]})
         return {"hits": [asdict(h) for h in hits]}
 ```
+
+<div class="line-notes">
+
+- `def classify(state: SupportState) -> dict:` 分诊节点,v2 只在原来的基础上加了正则兜底那两行。
+- `before = deps.spent()` 记下调用前的累计花费,节点结束时用差值算这一步花了多少。
+- `triage = deps.small_llm.structured(` 用小模型按 `Triage` 的结构输出。实测 v2 提示词对三条工单的分诊:<br>「先问问能退吗」→ `category: refund, needs_account_data: True, needs_human: False, search_query: 'Pro 年付 退款 能退吗'`<br>「9 月 12 号扣了两笔 39 块,请把多扣的退给我」→ `refund`,`search_query: '重复扣款 39元 退回 多扣'`<br>「提示账套只读,是不是扣款没成功」→ `billing`,`urgency: high`
+- `if HUMAN_RE.search(state["turns"][-1]["content"] + state["ticket"]["subject"]):` 查的是「客户最新一条消息 + 工单主题」。`turns[-1]` 是最后一条,多轮对话时就是最新追问。实测 `HUMAN_RE` 在「再不退款我就去 12315 投诉」上命中 `12315`;在「我不是要投诉,就是想问问发票」上命中 `投诉`;在「我们是做社交媒体运营的」上命中 `媒体`,后两条就是正文说的误判。
+- `triage.needs_human = True` 只会把 False 改成 True,不会反过来。模型已经判了要转人工的,正则没命中也不撤销。
+- `_emit({"type": "step", "node": "classify", "category": triage.category})` 往流里推一条事件,Day 49 的界面靠它实时显示「正在分诊」。
+- `query = tr.get("search_query") or f"{state['ticket']['subject']} {state['ticket']['body']}"` 优先用分诊改写的查询,改写为空时退回到工单原文。
+- `keywords = extract_keywords(f"{t['subject']} {state['turns'][-1]['content']}")` 报错码从客户原话里抠,不从模型改写后的 `search_query` 里抠,因为模型改写时可能把 E3001 弄丢或写成 E3002。
+- `hits = deps.retriever.search(query, k=deps.settings.retrieve_k, keywords=keywords)` 向量用改写查询,BM25 用改写查询加报错码。
+- `return {"hits": [asdict(h) for h in hits]}` `asdict` 把 dataclass 转成字典,LangGraph 的状态要能序列化进 checkpoint。
+
+</div>
 
 模型判 `needs_human=False` 时,正则还能兜一次底。这条规则的取舍写在注释里:漏判一个要去 12315 投诉的客户,代价远大于多转一张人工。
 
@@ -302,6 +362,25 @@ CHECK = """你是客服质检员。检查这封回复草稿能不能发给客户
 全部没问题 passed=true。有任何一条问题 passed=false,并在 problems 里逐条写清楚哪句话有什么问题。"""
 ```
 
+<div class="line-notes">
+
+- `PROMPT_VERSION = "v2"` 评测报告会记录这个版本号。实测导入后 `prompts.PROMPT_VERSION` 是 `'v2'`,四段提示词长度分别是 CLASSIFY 678 字、ACT 506 字、DRAFT 428 字、CHECK 212 字。
+- `- refund:客户要求退钱,或者问能不能退、退多少` 「问能不能退」也算 refund。实测「先问问能退吗」分成了 refund,是不是真去建申请由 ACT 的第 5 条管。
+- `needs_account_data:回答必须依赖这个客户自己的订阅、账单或历史记录时为 true` 这个字段决定图里 retrieve 之后走不走 act 节点去查账。实测上面三条工单都判成了 True。
+- `- "被扣了两次""多扣了钱"并要求退回:refund(诉求是退钱),不是 billing。` 实测「扣了两笔 39 块,请把多扣的退给我」分成 refund。
+- `- "账套变只读""不能新增凭证"并且提到扣款或欠费:billing。` 实测「提示账套只读,是不是扣款没成功」分成 billing。
+- `- search_query 里必须保留原文中的报错码(如 E3001)和关键名词(年付、专票、席位)。` 实测「能退吗」那条的 search_query 保留了「Pro 年付」。报错码这一条有 `extract_keywords` 兜底,提示词和代码两边都管。
+- `1. 客户 ID 已经给你了,不需要再查 get_customer。` 图的第一个节点 `load_customer` 已经查过了,省一次工具调用。
+- `2. 涉及退款:先用 list_invoices 找到相关账单,再对它调用 check_refund_eligibility。` 实测 `refund_ask_only-1` 的工具顺序是 `list_invoices > list_subscriptions > check_refund_eligibility`,中间多查了一次订阅,规则 4「查到够用就停」没完全管住。
+- `5. 区分"询问"和"要求":` v2 最重要的改动。实测 `refund_ask_only` 两条都只调了 `check_refund_eligibility`,`refund_created` 都是 False,`must_not_call` 和 `refund_gate` 两项全过。
+- `6. 结束时不再调用工具,输出「调查结论」` act 节点的最后一条文字就是 findings,交给 draft 节点用。实测 `refund_ask_only-1` 的 findings 开头是「客户 C0002(李娜,非 VIP)仅有 1 张账单:INV-202609-0002,金额 950 元,状态 paid……」。
+- `- 用到帮助中心资料的句子,在句末标注来源编号,格式严格为 [KB-xxx-000]` 引用格式写死,`check_citations` 才能用正则校验。实测 13 条里 `citation_valid` 和 `cited` 都是 100%。
+- `- 资料里和客户问题直接相关的时限、金额、次数,要写出具体数字` v2 新增,针对回复只说「一定时间内」。实测 `refund_ask_only-1` 的回复写了「付款日为 2026-09-24,今天是第 7 天,仍在首次购买后 14 天内(含第 14 天)」。
+- `- 客户只是询问能否退款时:告诉他是否符合条件、可退金额,并问他是否需要办理` 和 ACT 第 5 条配套,起草时也不能说「已提交」。
+- `CHECK = """你是客服质检员。` 质检是 LLM 判断,另外还有 `PROMISE_RE` 正则在代码里兜底。实测那条正则不拦「已为您办理退款申请」「已提交退款申请」,拦「已为您退款」「退款已到账」「马上到账」「已经办理退款」,和坑三说的一致。
+
+</div>
+
 和 v1 比,改了三处:
 
 - **分诊提示词**加了"容易分错的情况"一节,针对的是分类混淆。注意它写的是判断规则("被扣了两次并要求退回:refund,诉求是退钱"),不是评测集里的原句。如果你把"9 月 12 号扣了两笔钱"这种 dev 里的原话直接写进提示词当例子,dev 分数会涨,但那是在背答案。
@@ -320,6 +399,14 @@ CHECK = """你是客服质检员。检查这封回复草稿能不能发给客户
                   if e["facts"] and not e["handoff"] else None),
 ```
 
+<div class="line-notes">
+
+- `# facts 里的 "a|b" 表示说出任意一种就算` 这段替换 Day 50 `checks.py` 里原来的那一行 `all(norm(f) in text for f in e["facts"])`。
+- `"facts": (all(any(norm(alt) in text for alt in f.split("|")) for f in e["facts"])` 两层:外层 `all` 要求每个事实都满足,内层 `any` 要求这个事实的几种说法里至少出现一种。`"逾期|只读|past_due".split("|")` 得到 `['逾期', '只读', 'past_due']`。`norm` 会去掉空格、千分位逗号,并把 `374.00` 规范成 `374`。
+- `if e["facts"] and not e["handoff"] else None),` 没有必含事实的用例、期望转人工的用例,这一项都记 None(不考)。实测 `past_due-1` 被意外转了人工,它期望 `handoff: False`,所以 facts 照样要考,回复是转人工话术,里面没有「逾期」,facts 就挂了。
+
+</div>
+
 `facts` 支持 `a|b` 写法,说出任意一种就算。`past_due` 场景的必含事实从"逾期"放宽成"逾期|只读|past_due"。只改了这一个场景,因为只有这个场景在错误分析里出现了"回复对、检查错"的情况。改完重新生成评测集,版本号仍是 v1,但在 `build_dataset.py` 里留了注释写明 v1.1 改了什么。
 
 ### 新增的测试
@@ -331,6 +418,13 @@ def test_extract_keywords_handles_chinese_neighbors():
     assert extract_keywords("又是e3001,还有E5001和E3001") == "E3001 E5001"
 ```
 
+<div class="line-notes">
+
+- `def test_extract_keywords_handles_chinese_neighbors():` 坑二的回归测试,防止以后有人「顺手」把正则改回 `\b`。
+- `assert extract_keywords("又是e3001,还有E5001和E3001") == "E3001 E5001"` 一句话里同时覆盖了三件事:小写转大写、中文紧挨着报错码、重复去重。实测返回值正是 `"E3001 E5001"`。
+
+</div>
+
 ```python
 def test_keyword_rule_forces_handoff_even_if_model_misses():
     triage = {**REFUND_TRIAGE, "needs_human": False}           # 模型漏判
@@ -339,6 +433,16 @@ def test_keyword_rule_forces_handoff_even_if_model_misses():
     out = build_graph(make_deps(FakeLLM(triage, [], DRAFT), tools)).invoke({"ticket": ticket})
     assert out["outcome"] == "escalated"
 ```
+
+<div class="line-notes">
+
+- `def test_keyword_rule_forces_handoff_even_if_model_misses():` 测的是「模型漏判时,正则能兜住」。用假模型,不花钱。
+- `triage = {**REFUND_TRIAGE, "needs_human": False}           # 模型漏判` 复制 Day 47 `fakes.py` 里的标准分诊结果,只把 needs_human 改成 False,模拟模型没看出来要转人工。
+- `ticket = {**TICKET, "body": "再不退款我就去 12315 投诉"}` 工单正文换成投诉威胁。实测 `HUMAN_RE` 在这句话上命中的是 `12315`。
+- `out = build_graph(make_deps(FakeLLM(triage, [], DRAFT), tools)).invoke({"ticket": ticket})` `FakeLLM` 按顺序吐出预设的分诊结果、工具调用(空列表)、草稿。图跑到 classify 时正则把 needs_human 改成 True,直接走 handoff。
+- `assert out["outcome"] == "escalated"` 最终状态是转人工。如果把 classify 里那两行正则删掉,这条会失败。
+
+</div>
 
 ## 改动日志
 

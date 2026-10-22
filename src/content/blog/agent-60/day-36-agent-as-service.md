@@ -157,6 +157,19 @@ class Settings(BaseSettings):
 settings = Settings()
 ```
 
+<div class="line-notes">
+
+- `from pydantic_settings import BaseSettings` `BaseSettings` 是 pydantic 的一个子类:字段的值不是你手动传进来的,而是自动从环境变量和 `.env` 文件里找。它在单独的包 `pydantic-settings` 里,所以前面 `uv add` 装了它。
+- `class Settings(BaseSettings):` 每个字段对应一个环境变量,**名字不区分大小写**:字段 `llm_api_key` 会去找 `LLM_API_KEY`。所以练习仓 `.env` 里 Day 3 起就有的 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 不用改名,直接能用。
+- `model_config = SettingsConfigDict(env_file=".env", extra="ignore")` `env_file=".env"` 是相对**当前工作目录**的路径,所以要在 `agent-60-lab/` 根目录启动 uvicorn,它才找得到 `.env`。`extra="ignore"`:`.env` 里还有 `PG_DSN`、`EMB_MODEL` 这些本类没声明的变量,不加这个会直接报错。实测去掉 `extra="ignore"`,练习仓的 `.env` 一口气报了 11 个 `Extra inputs are not permitted`。
+- `database_url: str = "postgresql://postgres:postgres@localhost:5432/agent"` 默认值是给 Docker 版 Postgres 准备的。实测练习仓 `.env` 里没有 `DATABASE_URL`,所以这里拿到的就是这个默认值;用 Postgres.app 的话要在 `.env` 里加一行 `DATABASE_URL=postgresql://你的用户名@localhost:5432/库名`。实测设了环境变量以后 `Settings().database_url` 变成 `postgresql://minliu@localhost:5432/notes_d36`。
+- `llm_api_key: str = ""` 默认空串,真正的值从 `.env` 的 `LLM_API_KEY` 来。实测打印 `settings` 时这一项是 `***c778`(我把它遮掉了),说明 `.env` 确实被读到了。
+- `turn_timeout_s: float = 120.0` 一轮对话最长跑 120 秒,下面 `main.py` 的 `asyncio.timeout(settings.turn_timeout_s)` 用的就是它。实测一张退款工单第一轮 7.7 秒就到审批,离上限很远。
+- `max_message_chars: int = 4000` 用户单条消息上限,给 `NewMessage` 的 `max_length` 用,防止有人贴一整本说明书进来烧 token。
+- `settings = Settings()` 模块被 import 时就实例化一次,读一次环境变量。其他文件 `from .config import settings` 拿到的都是这同一个对象。实测完整内容是 `{'database_url': 'postgresql://postgres:postgres@localhost:5432/agent', 'llm_base_url': 'https://api.deepseek.com', 'llm_api_key': '***c778', 'llm_model': 'deepseek-flash', 'turn_timeout_s': 120.0, 'max_message_chars': 4000}`。
+
+</div>
+
 `deepseek-flash` 是我 2026 年 10 月在 DeepSeek 官方定价页看到的模型名,旧的 `deepseek-chat` 别名已经下线了。你用别家就改 `LLM_MODEL`,代码不用动。
 
 ## 事件模型
@@ -180,6 +193,17 @@ def preview(value: Any, limit: int = 160) -> str:
     text = value if isinstance(value, str) else repr(value)
     return text if len(text) <= limit else text[:limit] + "…"
 ```
+
+<div class="line-notes">
+
+- `EventType = Literal["token", "tool_call", "tool_result", "approval_required", "done", "error"]` 事件类型只能是这六个字符串之一。写错一个字母,pydantic 当场报错,不会悄悄推一个前端不认识的事件出去。实测 `AgentEvent(type="tok", data={})` 抛 `ValidationError`,报错里列出了六个合法值。
+- `class AgentEvent(BaseModel):` 所有事件都长一个样:`type` 说是什么事件,`data` 放具体内容。实测 `AgentEvent(type="token", data={"text": "您好"}).model_dump()` 得到 `{'type': 'token', 'data': {'text': '您好'}}`,`main.py` 会把 `type` 当 SSE 的 `event:` 行、`data` 当 `data:` 行发出去。
+- `data: dict[str, Any]` `data` 的结构随事件类型变化(见上面的事件表),所以这里不细定义,用 `dict[str, Any]` 兜住。
+- `def preview(value: Any, limit: int = 160) -> str:` 工具结果只给前端看前 160 个字符。
+- `text = value if isinstance(value, str) else repr(value)` 不是字符串就先 `repr` 成字符串。实测 `preview({"a": 1})` 返回 `"{'a': 1}"`。W4 里的工具结果本来就是字符串(MCP 返回的 JSON 文本),所以一般走前半句。
+- `return text if len(text) <= limit else text[:limit] + "…"` 没超过就原样返回,超了就截前 160 个字再加省略号。实测 `preview("x" * 200)` 返回 161 个字符(160 个 x 加一个「…」);`preview('{"id": "INV-2026-0123", "amount_cents": 239200}')` 只有 47 个字符,原样返回。真实跑工单时,`list_invoices` 的结果有好几百字,前端卡片上只显示到 `"paid_at": "2026-1` 就截断了。
+
+</div>
 
 就这么简单。故意不用继承搞六个子类,事件类型多了以后前端靠 `type` 字段分派就行。
 
@@ -254,7 +278,9 @@ async def _drive(graph, graph_input: Any, config: dict) -> AsyncIterator[AgentEv
 
 def stream_turn(graph, thread_id: str, customer_id: str, text: str) -> AsyncIterator[AgentEvent]:
     config = {"configurable": {"thread_id": thread_id, "customer_id": customer_id}}
-    return _drive(graph, {"messages": [("user", text)]}, config)
+    # W4 的图从 ticket 读工单正文、从 customer_id 做越权检查;messages 也带上,多轮时历史接得上
+    graph_input = {"ticket": text, "customer_id": customer_id, "messages": [("user", text)]}
+    return _drive(graph, graph_input, config)
 
 
 def stream_resume(graph, thread_id: str, customer_id: str, decision: dict) -> AsyncIterator[AgentEvent]:
@@ -262,9 +288,51 @@ def stream_resume(graph, thread_id: str, customer_id: str, decision: dict) -> As
     return _drive(graph, Command(resume=decision), config)
 ```
 
+<div class="line-notes">
+
+- `from langchain_core.messages import AIMessageChunk, ToolMessage` 两种要认的消息:`AIMessageChunk` 是模型流式吐出来的一小段,`ToolMessage` 是工具执行完的结果。
+- `from langgraph.types import Command` 审批恢复时用 `Command(resume=...)` 把主管的决定喂回图里,见最后的 `stream_resume`。
+- `DRAFT_NODES = {"draft_reply", "agent"}` 只有这些节点的 token 推给用户。Day 28 的图里会说话的节点是 `classify` 和 `agent`,`classify` 吐的是分类 JSON,不在名单里就被滤掉了。实测一张退款工单第一轮推了 70 个 token,全部来自 `agent` 节点;`draft_reply` 是给你自己的图留的名字,Day 28 的图里没有这个节点,写着也无妨。
+- `async def _drive(graph, graph_input: Any, config: dict) -> AsyncIterator[AgentEvent]:` 带 `yield` 的 `async def` 是**异步生成器**:调用它不会马上执行,而是返回一个可以 `async for` 的对象,每 `yield` 一次,外面就拿到一个事件。新会话和审批恢复的区别只在 `graph_input`,所以共用这一个函数。
+- `usage = {"input_tokens": 0, "output_tokens": 0}` 一轮里所有模型调用的 token 累加到这里,最后放进 `done` 事件。
+- `async for mode, chunk in graph.astream(` 同时订阅两种流时,每次拿到的是 `(模式名, 内容)` 二元组,这里直接解包成 `mode` 和 `chunk`。
+- `graph_input, config=config, stream_mode=["messages", "updates"]` `messages` 模式按 token 推模型输出,`updates` 模式在每个节点跑完后推这个节点改了哪些状态。
+- `if mode == "messages":` 这一分支处理逐 token 的输出。
+- `msg, meta = chunk` `messages` 模式的 chunk 是 `(消息块, 元数据)`。实测 `meta["langgraph_node"]` 的取值有 `classify` 和 `agent` 两种。
+- `if not isinstance(msg, AIMessageChunk):` 只要模型生成的块,别的消息类型跳过。
+- `if msg.usage_metadata:` 不是每个块都带用量,带的时候才累加。
+- `usage["input_tokens"] += msg.usage_metadata.get("input_tokens", 0)` 实测第一轮(分类 1 次加 agent 3 次,一共 4 次模型调用)累加出 `input_tokens: 6030, output_tokens: 468`。分类节点的 token 虽然不推给用户,用量照样算进来,因为钱照样花了。
+- `if meta.get("langgraph_node") in DRAFT_NODES and msg.content:` 节点在名单里、而且这块有文字才推。模型决定调工具的那一步 `content` 常常是空的,这时就不推。
+- `yield AgentEvent(type="token", data={"text": msg.content})` 实测前几个 token 是 `我先`、`核实`、`一下`,第一个 token 在请求发出 2.84 秒后到,前面这段时间花在分类、检索和 agent 第一步上。
+- `continue` 处理完 `messages` 模式就跳回循环开头,下面的代码只处理 `updates`。
+- `for node, update in chunk.items():` `updates` 模式的 chunk 是 `{节点名: 这个节点返回的状态更新}`,一般只有一个键。实测依次出现 `classify`、`retrieve`、`agent`、`tools`、`agent`……
+- `if node == "__interrupt__":` 图跑到 `interrupt()` 停下时,`updates` 里会出现这个特殊的键。
+- `intr = update[0]` `update` 是一个装 Interrupt 对象的元组,一次只停一个,取第 0 个。
+- `yield AgentEvent(type="approval_required", data=dict(intr.value))` `intr.value` 就是 Day 28 `approval` 节点里传给 `interrupt()` 的字典。实测是 `{"type": "refund_approval", "customer_id": "C007", "ticket": "你好,10 月 8 号我被扣了两次款……", "requests": [{"invoice_id": "INV-2026-0123", "amount_yuan": 2392.0, "reason": "重复扣款:……"}]}`。
+- `if not isinstance(update, dict):` 有的节点什么也不返回(`None`),跳过。
+- `for m in update.get("messages", []):` 只关心节点新加的消息。比如 `classify` 返回的是 `{"category": ..., "summary": ...}`,没有 `messages`,这里就是空列表。
+- `if getattr(m, "tool_calls", None):` `agent` 节点决定调工具时,新消息上带 `tool_calls`。`getattr(..., None)` 是因为 ToolMessage 没有这个属性,直接写 `m.tool_calls` 会报错。
+- `for tc in m.tool_calls:` 模型一次可能调好几个工具。实测一次第一步调了 `find_customer` 和 `list_invoices` 两个,另一次(下面 curl 那次)同时调了 `find_customer`、`get_subscription`、`list_invoices` 三个,模型每次的选择不完全一样。
+- `data={"id": tc["id"], "name": tc["name"], "args": tc["args"]},` curl 那次实测第一条是 `{"id": "call_00_Hf6Zb…", "name": "find_customer", "args": {"query": "C007"}}`。`args` 已经是解析好的字典,不是 JSON 字符串。
+- `if isinstance(m, ToolMessage):` `tools` 和 `approval` 节点返回的是工具结果。
+- `"id": m.tool_call_id,` 用这个 id 和前面的 `tool_call` 事件对上,前端就知道该把哪张卡片标成完成。
+- `"name": m.name,` 工具名,前端卡片上显示它。实测是 `find_customer`、`list_invoices`、`get_subscription`、`search_kb` 这些。它来自 Day 28 构造 `ToolMessage` 时传的 `name=c["name"]`,构造时不传的话,这里就是 `null`。
+- `"ok": m.status != "error",` Day 28 遇到 `[工具报错]`、`[拒绝]`、`[主管驳回]` 开头的结果时,会把 `ToolMessage` 的 `status` 设成 `"error"`,这里就变成 `false`。实测正常查询全是 `true`;主管驳回退款时,那条结果是 `{"name": "create_refund_request", "ok": false, "preview": "[主管驳回] 金额待财务复核。请告诉客户退款申请未通过,会有人工客服跟进。"}`,前端就会显示红叉。
+- `"preview": preview(m.content),` 只推摘要,规则见 `events.py`。实测 `find_customer` 的预览是 `{"result": [{"id": "C007", "name": "刘静", "email": "user007@example.com", "company": "半岛咖啡"}]}`。
+- `yield AgentEvent(type="done", data={"usage": usage})` 流跑完(包括停在审批处)推一个 `done`。实测第一轮的事件统计是 `token` 70 个、`tool_call` 5 个、`tool_result` 4 个、`approval_required` 1 个、`done` 1 个:5 个调用里最后一个是 `create_refund_request`,它进了审批,所以这一轮还没有结果。
+- `def stream_turn(graph, thread_id: str, customer_id: str, text: str)` 用户发一条新消息时用。注意它不是 `async def`,它只是把参数准备好,返回 `_drive(...)` 生成的异步生成器。
+- `config = {"configurable": {"thread_id": thread_id, "customer_id": customer_id}}` `thread_id` 决定 checkpoint 存到哪一条对话下,我们直接用会话 id,比如 `s_eabcdbbd8ea34539`。
+- `graph_input = {"ticket": text, "customer_id": customer_id, "messages": [("user", text)]}` 三样都要传,原因见下面正文。`("user", text)` 是 LangChain 的简写,`add_messages` 会把它转成一条 `HumanMessage`。实测跑完一轮后状态里的消息类型序列是 `human, ai, tool, tool, ai, tool, tool, ai, tool, ai`,只有开头一条 human。
+- `def stream_resume(graph, thread_id: str, customer_id: str, decision: dict)` 主管点了批准或拒绝以后调用。
+- `return _drive(graph, Command(resume=decision), config)` 用同一个 `thread_id` 把决定喂回去,图从 `approval` 节点停下的地方接着跑。实测 `decision={"approved": True, "note": ""}`,恢复后推了 1 个 `tool_result`(`{"refund_request_id": 1, "status": "pending_approval", "amount_yuan": "2392.00"}`)、325 个 token 和 1 个 `done`,首个 token 在 1.86 秒时到。
+
+</div>
+
 有几处值得停下来想一想。
 
 `tool_call` 事件是从 `updates` 里拿的,也就是模型那一步完整生成之后才推。你可能会想,`messages` 模式里也有 `tool_call_chunks`,为什么不用?因为工具参数是一点点生成的,半截的 JSON 推给前端没法显示。等这一步结束再推一次完整的,前端简单得多,延迟也只差几百毫秒。
+
+`stream_turn` 的输入要和 W4 那张图对上。Day 28 的图从 `ticket` 读工单正文,从状态里的 `customer_id` 做越权检查,只传 `messages` 的话,分类节点第一行就报 `KeyError: 'ticket'`,我第一次接的时候就是这么挂的。所以三样都传:`ticket` 给分类和检索用,`customer_id` 给越权检查用,`messages` 让第二轮、第三轮的历史接得上。
 
 `customer_id` 放在 `configurable` 里,而不是让模型从对话里猜。这一点 Day 40 会细讲:**客户身份必须来自登录态,不能来自模型**。工具函数通过 config 读它,模型根本没机会改。
 
@@ -292,6 +360,17 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_customer ON agent_sessions (customer_id, updated_at DESC);
 ```
+
+<div class="line-notes">
+
+- `CREATE TABLE IF NOT EXISTS agent_sessions (` `IF NOT EXISTS` 让这个脚本可以重复跑,表已经在就什么也不做。
+- `id           TEXT PRIMARY KEY,` 会话 id 由 `sessions.py` 生成,形如 `s_eabcdbbd8ea34539`,同时也是 LangGraph 的 `thread_id`。
+- `customer_id  TEXT NOT NULL,` 会话属于哪个客户。每个接口都要比对它,别人的会话一律当不存在。
+- `status       TEXT NOT NULL DEFAULT 'active',` 三个状态:`active` 进行中、`awaiting_approval` 等审批、`closed` 已关闭。实测一张退款工单的会话,第一轮结束后是 `awaiting_approval`,审批流跑完又变回 `active`。
+- `created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),` `TIMESTAMPTZ` 是带时区的时间,插入时不传就用当前时间。
+- `CREATE INDEX IF NOT EXISTS idx_sessions_customer ON agent_sessions (customer_id, updated_at DESC);` 为「按客户列出会话、最近的在前」这种查询建的联合索引。实测 `\d agent_sessions` 能看到 `agent_sessions_pkey` 和 `idx_sessions_customer` 两个索引。
+
+</div>
 
 ```python
 # agent-60-lab/w6/app/sessions.py
@@ -336,6 +415,24 @@ class SessionStore:
     def lock(self, sid: str) -> asyncio.Lock:
         return self._locks[sid]
 ```
+
+<div class="line-notes">
+
+- `from collections import defaultdict` `defaultdict(工厂函数)` 是取不存在的键时自动用工厂函数造一个默认值的字典,下面用它给每个会话按需造一把锁。
+- `from psycopg_pool import AsyncConnectionPool` psycopg 3 的异步连接池,`main.py` 启动时建好再传进来。
+- `def __init__(self, pool: AsyncConnectionPool):` 连接池由外面传进来,这个类自己不管建池和关池。
+- `self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)` 第一次访问 `self._locks["s_abc"]` 时自动新建一把 `asyncio.Lock()`,以后再取还是同一把。锁只存在内存里,进程重启就没了,这正是正文说的「单进程才有效」。
+- `async def create(self, customer_id: str) -> str:` 建一个新会话,返回会话 id。
+- `sid = f"s_{uuid.uuid4().hex[:16]}"` `uuid4().hex` 是 32 位十六进制字符串,取前 16 位加上前缀 `s_`。实测生成过 `s_eabcdbbd8ea34539`、`s_9e4bae1ce7104554`。
+- `async with self.pool.connection() as conn:` 从池里借一个连接,`async with` 结束时自动还回去。池是用 `autocommit=True` 建的,所以每条语句执行完就生效,不用手动 commit。
+- `"INSERT INTO agent_sessions (id, customer_id) VALUES (%s, %s)", (sid, customer_id)` psycopg 的占位符是 `%s`,不是 sqlite3 的 `?`,但道理一样:值单独传,防注入。`status` 不传,用表上的默认值 `active`。
+- `async def get(self, sid: str) -> dict | None:` 查一个会话,查不到返回 None。
+- `row = await cur.fetchone()` 拿到的是一个元组,比如 `('s_eabcdbbd8ea34539', 'C007', 'active', None)`。`title` 一直没人写,所以是 None。
+- `return {"id": row[0], "customer_id": row[1], "status": row[2], "title": row[3]}` 元组转成字典,调用方按名字取,不用记第几列。
+- `async def set_status(self, sid: str, status: str) -> None:` 改状态时顺手把 `updated_at` 刷成 `now()`。
+- `def lock(self, sid: str) -> asyncio.Lock:` 拿这个会话的锁。注意它不是 `async`,拿锁对象本身不用等,真正等的是 `await lock.acquire()`。
+
+</div>
 
 那把锁是干什么的?设想用户手快点了两次发送,或者前端在网络抖动时自动重试了一次。两个请求同时拿着同一个 thread_id 驱动同一张图,两轮会交错写 checkpoint,消息历史就乱了:你可能看到两条用户消息挨着,后面跟着一条莫名其妙的回复。我第一次上线类似服务时就遇到过,排查了半天才发现是前端没禁用按钮。后端不能指望前端,所以加锁,第二个请求直接收到一条 `code` 为 `busy` 的错误事件。
 
@@ -489,6 +586,62 @@ async def index():
     return FileResponse("w6/static/index.html")
 ```
 
+<div class="line-notes">
+
+- `from collections.abc import AsyncIterable` 接口函数的返回类型写成 `AsyncIterable[ServerSentEvent]`,FastAPI 看到它就知道这是一个流式接口。
+- `from contextlib import asynccontextmanager` 用来写 `lifespan`:`yield` 之前是启动时做的事,之后是关闭时做的事。
+- `from fastapi.sse import EventSourceResponse, ServerSentEvent` FastAPI 0.135 起自带的 SSE 支持。`ServerSentEvent` 是一条事件,`EventSourceResponse` 负责把它们按 SSE 格式写出去。实测装的是 FastAPI 0.159.1。
+- `from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver` 异步版的 Postgres checkpointer,图的每一步状态存进 Postgres。
+- `from w4.ticket_agent import build_graph  # noqa: E402` 从 W4 拿图。这一行要求从 `agent-60-lab/` 根目录启动,`w4`、`w6` 才能当包导入。
+- `async def lifespan(app: FastAPI):` 应用启动时执行到 `yield`,停止时执行 `yield` 后面的部分。连接池、checkpointer、图都在这里建一次,所有请求共用。
+- `pool = AsyncConnectionPool(settings.database_url, open=False, kwargs={"autocommit": True})` `open=False` 是先建对象、等下面在事件循环里再 `await pool.open()`,新版 psycopg_pool 推荐这么写。`autocommit=True` 让每条 SQL 立即生效。
+- `async with AsyncPostgresSaver.from_conn_string(settings.database_url) as saver:` checkpointer 自己管一个连接,`async with` 保证应用关闭时连接被关掉。
+- `await saver.setup()  # 第一次运行时建 checkpoint 表,之后是空操作` 实测第一次启动后库里多了 `checkpoints` 等几张表。跑完三个会话,`checkpoints` 表里按 thread 分别有 12、10、9 行,每跑完一个节点存一行。
+- `app.state.graph = build_graph(checkpointer=saver)` 把编译好的图挂在 `app.state` 上,接口里用 `app.state.graph` 取。实测整个启动过程(连库、建表、编译图)花了 10 秒左右,`Application startup complete` 之前请求是连不上的。
+- `yield` 应用在这里「运行中」,直到收到停止信号。
+- `app = FastAPI(title="SupportPilot API", lifespan=lifespan)` 把 lifespan 交给 FastAPI。注意:用了 `lifespan` 以后,`@app.on_event("startup")` 写的钩子**不会再执行**,Day 37 会踩到这一点。
+- `def current_customer(x_demo_customer: Annotated[str | None, Header()] = None) -> str:` `Header()` 表示这个参数从请求头读。FastAPI 会把参数名里的下划线换成连字符,所以 `x_demo_customer` 对应的是请求头 `X-Demo-Customer`。
+- `raise HTTPException(401, "missing X-Demo-Customer")` 实测不带这个头请求 `/api/sessions`,返回 `{"detail":"missing X-Demo-Customer"}`,状态码 401。
+- `async def owned_session(sid: str, cid: Annotated[str, Depends(current_customer)]) -> dict:` 依赖套依赖:先跑 `current_customer` 拿到客户 id,再查会话、比对归属。`sid` 和路径参数 `{sid}` 同名,FastAPI 自动从 URL 里取。
+- `if s is None or s["customer_id"] != cid:` 会话不存在,或者不是你的,走同一个分支。
+- `raise HTTPException(404, "session not found")` 实测用 `C012` 的身份访问 `C007` 的会话,返回 `{"detail":"session not found"}`,状态码 404,和会话真不存在时一模一样。
+- `text: str = Field(min_length=1, max_length=settings.max_message_chars)` 实测发空字符串返回 422,报错是 `String should have at least 1 character`。这个检查发生在请求体解析阶段,同样在流开始之前。
+- `class Decision(BaseModel):` 审批接口的请求体:`approved` 必填,`note` 可选。
+- `@app.post("/api/sessions")` 建会话。实测 `curl -X POST /api/sessions -H 'X-Demo-Customer: C007'` 返回 `{"session_id": "s_eabcdbbd8ea34539"}`。
+- `def busy(code: str, message: str) -> ServerSentEvent:` 造一条 `error` 事件,`code` 给前端程序判断,`message` 给人看。
+- `return ServerSentEvent(data={"code": code, "message": message}, event="error")` 实测线上的原始文本是 `event: error` 加 `data: {"code": "busy", "message": "上一轮还没结束"}`。中文被转成了 `\u` 转义,这是 JSON 编码的默认行为,前端 `JSON.parse` 以后就是「上一轮还没结束」,不影响使用。
+- `async def _pump(sid: str, events, lock: asyncio.Lock) -> AsyncIterable[ServerSentEvent]:` 把适配层的事件包成 SSE,超时、异常、解锁、更新状态都集中在这里,两个流式接口共用。
+- `started = time.monotonic()` `monotonic` 是只增不减的时钟,算耗时比 `time.time()` 可靠,系统改时间也不受影响。
+- `seq = 0` 事件序号,每推一条加 1,作为 SSE 的 `id:`。
+- `status = "active"` 默认这一轮跑完会话回到进行中,遇到审批请求再改成等审批。
+- `async with asyncio.timeout(settings.turn_timeout_s):` Python 3.11 的超时写法,块里的代码超过 120 秒就在当前的 `await` 处抛 `TimeoutError`。
+- `async for ev in events:` 一个个取出适配层产生的事件。
+- `status = "awaiting_approval"` 看到 `approval_required` 就记下来,最后在 `finally` 里写进表。
+- `ev.data["elapsed_ms"] = int((time.monotonic() - started) * 1000)` 给 `done` 补上耗时。实测退款工单第一轮的 `done` 是 `{"usage": {"input_tokens": 3828, "output_tokens": 552}, "elapsed_ms": 7682}`。
+- `yield ServerSentEvent(data=ev.data, event=ev.type, id=str(seq))` 实测这一轮一共推了 220 条事件,其中 211 条是 token,最后一条 `done` 的 `id` 是 220。
+- `except TimeoutError:` 超时不直接断开,推一条带 `code` 的错误事件,再正常结束这个流。
+- `except asyncio.CancelledError:` 客户端断开时生成器会被取消。
+- `raise` 取消必须原样抛出去,吞掉它的话 Starlette 不知道该停,任务会挂在那里。
+- `except Exception as exc:  # noqa: BLE001` 其他异常变成 `internal` 错误事件,只给异常类名,不把堆栈和内部信息推给浏览器。
+- `finally:` 正常结束、超时、出错、被取消,四条路都会走到这里。
+- `await app.state.sessions.set_status(sid, status)` 实测第一轮结束后表里的状态是 `awaiting_approval`,审批流结束后是 `active`。
+- `lock.release()` 锁在这里释放,和上面的 `acquire` 一一对应,路径是确定的。
+- `@app.post("/api/sessions/{sid}/messages", response_class=EventSourceResponse)` `response_class=EventSourceResponse` 告诉 FastAPI 把这个函数 `yield` 出来的东西按 SSE 写出去。
+- `sid: str, body: NewMessage, s: Annotated[dict, Depends(owned_session)]` 三个参数分别来自 URL 路径、请求体 JSON 和依赖。`s` 进到函数体时,鉴权和归属都已经检查完了。
+- `if s["status"] == "awaiting_approval":` 实测审批还没处理时再发「怎么样了」,收到的是 `{'code': 'awaiting_approval', 'message': '有一个操作在等审批,先处理审批'}`。
+- `if lock.locked():` 实测第一条消息还在跑(发出后 1.5 秒),紧接着再发一条「在吗」,立刻收到 `busy` 错误事件,第一条流不受影响。
+- `await lock.acquire()` 先检查 `locked()` 再 `acquire()`,中间没有 `await`,在单线程的事件循环里不会被别的请求插队,所以这样写是安全的。
+- `async for item in _pump(sid, stream_turn(app.state.graph, sid, s["customer_id"], body.text), lock):` `customer_id` 取自会话表(也就是登录态),不取自请求体。
+- `if s["status"] != "awaiting_approval":` 实测会话刚建、还没发消息就调审批接口,收到 `no_pending_approval`。
+- `decision = {"approved": body.approved, "note": body.note}` 实测批准时是 `{"approved": True, "note": ""}`。
+- `async for item in _pump(sid, stream_resume(` 恢复流同样走 `_pump`,同样有超时、锁和状态更新。实测(在一个干净的库上)批准后 2.5 秒内回复完成,`cloudledger.db` 里多了一条 `pending_approval` 的退款申请。
+- `snap = await app.state.graph.aget_state({"configurable": {"thread_id": sid}})` 读这个 thread 最新的 checkpoint。
+- `msgs = snap.values.get("messages", []) if snap.values else []` 会话建了还没发过消息时,`snap.values` 是空字典。
+- `if m.type in ("human", "ai") and m.content` 只返回人说的和模型说的、而且有文字的消息,工具消息和只调了工具没说话的 ai 消息都过滤掉。实测一轮退款工单返回 5 条:1 条 human、4 条 ai。
+- `return FileResponse("w6/static/index.html")` 相对路径是相对当前工作目录的,所以 uvicorn 要从 `agent-60-lab/` 根目录启动,否则首页 404。
+
+</div>
+
 我把几个容易写错的地方单独拎出来说。
 
 **鉴权和归属检查放在依赖(`Depends`)里,而不是生成器函数体里。** 带 `yield` 的接口函数是一个生成器,函数体要等响应开始发送时才执行。到那时响应头 200 已经发出去了,再 `raise HTTPException(404)` 就来不及变成一个真正的 404。依赖在响应开始之前执行,所以 401、404 这类「请求本身不合法」的错误放在依赖里,前端拿到的是正确的 HTTP 状态码。而「会话正忙」「有审批在等」这种状态冲突发生在流里,用一条 `error` 事件告诉前端,前端按 `code` 字段显示对应提示。
@@ -516,7 +669,7 @@ async def index():
   .reply { white-space: pre-wrap; background: #f6f6f6; padding: .6rem; border-radius: 6px; }
   #approval { display: none; border: 2px solid #c80; padding: .6rem; border-radius: 6px; }
 </style>
-<p>客户 ID <input id="cid" value="cus_1001"> <button onclick="newSession()">新会话</button> <span id="sid"></span></p>
+<p>客户 ID <input id="cid" value="C007"> <button onclick="newSession()">新会话</button> <span id="sid"></span></p>
 <div id="log"></div>
 <div id="approval"><span id="adetail"></span>
   <button onclick="decide(true)">批准</button> <button onclick="decide(false)">拒绝</button></div>
@@ -564,6 +717,33 @@ function decide(ok) { approval.style.display = "none"; stream(`/api/sessions/${s
 </script>
 ```
 
+<div class="line-notes">
+
+- `#approval { display: none;` 审批面板默认藏起来,收到 `approval_required` 才显示。
+- `<p>客户 ID <input id="cid" value="C007">` 这个输入框里的值会作为 `X-Demo-Customer` 头发出去。默认填 `C007`,是 Day 23 种子数据里刘静的客户号,她名下正好有那两张重复扣款的发票。换成种子里不存在的号,建会话没问题,但 Agent 会被越权检查挡住,什么也查不到。
+- `let sid = null, reply = null;` `sid` 是当前会话 id;`reply` 指向正在往里追加文字的那个回复气泡,一轮结束时清空。
+- `const headers = () => ({"Content-Type": "application/json", "X-Demo-Customer": cid.value});` 写成函数,每次请求时现读输入框,改了客户 id 马上生效。`cid` 能直接用,是因为浏览器会把带 `id` 的元素挂成同名的全局变量,演示页图省事,正式代码别这么写。
+- `sid = (await r.json()).session_id;` 实测拿到 `s_9e4bae1ce7104554`,显示在按钮旁边。
+- `function add(cls, text) {` 往日志区加一个 div,返回这个 div,`token` 事件靠这个返回值往同一个气泡里追加文字。用 `textContent` 而不是 `innerHTML`,模型输出里就算有 `<script>` 也只会当成文字显示。
+- `document.getElementById("send").disabled = true;` 流开始就禁用发送按钮,防止手快连点。实测点击发送后按钮立即变成禁用。后端还有锁兜底,这里只是让用户别点。
+- `if (!r.ok) {` 401、404、422 这些错误在流开始之前就返回了,`r.ok` 是 false,直接把状态码和响应体显示出来。
+- `const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();` `r.body` 是字节流,`TextDecoderStream` 把它解码成 UTF-8 文本流,`getReader()` 拿到一个可以一块块 `read()` 的读取器。浏览器原生的 `EventSource` 只能发 GET 请求,我们要 POST 一个 JSON 请求体,所以自己读流。
+- `const {value, done} = await reader.read(); if (done) break;` 每次读到一块文本,`done` 为 true 表示服务端已经关闭连接。
+- `buf += value;` 收到的文本先攒进缓冲区。
+- `while ((i = buf.indexOf("\n\n")) >= 0) {` 每找到一个空行,就切出一条完整的事件。一块数据里可能有好几条,所以用 `while`。
+- `const raw = buf.slice(0, i); buf = buf.slice(i + 2);` 切出一条事件,剩下的(可能是半条)留在缓冲区等下一块。
+- `if (line.startsWith("event:")) ev = line.slice(6).trim();` `event: token` 去掉前 6 个字符 `event:` 再 trim,得到 `token`。
+- `else if (line.startsWith("data:")) data += line.slice(5).trim();` 同理拿到 JSON 文本。SSE 规定一条事件可以有多行 `data:`,所以用 `+=` 拼起来。`id:` 行和 keep-alive 注释行(以 `:` 开头)这里不处理,直接忽略。
+- `if (data) handle(ev, JSON.parse(data));` 实测第一条是 `handle("token", {text: "我先"})`。
+- `if (ev === "token") { reply ??= add("reply", ""); reply.textContent += d.text; }` `??=` 的意思是「`reply` 为 null 时才赋值」:第一个 token 来时新建气泡,后面的都追加进这个气泡。实测因为气泡在第一个 token 时就建好了,所以它排在工具卡片的上面。
+- `else if (ev === "tool_call") add("card", "🔧 " + d.name + " " + JSON.stringify(d.args));` 实测显示 `🔧 find_customer {"query":"C007"}`、`🔧 get_subscription {"customer_id":"C007"}`、`🔧 list_invoices {"customer_id":"C007","limit":20}`。
+- `else if (ev === "tool_result") add("card", (d.ok ? "✅ " : "❌ ") + d.name + ":" + d.preview);` 实测显示 `✅ find_customer:{"result": [{"id": "C007", "name": "刘静", …`、`✅ search_kb:[{"id": "kb-002#3", "title": "退款政策", …`。主管驳回时 `d.ok` 是 false,显示成 `❌ create_refund_request:[主管驳回] ……`。
+- `else if (ev === "approval_required") { approval.style.display = "block";` 实测点发送后 6.9 秒弹出审批面板,面板里是 `{"type":"refund_approval","customer_id":"C007",…}`。
+- `else if (ev === "done")` 实测第一轮显示「完成 6333 ms,输入 3828 / 输出 560 tokens」,批准后的第二轮显示「完成 2481 ms,输入 2393 / 输出 269 tokens」。同一行末尾的 `reply = null` 把气泡指针清掉,下一轮的 token 进新气泡。
+- `function decide(ok) { approval.style.display = "none";` 实测点「批准」后 2.9 秒内先出现 `✅ create_refund_request:{"refund_request_id": 1, "status": "pending_approval", "amount_yuan": "2392.00"}`,接着是「刘静您好,已为您核实并提交退款申请……」的回复,最后一张卡片是「完成 2913 ms,输入 2516 / 输出 293 tokens」。
+
+</div>
+
 注意那个 `buf`。网络上收到的数据块和 SSE 事件的边界没有任何关系,一个数据块可能包含两条半事件,也可能半条事件被拆成两块。所以必须先攒进缓冲区,按空行切。我见过有人直接 `value.split("data:")`,本地测试一切正常,上线遇到慢网络就开始报 JSON 解析错误。
 
 <figure>
@@ -607,35 +787,43 @@ psql "$DATABASE_URL" -f w6/sql/001_sessions.sql
 uv run uvicorn w6.app.main:app --reload --port 8000
 ```
 
-浏览器打开本机 8000 端口(`localhost:8000`),点「新会话」,输入「我 9 月份被扣了两次 99 块,帮我退一笔」。如果 W4 的 Agent 写得没问题,你会看到先出现查客户、查发票的工具卡片,接着弹出审批面板。点批准,退款工具执行,然后回复一个字一个字地出来。
+浏览器打开本机 8000 端口(`localhost:8000`),点「新会话」,输入 Day 23 那张 T1041 工单的原话:「你好,10 月 8 号我被扣了两次款,INV-2026-0026 和 INV-2026-0123 金额一模一样,麻烦把多扣的那笔退给我。」。如果 W4 的 Agent 写得没问题,你会看到先出现查客户、查发票的工具卡片,接着弹出审批面板。点批准,退款工具执行,然后回复一个字一个字地出来。
 
 也可以不用浏览器,用 curl 看原始事件流,`-N` 关掉 curl 自己的缓冲:
 
 ```bash
-SID=$(curl -s -X POST localhost:8000/api/sessions -H 'X-Demo-Customer: cus_1001' | python3 -c 'import json,sys;print(json.load(sys.stdin)["session_id"])')
+SID=$(curl -s -X POST localhost:8000/api/sessions -H 'X-Demo-Customer: C007' | python3 -c 'import json,sys;print(json.load(sys.stdin)["session_id"])')
 curl -N -X POST "localhost:8000/api/sessions/$SID/messages" \
-  -H 'Content-Type: application/json' -H 'X-Demo-Customer: cus_1001' \
-  -d '{"text":"我的发票 INV-2031 金额不对"}'
+  -H 'Content-Type: application/json' -H 'X-Demo-Customer: C007' \
+  -d '{"text":"你好,10 月 8 号我被扣了两次款,INV-2026-0026 和 INV-2026-0123 金额一模一样,麻烦把多扣的那笔退给我。"}'
 ```
 
-输出大致长这样(具体内容取决于你的数据和模型):
+我实跑的一次输出如下(模型每次措辞和调用顺序会有出入)。线上传的 JSON 里中文是 `\u6211\u5148` 这样的转义,这里为了好读还原成了中文,中间省略了大部分 token:
 
 ```text
-event: tool_call
-data: {"id":"call_0","name":"get_invoice","args":{"invoice_id":"INV-2031"}}
+event: token
+data: {"text": "我先"}
 id: 1
 
-event: tool_result
-data: {"id":"call_0","name":"get_invoice","ok":true,"preview":"{\"id\": \"INV-2031\", \"amount\": 198.0, ..."}
-id: 2
-
 event: token
-data: {"text":"您好"}
-id: 3
+data: {"text": "核实"}
+id: 2
 ...
+event: tool_call
+data: {"id": "call_00_flsgtE1cEcAKzHvVQ7FX6782", "name": "find_customer", "args": {"query": "C007"}}
+id: 11
+...
+event: tool_result
+data: {"id": "call_00_flsgtE1cEcAKzHvVQ7FX6782", "name": "find_customer", "ok": true, "preview": "{\"result\": [{\"id\": \"C007\", \"name\": \"刘静\", \"email\": \"user007@example.com\", \"company\": \"半岛咖啡\"}]}"}
+id: 13
+...
+event: approval_required
+data: {"type": "refund_approval", "customer_id": "C007", "ticket": "你好,10 月 8 号我被扣了两次款,……", "requests": [{"invoice_id": "INV-2026-0123", "amount_yuan": 2392.0, "reason": "……"}]}
+id: 134
+
 event: done
-data: {"usage":{"input_tokens":2311,"output_tokens":187},"elapsed_ms":6420}
-id: 41
+data: {"usage": {"input_tokens": 6026, "output_tokens": 494}, "elapsed_ms": 7992}
+id: 135
 ```
 
 ## 并发:一个进程扛得住多少人
@@ -653,7 +841,7 @@ id: 41
 3. 并发测试。开两个终端,对同一个会话几乎同时发两条消息,确认第二条收到 `busy` 错误事件,而且会话历史里只有第一条消息。
 4. 断线测试。发一条消息,在回复出到一半时按 Ctrl+C 掐掉 curl。然后调 `/history`,看看哪些内容已经保存。再发一条新消息,确认会话还能正常继续。
 5. 超时测试。把 `TURN_TIMEOUT_S` 设成 3,发一条需要查好几次工具的消息,确认前端收到的是一条可读的 `error` 事件,而不是连接被重置。
-6. 越权测试。用 `cus_1001` 建一个会话,再用 `X-Demo-Customer: cus_2002` 去请求这个会话的 `/history`,必须拿到 404。
+6. 越权测试。用 `C007` 建一个会话,再用 `X-Demo-Customer: C012` 去请求这个会话的 `/history`,必须拿到 404。
 
 **验收标准**:六步全部通过;第 4 步能说清楚中断时 checkpoint 里有什么、没有什么;重启 uvicorn 后,用旧会话 id 调 `/history`,历史还在。
 

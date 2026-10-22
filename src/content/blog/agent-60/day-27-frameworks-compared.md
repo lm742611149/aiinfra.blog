@@ -102,6 +102,24 @@ if __name__ == "__main__":
         m.pretty_print()
 ```
 
+<div class="line-notes">
+
+- `"""同一个任务 · LangChain 1.x` 模块 docstring 点明两件事:用的是 LangChain 1.x 新的 `create_agent`,底下跑的是 LangGraph。后面你会看到它返回的对象类型就是 LangGraph 的图。
+- `from langchain.agents import create_agent` LangChain 1.0 起统一的建 Agent 入口。实测这次装到的版本是 langchain 1.4.7、langgraph 1.2.16、langchain-openai 1.7.2。
+- `from langchain_core.tools import tool` `tool` 既能当装饰器用,也能直接包一个现成函数:`tool(find_customer)`。它会读函数签名和 docstring,生成模型看到的工具 schema。
+- `from langchain_openai import ChatOpenAI` 按 OpenAI 协议说话的聊天模型类。DeepSeek、硅基这类兼容厂商,改一下 `base_url` 就能接。
+- `sys.path.insert(0, str(Path(__file__).parents[1] / "cloudledger"))` `Path(__file__)` 是 `.../w4/frameworks/fw_langchain.py`,`.parents[0]` 是 `frameworks`,`.parents[1]` 是 `w4`,再拼上 `cloudledger`,得到 `.../w4/cloudledger`。把这个目录插到模块搜索路径最前面,下一行的 `from server import` 才能找到 Day 23 写的 `server.py`。
+- `from server import find_customer, list_invoices  # noqa: E402` 直接 import Day 23 的两个工具函数。`@mcp.tool` 装饰器返回的还是原函数,所以可以当普通函数用。`# noqa: E402` 是告诉 Ruff 别报「import 不在文件开头」,因为它必须排在改 `sys.path` 之后。
+- `load_dotenv()` 把 `.env` 里的 `LLM_MODEL`、`LLM_BASE_URL`、`LLM_API_KEY` 读进环境变量,下面的 `os.environ[...]` 才取得到。
+- `model = ChatOpenAI(model=os.environ["LLM_MODEL"]` 实测 `model.model_name` 是 `deepseek-flash`,`temperature` 是 `0.0`。温度设 0 是为了每次调工具的路径尽量一样,方便对比几个框架。
+- `agent = create_agent(` 建 Agent。实测 `type(agent).__name__` 是 `CompiledStateGraph`,图里有 `__start__`、`model`、`tools`、`__end__` 四个节点:模型节点和工具节点来回跑,模型不再调工具就结束。这就是 Day 24 你手画的那张 ReAct 图。
+- `tools=[tool(find_customer), tool(list_invoices)],` 实测生成的工具名就是函数名。`find_customer` 的参数 schema 是 `{"query": {"type": "string", "description": "客户邮箱、姓名、公司名或客户编号(如 C007),支持部分匹配"}}`,description 直接取自 Day 23 的 `Field(description=...)`;`list_invoices` 连 `pattern: "^C\\d{3}$"`、`limit` 的 `minimum 1 / maximum 20` 都带过来了。Day 23 写的 schema 在这里一点没浪费。
+- `system_prompt="你是云簿的账务专员。` 系统提示词。「不要编造发票号和金额」这句对账务类任务很重要。
+- `result = agent.invoke({"messages": [{"role": "user", "content": TASK}]})` 输入是一个状态字典,键是 `messages`,和 LangGraph 的 `MessagesState` 一样。这次实跑一共 3 次模型请求,约 9 秒。返回的 `result["messages"]` 有 6 条:用户问题 → AI 调 `find_customer` → 工具结果 → AI 调 `list_invoices` → 工具结果 → AI 最终回答。
+- `m.pretty_print()` 逐条漂亮打印。这次实跑能看到模型调 `find_customer` 时传的是 `query: 007@example.com`(没写全也能靠 LIKE 匹配到),调 `list_invoices` 时自己把 `limit` 设成了 20。最终回答指出 INV-2026-0026 和 INV-2026-0123 都是 2026-10-08 的 ¥2,392.00,还拿 7、8、9 月各一张做对照,判断 10 月多扣了 ¥2,392.00。
+
+</div>
+
 `create_agent` 是 LangChain 1.0 推出的统一入口,替代了以前五花八门的 Agent 类和 LangGraph 的 `create_react_agent`。它返回的是一个编译好的 LangGraph 图(打印类型能看到 `CompiledStateGraph`),所以昨天学的 `stream`、checkpointer、interrupt 全都能用。它的特色是 **middleware**:在模型调用前后、工具调用前后插入逻辑,比如 `HumanInTheLoopMiddleware` 在指定工具执行前自动 interrupt 等人审批,还有做对话摘要、PII 脱敏、调用次数限制的现成中间件。
 
 ### OpenAI Agents SDK
@@ -148,6 +166,23 @@ if __name__ == "__main__":
     result = Runner.run_sync(agent, TASK)
     print(result.final_output)
 ```
+
+<div class="line-notes">
+
+- `from agents import Agent, AsyncOpenAI, OpenAIChatCompletionsModel` 包名叫 `openai-agents`,import 名是 `agents`。实测版本 0.24.0。`AsyncOpenAI` 就是 openai 库的异步客户端,SDK 顺手重新导出了。
+- `set_tracing_disabled(True)` 关掉 SDK 自带的 tracing。不关的话,它会尝试把执行轨迹传到 OpenAI 平台,没有 OpenAI 官方 key 就报 401。
+- `@function_tool` 把普通函数变成 SDK 的工具对象。实测 `type(find_customer).__name__` 是 `FunctionTool`,`.name` 是 `find_customer`。
+- `def find_customer(query: str) -> list[dict]:` 这里没有直接用 Day 23 的函数,而是包了一层。`@function_tool` 从**这个**函数的签名和 docstring 生成 schema,所以工具叫什么、描述怎么写、暴露哪几个参数(这里 `list_invoices` 就没暴露 `status`)都由你在这一层决定,不受 server.py 里写法的牵制。
+- `"""按邮箱/姓名/公司/编号查找客户,返回客户编号等信息。"""` 这句 docstring 就是模型看到的工具描述。实测生成的参数 schema 是 `{"properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": false}`。
+- `return server.find_customer(query)` 返回 list[dict]。SDK 把返回值变成字符串交给模型时用的是 `str()`,所以实测工具结果长这样:`[{'id': 'C007', 'name': '刘静', ...}]`,是单引号的 Python 写法,不是 JSON。模型照样读得懂,但想要规整的 JSON,可以在这里自己 `json.dumps(..., ensure_ascii=False)`。
+- `def list_invoices(customer_id: str, limit: int = 6) -> list[dict]:` 有默认值的 `limit`。实测 SDK 默认用严格模式(strict JSON schema),生成的 schema 里 `required` 是 `["customer_id", "limit"]`,两个都必填,也就是说默认值对模型不起作用,模型每次都得自己给一个 `limit`。这次它给的是 12。
+- `client = AsyncOpenAI(base_url=os.environ["LLM_BASE_URL"]` 用 DeepSeek 的地址和 key 建客户端。
+- `agent = Agent(` Agent = 名字 + 指令 + 模型 + 工具,就这么几样。
+- `model=OpenAIChatCompletionsModel(model=os.environ["LLM_MODEL"], openai_client=client),` 关键的一行。SDK 默认走 OpenAI 的 Responses API,DeepSeek 只支持 Chat Completions,不包这一层会 404。
+- `result = Runner.run_sync(agent, TASK)` `Runner` 负责跑循环,`run_sync` 是同步版本。这次实跑 `result.new_items` 依次是:ReasoningItem(思考)→ MessageOutputItem「我先查一下这个客户的信息。」→ ToolCallItem `find_customer({"query": "user007@example.com"})` → ToolCallOutputItem → ReasoningItem → ToolCallItem `list_invoices({"customer_id": "C007", "limit": 12})` → ToolCallOutputItem → ReasoningItem → 最终 MessageOutputItem。用量是 3 次请求、输入 2277 token、输出 1000 token。ReasoningItem 出现是因为 DeepSeek 默认开了思考模式,SDK 把 `reasoning_content` 也收进来了。
+- `print(result.final_output)` 最后一条回答的文本。这次实跑的结论是「存在重复扣款」,列出 INV-2026-0123 和 INV-2026-0026 两张 ¥2,392.00 的发票,还注意到 0026 和 9 月的 0027 编号连续,而 0123 编号跳得很远,疑似重复生成。
+
+</div>
 
 OpenAI Agents SDK 是 2025 年 3 月发布的,前身是实验项目 Swarm。核心概念只有几个:Agent(指令 + 工具 + 模型)、Runner(跑循环)、handoff(交接给另一个 Agent)、guardrail(输入输出检查)、session(会话记忆),外加内置的 tracing。它的设计哲学是「少而精」,代码读起来非常干净。
 
@@ -206,11 +241,31 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+<div class="line-notes">
+
+- `"""同一个任务 · Claude Agent SDK。` docstring 先把性质说清楚:这不是框架而是 harness,底下跑的是 Claude Code 本体。实测 SDK(0.2.171)自带一个打包好的 Claude Code 程序,位置在 `site-packages/claude_agent_sdk/_bundled/claude`。
+- `from claude_agent_sdk import ClaudeAgentOptions, create_sdk_mcp_server, query, tool` 四样东西:`tool` 定义工具,`create_sdk_mcp_server` 把工具包成 MCP server,`ClaudeAgentOptions` 配置,`query` 发起一次任务。
+- `@tool("find_customer", "按邮箱/姓名/公司/编号查找客户,返回客户编号等信息", {"query": str})` 三个参数分别是工具名、描述、参数表。参数表直接写 `{"query": str}`,SDK 会转成 JSON Schema。实测装饰后 `type(find_customer).__name__` 是 `SdkMcpTool`。
+- `async def find_customer(args: dict[str, Any]) -> dict[str, Any]:` 工具函数必须是 async,参数统一是一个 dict,不像前两个框架那样按参数名展开。
+- `return {"content": [{"type": "text", "text": json.dumps(rows, ensure_ascii=False)}]}` 返回值要符合 MCP 的工具结果格式:`content` 是一组内容块。这里把客户列表转成 JSON 文本。实测模型收到的是 `[{"id": "C007", "name": "刘静", "email": "user007@example.com", "company": "半岛咖啡"}]`。`ensure_ascii=False` 让中文原样输出,不变成 `刘静`。
+- `rows = server.list_invoices(args["customer_id"])` 只传了 `customer_id`,`limit` 用 Day 23 的默认值 6。实测返回 C007 最近 5 张发票(他只有 5 张)。
+- `cloudledger = create_sdk_mcp_server(` 建一个**进程内**的 MCP server,不用像 Day 23 那样起子进程。实测返回值是个 dict,键是 `type`、`name`、`instance`。
+- `system_prompt="你是云簿的账务专员。` 和另外两版一样的系统提示词,方便对比。
+- `mcp_servers={"cloudledger": cloudledger},` 字典的键 `cloudledger` 就是 server 名,会出现在工具全名 `mcp__cloudledger__...` 里。
+- `tools=[],  # 内置工具` 一个内置工具都不开。实测 init 消息里的 `tools` 只有 `['mcp__cloudledger__find_customer', 'mcp__cloudledger__list_invoices']` 两个,Bash、Read、Write 都没有。
+- `allowed_tools=["mcp__cloudledger__find_customer", "mcp__cloudledger__list_invoices"],` 这两个工具免确认自动执行。不写的话,每次调用都要走权限确认,在没人值守的脚本里会卡住。
+- `max_turns=6,` 最多 6 轮,防止跑飞。这次实跑用了 3 轮。
+- `async for message in query(prompt=TASK, options=options):` `query` 是个异步生成器,一边跑一边吐消息。这次实跑我改用 DeepSeek 的 Anthropic 兼容接口(见下面正文),依次收到:SystemMessage(init)→ AssistantMessage 里的 ThinkingBlock、TextBlock「我先查一下这位客户的信息。」、ToolUseBlock `mcp__cloudledger__find_customer {'query': 'user007@example.com'}` → UserMessage 里的 ToolResultBlock(工具结果)→ ToolUseBlock `mcp__cloudledger__list_invoices {'customer_id': 'C007'}` → 工具结果 → 最终 TextBlock → ResultMessage。工具结果是装在 UserMessage 里回给模型的,这是 Anthropic 协议的规矩。
+- `print(type(message).__name__, getattr(message, "result", "") or "")` 只有最后的 ResultMessage 有 `result` 字段。这次实跑 `subtype='success'`、`num_turns=3`、用量输入 1255、输出 511 token;结果文本列出了 INV-2026-0123 和 INV-2026-0026 两笔 ¥2,392.00,判断多收了 ¥2,392.00。ResultMessage 里还有个 `total_cost_usd=0.021572`,这是 Claude Code 按 Claude 价格表估出来的,换成 DeepSeek 时不代表真实花费。
+- `asyncio.run(main())` 因为 `query` 是异步的,入口要用 `asyncio.run` 跑起来。
+
+</div>
+
 Claude Agent SDK 和前两个性质不同。官方文档的说法是,它给你「驱动 Claude Code 的同一套工具、Agent 循环和上下文管理」,作为 Python/TypeScript 库来用。它在底下启动的就是 Claude Code 程序本身,所以开箱就有读写文件、执行命令、搜索网页这些内置工具,还有权限控制、hooks、会话恢复、子 Agent、Skills。你自己的业务工具用 `@tool` 定义、`create_sdk_mcp_server` 包成一个**进程内的 MCP server** 挂上去,这和 Day 23 学的 MCP 是同一个东西。
 
 代码里有两个参数一定要搞清楚。`tools=[]` 表示一个内置工具都不开:一个只查账的客服 Agent 没有理由拥有执行 shell 命令的能力。`allowed_tools` 的含义是「这些工具免确认自动执行」,**不是**「只允许这些工具」。我第一次读文档时就理解反了,如果只写 `allowed_tools` 而不关内置工具,Agent 仍然能调用 Bash,只是需要走权限确认流程。
 
-需要说明一下测试情况:LangChain 和 OpenAI Agents SDK 两个脚本,我用一个本地的假模型服务(按 OpenAI 协议返回预设的工具调用)完整跑通了,两边都正确地先调 `find_customer` 再调 `list_invoices`。Claude Agent SDK 版本需要 Anthropic 的 API key 和 Claude Code 运行环境,我只做了导入和参数构造检查,没有实际调用模型,你跑的时候如果遇到问题以官方文档为准。DeepSeek 提供了 Anthropic 兼容的接口(`https://api.deepseek.com/anthropic`),理论上可以通过 `ANTHROPIC_BASE_URL` 接上,但 Claude Agent SDK 依赖的一些 Claude 专有能力在兼容接口上可能不支持,效果要自己验证。
+测试情况:三个脚本我都用真实模型跑过。LangChain 和 OpenAI Agents SDK 两版接的是 DeepSeek 的 OpenAI 兼容接口,都是先调 `find_customer` 拿到 C007,再调 `list_invoices`,最后指出 10 月 8 日 INV-2026-0026 和 INV-2026-0123 两张 2392 元的发票是重复扣款。Claude Agent SDK 版需要 Anthropic 协议,我把 `ANTHROPIC_BASE_URL` 指向 DeepSeek 的 `https://api.deepseek.com/anthropic`、`ANTHROPIC_API_KEY` 填 DeepSeek 的 key、`ANTHROPIC_MODEL` 设成 `deepseek-flash`,也跑通了,同样是两次工具调用得出结论。不过它报的 `total_cost_usd` 是按 Claude 的价格表估的,不是 DeepSeek 的实际花费;Claude 专有的一些能力在兼容接口上不一定都支持,正式用还是以 Anthropic 官方 key 为准。另外提醒一句:SDK 会读 `~/.claude` 下你自己 Claude Code 的配置和 hooks,做实验时可以设 `CLAUDE_CONFIG_DIR` 指到一个空目录,免得互相影响。
 
 ### 对比
 
@@ -315,6 +370,21 @@ def main(customer_id: str) -> None:
 if __name__ == "__main__":
     main(sys.argv[1])
 ```
+
+<div class="line-notes">
+
+- `DEFAULT_DB = Path(__file__).resolve().parents[4] / "w4" / "cloudledger" / "cloudledger.db"` 从脚本位置往上数:`parents[0]` 是 `scripts`,`[1]` 是 `cloudledger-refund`,`[2]` 是 `skills`,`[3]` 是 `.claude`,`[4]` 才是 `agent-60-lab` 根目录。再拼上 `w4/cloudledger/cloudledger.db`。Skill 被 Agent 调用时当前目录不一定是项目根,所以按脚本自己的位置算路径,不依赖 cwd。
+- `DB = Path(os.environ.get("CLOUDLEDGER_DB", DEFAULT_DB))` 和 server.py、seed.py 同一个约定:设了 `CLOUDLEDGER_DB` 就用它,方便评测时指到副本。
+- `conn = sqlite3.connect(DB)` 只读查询,不改库。
+- `"SELECT issued_at, amount_cents, GROUP_CONCAT(id, ', ') FROM invoices "` `GROUP_CONCAT(id, ', ')` 把同一组里的发票号用逗号拼成一个字符串。
+- `"WHERE customer_id = ? AND status = 'paid' "` 只看已付款的,open 的发票还没扣钱,谈不上重复扣款。
+- `"GROUP BY issued_at, amount_cents HAVING COUNT(*) > 1",` 按「同一天 + 同金额」分组,`HAVING` 只留下组里不止一张的。`WHERE` 过滤的是行,`HAVING` 过滤的是分组后的组。实测 C007 的 5 张已付发票分成 4 组,只有 `('2026-10-08', 239200)` 这组有 2 张,所以 `rows = [('2026-10-08', 239200, 'INV-2026-0026, INV-2026-0123')]`。
+- `if not rows:` 实测传 `C003` 时 `rows` 是空列表,打印 `C003 没有同日同额的已付发票`。
+- `for day, cents, ids in rows:` 每行是一个三元组,直接解包成三个变量。
+- `print(f"{day} 金额 {cents / 100:.2f} 元 重复:{ids}")` 代入:`239200 / 100 = 2392.0`,`:.2f` 得 `2392.00`。实测输出 `2026-10-08 金额 2392.00 元 重复:INV-2026-0026, INV-2026-0123`。
+- `main(sys.argv[1])` 第一个命令行参数是客户编号,`python .../check_duplicates.py C007` 里的 `C007`。不带参数运行会因为 `sys.argv[1]` 不存在报 IndexError,Skill 的说明里写清楚了要带编号。
+
+</div>
 
 ```bash
 python .claude/skills/cloudledger-refund/scripts/check_duplicates.py C007

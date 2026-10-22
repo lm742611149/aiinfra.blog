@@ -94,6 +94,38 @@ def _window(text: str, max_chars: int, overlap: int) -> list[str]:
     return out
 ```
 
+<div class="line-notes">
+
+- `import hashlib` 后面算 `content_hash` 用,增量导入靠它判断文章变没变。
+- `@dataclass` 自动生成 `__init__`,`Doc(id=..., title=...)` 就能建对象,不用手写构造函数。
+- `class Doc:` 一篇帮助中心文章。拿 `KB-refund-002` 实测,解析出来是 `id='KB-refund-002'`、`title='年付 14 天无理由退款'`、`category='refund'`、`url_path='/help/refund/002'`、`updated_at='2026-09-15'`。
+- `body: str` 去掉 frontmatter 之后的正文,开头是 `'# 年付 14 天无理由退款\n\n## 条件\n\n首次购买的年付订阅…'`。
+- `@property` 把方法变成属性,读的时候写 `doc.content_hash`,不带括号。每次读都重新算一遍,不存起来。
+- `return hashlib.sha256((self.title + self.body)` 标题和正文拼起来算 SHA-256,取前 16 个十六进制字符。实测 `KB-refund-002` 的值是 `13fdf7614f8c3732`。改标题或改正文都会让它变,改 `updated_at` 不会,因为它不在里面。
+- `class Chunk:` 一个块。`index` 是这篇文章里的第几块,从 0 开始。
+- `text: str` 给模型看、给人看的原文片段。
+- `embed_text: str` 拿去向量化的文本,前面多了「标题 / 小标题」。下面 `chunk_doc` 会拼出来。
+- `def parse_markdown(raw: str) -> Doc:` 把一个 `.md` 文件的全文解析成 `Doc`。
+- `m = re.match(r"^---\n(.*?)\n---\n(.*)$", raw, re.S)` 两个分组:第 1 组是两条 `---` 之间的 frontmatter,第 2 组是剩下的正文。`re.S` 让 `.` 也能匹配换行,不然 `.*` 到第一行末尾就停了。`.*?` 是非贪婪,遇到第一个 `\n---\n` 就结束。
+- `raise ValueError("缺少 frontmatter")` 实测传 `"# no fm"` 进来,报的就是 `ValueError: 缺少 frontmatter`。
+- `meta = dict(line.split(": ", 1)` 每行按第一个 `": "` 切成两半,比如 `'title: 年付 14 天无理由退款'` 切成 `['title', '年付 14 天无理由退款']`,`dict()` 把这些两元素列表变成字典。`split` 的第二个参数 `1` 表示只切一刀,值里再出现冒号也不怕。`if ": " in line` 把空行这类不合格的行过滤掉。
+- `return Doc(id=meta["id"]` 按名字取出 5 个字段,正文 `.strip()` 去掉首尾空白。少任何一个字段都会抛 `KeyError`,这是故意的,文章格式不对就该停下来。
+- `def chunk_doc(doc: Doc, max_chars: int = 400, overlap: int = 60)` 先按 `##` 切,一节超过 400 字再滑窗。实测 62 篇文章切出 150 块,最长 178 字,一次滑窗都没触发。
+- `sections = re.split(r"^## +", doc.body, flags=re.M)` `re.M` 让 `^` 匹配每一行的开头,不只是整个字符串的开头。`KB-refund-002` 切出 3 段:`'# 年付 14 天无理由退款\n'`、`'条件\n\n首次购买…'`、`'不适用\n\n续费订单…'`。
+- `for sec in sections[1:]:` 第 0 段是 `# 标题` 那一行,没有内容,跳过。
+- `heading, _, text = sec.partition("\n")` `partition` 按第一个换行切成三部分:前面、分隔符本身、后面。`'条件\n\n首次购买…'` 得到 `heading='条件'`、`text='\n首次购买…'`。中间那个分隔符用不上,用 `_` 接住。
+- `for piece in _window(text, max_chars, overlap):` 一节不长时 `_window` 原样返回 `[text]`,循环只走一次,一节就是一块。
+- `chunks.append(Chunk(doc_id=doc.id, index=len(chunks)` `index` 用 `len(chunks)`,也就是追加之前已经有几块,天然从 0 递增。实测 `KB-refund-002` 得到两块:`0 '条件' 46 字`,`1 '不适用' 42 字`。
+- `embed_text=f"{doc.title} / {heading.strip()}\n{piece}"` 第 0 块的 `embed_text` 是 `'年付 14 天无理由退款 / 条件\n首次购买的年付订阅,从付款日起 14 天内…'`。
+- `def _window(text: str, max_chars: int, overlap: int)` 按句子滑窗。前面的下划线表示模块内部用,别人别直接调。
+- `if len(text) <= max_chars:` 不超长就直接返回,帮助中心的文章全走这条。
+- `sents = re.split(r"(?<=[。!?;\n])", text)` `(?<=…)` 是后行断言:在这些标点「后面」切,标点留在前一句末尾,不会丢。注意中括号里的 `!?;` 是半角,中文全角的 `!` `?` 不在里面,遇到全角感叹号不会切开。
+- `if len(cur) + len(s) > max_chars and cur:` 再加这一句就超长了,先把当前攒的这块收走。`and cur` 防止一句话本身就超过 400 字时追加一个空块。
+- `cur = cur[-overlap:]` 新块从上一块的最后 60 个字开始。我拿一段 310 字、每句 5 字的文本、`max_chars=100, overlap=20` 实测,切出 4 块,长度是 `[100, 98, 100, 72]`,第 2 块开头就是第 1 块末尾那 20 个字。
+- `if cur.strip():` 循环结束还剩一点没收走,收进最后一块。
+
+</div>
+
 这里有两个字段值得多看一眼:`text` 和 `embed_text`。
 
 `text` 是原文,给模型看,也给人看。`embed_text` 是拿去向量化的,前面加了"标题 / 小标题"。为什么要加?看一个例子:退款政策总览里有一节叫"月付",正文只有一句"月付订阅不支持退款,可以关闭自动续费"。单独拿这一句去向量化,它和"关闭自动续费怎么操作"那篇文章的向量会挨得很近。加上"退款政策总览 / 月付"这个前缀,向量里就带上了"这是在讲退款"的信息。
@@ -125,6 +157,19 @@ class Embedder:
             raise ValueError(f"embedding 维度 {len(out[0])} 和 EMB_DIM={self.s.emb_dim} 不一致,改配置并重建表")
         return out
 ```
+
+<div class="line-notes">
+
+- `from ..config import Settings, get_settings` 两个点是相对导入:从 `kb` 往上一层的 `supportpilot` 包里拿 `config`。
+- `self.s = settings or get_settings()` 传了配置就用传的,测试里方便换;没传就读 `.env`。
+- `self.client = OpenAI(base_url=self.s.emb_base_url` embedding 也走 OpenAI 兼容协议,这里连的是硅基流动。`max_retries=3` 遇到 429、5xx,SDK 会自己退避重试 3 次。
+- `def embed(self, texts: list[str], batch: int = 32)` 一次最多送 32 段,太多会撞上厂商的单次请求上限。
+- `for i in range(0, len(texts), batch):` 150 块的话,`i` 依次是 0、32、64、96、128,一共发 5 次请求。
+- `resp = self.client.embeddings.create(model=self.s.emb_model, input=texts[i:i + batch])` 切片 `texts[128:160]` 越界也不会报错,只会拿到剩下的 22 段。实测送两句话进去,0.23 秒返回,每条是 1024 维,第一条前三个数是 `[-0.0277, 0.0101, -0.0554]`。
+- `out.extend(d.embedding for d in sorted(resp.data, key=lambda d: d.index))` 按 `index` 排回输入顺序再接到 `out` 后面。`extend` 是逐个追加,`append` 会把整个生成器当成一个元素塞进去。
+- `if out and len(out[0]) != self.s.emb_dim:` 只看第一条的维度就够了,同一个模型输出的维度都一样。`bge-m3` 是 1024,和建表时的 `vector(1024)` 对得上。
+
+</div>
 
 两个细节。返回结果按 `d.index` 排序,因为接口文档并不保证返回顺序和输入顺序一致,大多数时候一致,但"大多数时候"在数据管道里就是隐患。第二,检查维度,和 Day 44 表结构里写死的 `vector(1024)` 对上,不对立刻报错。
 
@@ -177,6 +222,27 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
+<div class="line-notes">
+
+- `KB_DIR = Path(__file__).resolve().parent.parent / "data" / "kb"` 脚本在 `scripts/` 里,往上两级是项目根目录,再进 `data/kb`。用 `__file__` 定位,从哪个目录运行都找得到。
+- `docs = [parse_markdown(p.read_text(encoding="utf-8")) for p in sorted(KB_DIR.glob("*.md"))]` 一次把 62 篇全读进来。`sorted` 让处理顺序固定,日志好对。
+- `added = updated = skipped = 0` 连续赋值,三个计数器都从 0 开始。
+- `with session() as conn:` Day 44 的上下文管理器,块结束自动关连接。
+- `existing = {r["id"]: r["content_hash"]` 库里已有文章的 `{id: hash}`。第一次跑表是空的,`existing = {}`;第二次是 62 条,比如 `'KB-account-001': 'caa2da36c802d50c'`。
+- `if existing.get(doc.id) == doc.content_hash:` 库里没有这篇时 `.get()` 返回 `None`,和任何 hash 都不相等,所以新文章不会被误判成「没变」。
+- `chunks = chunk_doc(doc)` 只有新的或改过的文章才切块、才花 embedding 的钱。
+- `vectors = emb.embed([c.embed_text for c in chunks])` 送去向量化的是带标题的 `embed_text`,不是 `text`。
+- `with conn.transaction():` 连接是 autocommit 的,这里显式开一个事务:里面三步要么全部成功,要么全部回滚。
+- `conn.execute("DELETE FROM kb.docs WHERE id = %s", (doc.id,))` 先把旧文章删掉,外键是 `ON DELETE CASCADE`,它的块会跟着一起删。新文章删的是 0 行,也不会报错。
+- `"INSERT INTO kb.docs` `%s` 是 psycopg 的占位符,值放在后面的元组里,由驱动负责转义。
+- `cur.executemany(` 一条 SQL 配多组参数,一次插入这篇文章的全部块。
+- `[(c.doc_id, c.index, c.heading, c.text, v) for c, v in zip(chunks, vectors, strict=True)]` `strict=True` 是 3.10 起有的:两个列表长度不一样就直接报错,防止块和向量错位。向量是 Python 的 float 列表,Day 44 注册过 pgvector 的类型适配,能直接写进 `vector` 列。
+- `if doc.id in existing:` 用来区分是「更新」还是「新增」,只影响最后打印的计数。
+- `gone = set(existing) - {d.id for d in docs}` 集合相减:库里有、目录里已经没有的文章编号。
+- `print(f"added={added} updated={updated} skipped={skipped} deleted={len(gone)}")` 实测四种情况:<br>第一次 `added=62 updated=0 skipped=0 deleted=0`;<br>再跑一次 `added=0 updated=0 skipped=62 deleted=0`;<br>给 `KB-invoice-001` 末尾加一句话 `added=0 updated=1 skipped=61 deleted=0`;<br>把这个文件挪走 `added=0 updated=0 skipped=61 deleted=1`。
+
+</div>
 
 <figure>
 <svg viewBox="0 0 640 210" role="img" aria-label="知识库增量导入流程">
@@ -339,6 +405,48 @@ class HybridRetriever:
                    url_path=r["url_path"], category=r["category"], score=score, via=via)
 ```
 
+<div class="line-notes">
+
+- `import jieba` 中文分词库。import 时会打几条 `SyntaxWarning: invalid escape sequence`,来自它源码里的老式正则,不影响使用。
+- `from rank_bm25 import BM25Okapi` BM25 的现成实现。给它一组已经分好词的文档,它会算好词频和 IDF。
+- `jieba.setLogLevel(60)` 日志级别设成比 CRITICAL(50)还高,首次加载词典的提示就不打了。
+- `class Hit:` 一条检索结果,带着后面引用要用的 `doc_id`、`title`、`url_path`。
+- `via: list[str] = field(default_factory=list)` 可变的默认值必须用 `default_factory`。直接写 `= []` 的话,所有 Hit 会共用同一个列表,dataclass 会直接报错拦住你。
+- `def tokenize(text: str) -> list[str]:` 实测:<br>`"银行流水同步失败 提示E3001"` → `['银行', '流水', '同步', '失败', '提示', 'e3001']`<br>`"我买了年付专业版一周了想退款"` → `['我', '买', '了', '年付', '专业版', '一周', '了', '想', '退款']`
+- `return [t.lower() for t in jieba.lcut(text) if t.strip() and t not in ",。、:;!?()「」 "]` `jieba.lcut` 返回列表(`cut` 返回的是生成器)。`t.strip()` 为空的是空格,丢掉。`t not in "…"` 是在字符串里查子串,单个标点在里面就丢掉。`.lower()` 让 `E3001` 和 `e3001` 当成同一个词。
+- `def rrf(rankings: list[list[int]], k: int = 60)` 按名次融合。
+- `for r, cid in enumerate(ranking, start=1):` `start=1` 让名次从 1 数起,第 1 名得 `1/61`。
+- `scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + r)` 实测 `rrf([[1, 2, 3], [3, 1, 9]])`:<br>`1` 两路分别是第 1、第 2 名,`1/61 + 1/62 = 0.032522`;<br>`3` 分别是第 3、第 1 名,`1/63 + 1/61 = 0.032266`;<br>`2` 只在第一路排第 2,得 `0.016129`;`9` 只在第二路排第 3,得 `0.015873`。
+- `class Reranker:` 调 `/rerank` 接口的薄封装。
+- `r = httpx.post(f"{self.s.rerank_base_url}/rerank", timeout=30,` 没用 SDK,直接发 HTTP。拼出来的地址是 `https://api.siliconflow.cn/v1/rerank`。
+- `json={"model": self.s.rerank_model, "query": query, "documents": docs, "top_n": top_n})` `httpx` 的 `json=` 会自动序列化,并带上 `Content-Type: application/json`。
+- `r.raise_for_status()` 4xx、5xx 直接抛异常,别把一个报错的 JSON 当成结果往下传。
+- `return [(x["index"], x["relevance_score"]) for x in r.json()["results"]]` 返回的 `index` 是在 `docs` 里的位置,结果已经按分数从高到低排好。
+- `class HybridRetriever:` 两路召回、RRF 融合,可选 rerank。
+- `self.reranker = Reranker(self.s) if self.s.rerank_enabled else None` 配置里默认关,`None` 表示不精排。
+- `self._rows: dict[int, dict] = {}` 块 id → 这一行的数据,命中以后按 id 取详情用。
+- `def _load(self) -> None:` 从库里读出全部块,在内存里建 BM25。
+- `"SELECT c.id, c.doc_id, c.heading, c.content, d.title, d.url_path, d.category "` 块表 JOIN 文档表,标题和链接一次带出来。实测 150 行,`id` 从 1 开始,第 1 行是 `KB-account-001` 的「检查」那一节。
+- `self._ids = [r["id"] for r in rows]` 记下顺序:BM25 返回的分数是按这个顺序排的,第 i 个分数对应 `_ids[i]`。
+- `self._bm25 = BM25Okapi([tokenize(f'{r["title"]} {r["heading"]} {r["content"]}') for r in rows])` 标题、小标题、正文拼起来再分词,一块对应一个词列表。
+- `def refresh(self) -> None:` 只是把索引置空,下一次查询时会重新 `_load`。
+- `vec = self.embedder.embed([query])[0]` 查询也要向量化,花一次 embedding 的钱。
+- `"SELECT id FROM kb.chunks ORDER BY embedding <=> %s::vector LIMIT %s"` `<=>` 是 pgvector 的余弦距离运算符,越小越近;配合建表时的 HNSW 索引,不用全表扫。实测查 `银行流水同步失败 提示E3001`,前 5 个是块 57、60、59、58(都属于 `KB-error-005`)和 138(`KB-technical-003`)。
+- `scores = self._bm25.get_scores(tokenize(query))` 一次性给 150 块全部打分。同一个查询,最高分是块 57 的 22.249。
+- `ranked = sorted(zip(self._ids, scores, strict=True), key=lambda x: x[1], reverse=True)` 把 `(块 id, 分数)` 配对,按分数从高到低排。
+- `return [cid for cid, sc in ranked[:k] if sc > 0]` 分数为 0 表示一个词都没对上,这种不算召回。
+- `def search(self, query: str, k: int | None = None, pool: int = 20)` 两路各取 `pool=20` 个候选,最后返回 `k` 个(默认 `retrieve_k=5`)。
+- `fused = rrf([vec_ids, kw_ids])` 实测 E3001 这条,两路前 5 是同一批块,只是顺序不一样:<br>向量是 57、60、59、58、138,BM25 是 57、138、58、60、59。
+- `ranked = sorted(fused, key=fused.get, reverse=True)[: max(pool, k)]` `sorted` 一个字典,排的是它的键;`key=fused.get` 表示按值排序。
+- `hits = [self._hit(cid, fused[cid], vec_ids, kw_ids) for cid in ranked]` 实测融合后前 5:<br>`57 KB-error-005 报错含义 0.03279`<br>`60 KB-error-005 仍未解决 0.03175`<br>`138 KB-technical-003 授权有效期 0.03151`<br>`58 KB-error-005 原因 0.0315`<br>`59 KB-error-005 处理步骤 0.03126`<br>五条的 `via` 都是 `['vector', 'bm25']`。
+- `if self.reranker and hits:` 打开 rerank 以后才走这里。实测用 `Settings(rerank_enabled=True)` 查「我上周买的年付,如果不想用了能退吗」,rerank 这一步花了 1.36 秒。
+- `order = self.reranker.rerank(query, [f"{h.title} / {h.heading}\n{h.text}" for h in hits], top_n=k)` 送去精排的文本也带上标题,和入库时的 `embed_text` 一个思路。
+- `hits = [hits[i] for i, _ in order]` 按 rerank 给的顺序重排,只留 top_n 个。
+- `h.score = sc` 分数换成 rerank 的相关度。上面那条实测结果是 `KB-refund-001 0.9821`、`KB-refund-002 0.9816`、`KB-plans-002 0.9742`……不开 rerank 时这里是 RRF 分,0.03 左右,两种分数的量纲完全不同,别拿来比。
+- `via = [name for name, ids in (("vector", vec_ids), ("bm25", kw_ids)) if cid in ids]` 看这一块是被哪一路召回的。实测查「这个月被扣了两次 39 元,请退一笔」,`KB-billing-004` 在向量这一路排第 1,在 BM25 只排第 4。字面上没对上的说法,是向量这一路补回来的。
+
+</div>
+
 ### 为什么要两路
 
 纯向量检索擅长"意思相近、说法不同":客户写"扣了两次",文章写"重复扣款",向量能把它们拉到一起。但它不擅长"一串必须字面相同的符号":`E3001` 和 `E3002` 在向量空间里几乎挨着,模型分不太清。关键词检索(BM25)正好反过来:字面一样就命中,换个说法就抓瞎。两路一起上,互相补位。
@@ -468,6 +576,25 @@ def render_sources(text: str, hits: list[Hit], base_url: str = "https://help.clo
     return f"{body}\n\n参考文章:\n{refs}"
 ```
 
+<div class="line-notes">
+
+- `CITE_RE = re.compile(r"\[(KB-[a-z]+-\d{3})\]")` 匹配 `[KB-refund-002]` 这种编号,括号里那一段是分组,取出来的是不带方括号的 `KB-refund-002`。分类只认小写字母,数字必须正好 3 位。
+- `if not hits:` 一条都没检索到时,明确告诉模型「没找到」,别给它一个空字符串让它自己猜。实测返回 `'(知识库里没有找到相关资料)'`。
+- `return "\n\n".join(f"[{h.doc_id}] {h.title} / {h.heading}\n{h.text}" for h in hits)` 实测前两段拼出来是:<br>`[KB-refund-001] 退款政策总览 / 年付首次购买`<br>`年付订阅首次购买后 14 天内(含第 14 天)可无理由申请全额退款。`<br>空一行,再是 `[KB-refund-002] 年付 14 天无理由退款 / 条件` 和它的正文。
+- `return list(dict.fromkeys(CITE_RE.findall(text)))` `findall` 会返回重复的编号,`dict.fromkeys` 去重,同时保留第一次出现的顺序(集合 `set` 不保证顺序)。实测 `'可以全额退款 [KB-refund-002]。续费另算 [KB-refund-009],详见 [KB-refund-002]'`:`findall` 得到 3 个,去重后是 `['KB-refund-002', 'KB-refund-009']`。
+- `allowed = {h.doc_id for h in hits}` 这一次检索结果里有的编号才算合法。
+- `return [c for c in cited if c in allowed], [c for c in cited if c not in allowed]` 同一句话实测返回 `(['KB-refund-002'], ['KB-refund-009'])`,009 是编造的。
+- `order: dict[str, int] = {}` 内部编号 → 对外序号,第一次被引用的排 1。
+- `by_id = {h.doc_id: h for h in hits}` 按编号查回标题和链接。
+- `def sub(m: re.Match) -> str:` 定义在函数里面的函数,能直接用外层的 `order` 和 `by_id`。它会作为 `re.sub` 的替换函数,每匹配到一个编号就调一次。
+- `if doc_id not in by_id:` 编造的编号直接替换成空串删掉,不给客户一个点进去是 404 的链接。实测 `续费另算 [KB-refund-009],` 变成了 `续费另算 ,`,原来编号前面的空格还留着。正常流程里质检节点会先把编造的编号打回去重写,走不到这一步。
+- `order.setdefault(doc_id, len(order) + 1)` 没出现过就分配下一个序号,出现过就保留原来的。所以同一篇文章引用两次,两处都是 `[1]`。
+- `body = CITE_RE.sub(sub, text)` 实测上面那句变成 `可以全额退款 [1]。续费另算 ,详见 [1]`。
+- `if not order:` 全文一个合法引用都没有,就不加「参考文章」那一段。
+- `refs = "\n".join(f"[{n}] {by_id[d].title} {base_url}{by_id[d].url_path}" for d, n in order.items())` 实测得到 `[1] 年付 14 天无理由退款 https://help.cloudledger.example/help/refund/002`。
+
+</div>
+
 三个函数,对应引用的三个阶段:
 
 `build_context` 把检索结果拼成给模型看的资料块,每段前面是 `[KB-refund-002]` 这样的编号。Day 47 的起草提示词会要求模型"用到资料的句子在句末标注编号,只能用资料里出现过的编号"。
@@ -557,6 +684,31 @@ if __name__ == "__main__":
     main(Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT)
 ```
 
+<div class="line-notes">
+
+- `from supportpilot.kb.retriever import HybridRetriever, rrf` 两路分开跑、再自己融合,所以 `rrf` 也要单独导入。
+- `DEFAULT = Path(__file__).resolve().parent / "datasets" / "retrieval_seed.jsonl"` 默认数据集和脚本放在同一个目录下的 `datasets/` 里。
+- `for line in path.read_text(encoding="utf-8").splitlines():` JSONL:一行一个 JSON。
+- `if not line.strip():` 跳过空行,文件末尾多一个换行也不会出错。
+- `if "query" in c:` 种子集的格式:`{query, kb_docs}`。
+- `out.append({"id": c["query"][:20], "query": c["query"], "want": set(c["kb_docs"])})` 种子集没有 id,拿问题的前 20 个字凑一个,打印漏检的时候能认出是哪条。`want` 用集合,判断「是不是想要的文章」很快。
+- `elif c["expect"]["kb_docs"]:` Day 50 完整评测集的格式。`kb_docs` 为空的用例(比如纯账单操作)不用查资料,不参与检索评测。
+- `"query": f"{c['ticket']['subject']} {c['ticket']['body']}"` 完整用例拿工单的标题和正文当查询,和 Agent 真实收到的输入一致。
+- `r._load()` 先把 BM25 索引建好。下划线方法本来是内部用的,评测脚本直接调问题不大。
+- `hits = {"vector": 0, "bm25": 0, "hybrid": 0}` 三种方式各自的命中数。
+- `rr = {"vector": 0.0, "bm25": 0.0, "hybrid": 0.0}` 三种方式各自的倒数排名之和,最后除以用例数就是 MRR。
+- `vec = r.vector_search(q, 20)` 两路各取 20,和 `search()` 用的候选池大小一样。
+- `fused = rrf([vec, kw])` 这里没走 `search()`,所以不会调用 rerank。想评 rerank 要改成调 `r.search()`,正文的练习就是做这件事。
+- `docs = [r._rows[i]["doc_id"] for i in ids]` 块 id 换成文档编号:一篇文章有好几块,评的是「文章找没找到」。
+- `first = next((n for n, d in enumerate(docs, start=1) if d in want), None)` 第一个命中的名次。`next(生成器, None)`:取第一个满足条件的值,一个都没有就返回 `None`。
+- `if first and first <= k:` 前 5 名里有就算命中。
+- `if first:` 只要在 20 个候选里出现过就计倒数排名:排第 1 得 1,排第 2 得 0.5,排第 4 得 0.25。
+- `if name == "hybrid" and not (first and first <= k):` 只把混合检索漏掉的记下来,打印出来人工看。
+- `print(f"{name:7s} recall@{k}={hits[name] / n:.3f}  MRR={rr[name] / n:.3f}")` `:7s` 是左对齐、补齐到 7 个字符宽。我只用正文里出现过的 5 条查询(3 条示例 + 2 条漏检)实跑了一次,结果是:<br>`vector  recall@5=1.000  MRR=0.740`<br>`bm25    recall@5=0.600  MRR=0.490`<br>`hybrid  recall@5=0.800  MRR=0.629`<br>只有 5 条,数字的波动会很大,只用来看脚本怎么用。完整的 31 条要你自己补齐了再跑。
+- `print(f"  {cid}: {docs}")` 实测漏掉的那条是「能退吗 我上周买的年付,如果不想用了能退」,混合检索的前 5 是 `['KB-refund-003', 'KB-refund-004', 'KB-refund-003', 'KB-billing-002', 'KB-refund-004']`。refund-003 和 004 各占了两个位置,这就是正文说的同一篇文章挤掉了别人的位置。
+
+</div>
+
 两个指标。recall@5:前 5 个结果里有没有正确文章,有就算命中,命中的比例。MRR(平均倒数排名):第一个正确结果排第几名,取倒数再平均,排第 1 得 1 分,排第 2 得 0.5 分,没找到得 0 分。recall 看"找没找到",MRR 看"排得靠不靠前"。对 RAG 来说 recall 更要紧,因为 5 段资料都会给模型看,排第 1 还是第 3 影响不大;但 MRR 低说明前面塞了不相关的东西,会干扰模型。
 
 BM25 这一路不需要调任何 API,我在本机直接用同样的切块和分词跑了一遍,这是真实结果:
@@ -625,6 +777,15 @@ for h in hits:
 print(build_context(hits[:2]))
 ```
 
+<div class="line-notes">
+
+- `r = HybridRetriever(connect())` 不传 settings,就读 `.env`。`RERANK_ENABLED` 默认是 false,所以这里不精排。
+- `hits = r.search("银行流水同步失败 提示E3001")` 第一次调用会顺带建 BM25 索引,所以比之后的调用慢一点。
+- `print(h.doc_id, h.heading, round(h.score, 4), h.via)` 实测第一行是 `KB-error-005 报错含义 0.0328 ['vector', 'bm25']`。这条查询的 5 条结果两路都召回了,分数在 0.0313 到 0.0328 之间,差得很小。RRF 的分数只看名次,所以本来就挤在一起。
+- `print(build_context(hits[:2]))` 只看前两段拼出来是什么样,每段开头是 `[KB-error-005]` 这样的编号。
+
+</div>
+
 看 `via` 字段:有的结果两路都召回了(`['vector', 'bm25']`),有的只有一路。两路都有的通常排在前面,这就是 RRF 的效果。
 
 **步骤 3:跑检索基线,填上面那张表。**
@@ -671,6 +832,20 @@ def test_citations():
     out = render_sources("可以全额退款 [KB-refund-002]。", hits)
     assert "[1]" in out and "/help/refund/002" in out and "KB-" not in out.split("参考文章")[0]
 ```
+
+<div class="line-notes">
+
+- `KB = Path(__file__).resolve().parent.parent / "data" / "kb"` 读的是 `gen_kb.py` 生成的文章,不连库。所以要先跑过一次 `make kb`。
+- `assert len(files) >= 60` 实际是 62 篇。写 `>=` 而不是 `==`,以后加文章测试不用跟着改。
+- `assert chunks and all(len(c.text) <= 460 for c in chunks)` 上限 460 是 `max_chars=400` 加 `overlap=60`:滑窗以后一块最多就这么长。实测最长 178。
+- `assert all(c.embed_text.startswith(chunks[0].embed_text.split(" / ")[0]) for c in chunks)` 每一块的 `embed_text` 都必须以文章标题开头,防止有人改 `chunk_doc` 时把「帽子」弄丢。
+- `s = rrf([[1, 2, 3], [3, 1, 9]])` 实测 `{1: 0.032522, 2: 0.016129, 3: 0.032266, 9: 0.015873}`。
+- `assert max(s, key=s.get) in (1, 3) and s[3] > s[2]` 两路都出现的 1 和 3 排在前面;3 虽然在第一路只排第 3,但比只出现在一路的 2 高。
+- `hits = [Hit(1, "KB-refund-002", "年付 14 天无理由退款", "条件", "…", "/help/refund/002", "refund")]` 按位置传参,顺序和 `Hit` 定义的字段顺序一致。`score` 和 `via` 有默认值,不用传。
+- `ok, fake = check_citations("可以退 [KB-refund-002],另见 [KB-refund-009]", hits)` 009 不在检索结果里,应该被识别成编造。
+- `assert "[1]" in out and "/help/refund/002" in out and "KB-" not in out.split("参考文章")[0]` 只检查正文部分:内部编号已经全部换掉了。实测 `make test` 时这个文件 3 个测试都通过,用时 0.69 秒。
+
+</div>
 
 ```bash
 make test

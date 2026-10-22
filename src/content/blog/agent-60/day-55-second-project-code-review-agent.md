@@ -112,6 +112,22 @@ def post_review(repo: str, pr: int, commit_id: str, body: str, comments: list[di
         return r.json()
 ```
 
+<div class="line-notes">
+
+- `API = "https://api.github.com"` 下面的实测用的是公开仓库 pallets/click 的 PR #3884(「Fix `show_envvar` output…」,10-06 已合并)。我没有 GitHub token,所以把 `HEADERS` 里的 `Authorization` 去掉、匿名调用。公开仓库匿名也能读,只是每小时限 60 次。
+- `"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",` 这一行在 import 时就会执行。没设 `GITHUB_TOKEN` 的话,`import github_api` 这一步就报 `KeyError: 'GITHUB_TOKEN'`。本地 `--dry-run` 也得先设一个 token。
+- `"Accept": "application/vnd.github+json",` GitHub 推荐的 Accept 头。`X-GitHub-Api-Version` 把 API 版本固定住,GitHub 以后改了默认版本也不会影响这里。
+- `def list_pr_files(repo: str, pr: int) -> list[dict]:` 实测 `list_pr_files("pallets/click", 3884)` 返回 3 个文件:`CHANGES.md`(patch 621 字符)、`src/click/core.py`(1571 字符)、`tests/test_options.py`(1945 字符),`status` 都是 `modified`。
+- `files, page = [], 1` 同时给两个变量赋初值,相当于两行赋值。
+- `r = c.get(f"{API}/repos/{repo}/pulls/{pr}/files", params={"per_page": 100, "page": page})` 每页最多 100 个文件,`params` 会被拼成 `?per_page=100&page=1`。
+- `r.raise_for_status()` 4xx、5xx 直接抛异常。token 无效会得到 401,仓库或 PR 不存在是 404,不会把一个错误页面当成空列表继续往下跑。
+- `if len(batch) < 100:` 这一页不满 100 个就说明是最后一页。实测 `batch` 长度是 3,第一页就返回了。正好 100 个文件时会多请求一次,拿到空列表再退出,结果一样正确。
+- `def get_pr(repo: str, pr: int) -> dict:` 取 PR 本身的信息。实测 `title` 是 `Fix show_envvar output for a sequence or an empty envvar`,`body` 有 745 个字符,`head.sha` 以 `c53d3732b9` 开头。`main.py` 用这三个字段。
+- `def post_review(repo: str, pr: int, commit_id: str, body: str, comments: list[dict]) -> dict:` 未实跑:写评论需要有写权限的 token。`commit_id` 传 PR head 的 sha,评论会钉在这个版本上;作者后来推了新提交,旧评论在界面上会显示成 outdated。
+- `payload = {"commit_id": commit_id, "body": body, "event": "COMMENT", "comments": comments}` `event` 可以是 `APPROVE`、`REQUEST_CHANGES`、`COMMENT`。机器人只用 `COMMENT`,不替人做「批准」或「打回」的决定。
+
+</div>
+
 为什么一次发一个 review 而不是一条条发评论?一条条发,PR 作者会收到十几封通知邮件,第二次就会把你的机器人静音。
 
 接下来是今天最容易出错的地方:行号。行内评论要指定「新文件的第几行」,而 patch 里的行号要自己算。一段 patch 长这样:
@@ -210,6 +226,27 @@ def added_lines(lines: list[DiffLine]) -> set[int]:
     return {ln.new_no for ln in lines if ln.kind == "+" and ln.new_no is not None}
 ```
 
+<div class="line-notes">
+
+- `HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")` 四个捕获组依次是:旧起始行、旧行数、新起始行、新行数。`(?:,(\d+))?` 表示「逗号加数字」这一段可以没有。实测 `@@ -40,7 +40,9 @@ def charge(...)` 得到 `('40', '7', '40', '9')`;只有一行改动时 git 会省略行数,写成 `@@ -1 +1 @@`,得到 `('1', None, '1', None)`。
+- `@dataclass` 自动生成 `__init__` 和 `__repr__`。实测打印出来是 `DiffLine(kind='+', text='    invoice = create_invoice(customer, amount)', new_no=42)`。
+- `new_no: int | None  # 新文件行号,删除行为 None` 删除行在新文件里不存在,所以没有行号。
+- `new_no = 0` 遇到第一个 hunk 头之前的初始值。正常的 patch 第一行就是 `@@`,会马上被覆盖。
+- `for raw in patch.splitlines():` 下面用正文那段 patch(末尾再加一行 `\ No newline at end of file`)逐行走一遍。
+- `m = HUNK_RE.match(raw)` `match` 只从字符串开头匹配,和正则里的 `^` 作用一样。
+- `new_no = int(m.group(3))` 第 3 组是新文件起始行,实测是 40。从这里开始给后面的行编号。
+- `lines.append(DiffLine("@", raw, None))` hunk 头也留着,给模型看的时候能看到 `def charge(customer, amount):` 这类函数上下文。
+- `if raw.startswith("\\"):  # "\ No newline at end of file"` 字符串里的 `"\\"` 是一个反斜杠。这种行不是代码,跳过,也不计行号。实测加上这一行后,输出和不加时完全一样。
+- `kind, text = (raw[:1] or " "), raw[1:]` 第一个字符是类型,其余是代码。`raw[:1]` 对空字符串返回 `""` 而不会报错,`or " "` 把空行当成上下文行。实测 `parse_patch("@@ -1,2 +1,2 @@\n\n+x")` 中间那个空行变成 `DiffLine(kind=' ', text='', new_no=1)`,后面的 `+x` 是第 2 行,行号没有错位。
+- `if kind == "-":` 删除行:记下来,但 `new_no` 不加 1。
+- `lines.append(DiffLine(kind, text, new_no))` 上下文行和新增行:先用当前行号,再加 1。实测这段 patch 的走法是:两行上下文 40、41;删除行 None;三行新增 42、43、44;最后一行上下文 45。
+- `def render_for_model(path: str, lines: list[DiffLine]) -> str:` 实测输出:<br>`文件:billing/charge.py`<br>`@@ -40,7 +40,9 @@ def charge(customer, amount):`<br>`L40         if amount <= 0:`<br>`      -     invoice = create_invoice(customer, amount)`<br>`L42   +     invoice = create_invoice(customer, amount)`<br>`L43   +     if customer.balance < amount:`<br>…
+- `out.append(f"      - {ln.text}")` 删除行前面用 6 个空格占位,不标行号。这样模型没法引用删除行的行号,也就不会去评论已经删掉的旧代码。
+- `out.append(f"L{ln.new_no:<5}{ln.kind} {ln.text}")` `:<5` 让行号左对齐占 5 格,`L40` 后面补空格到固定宽度,代码列就能对齐。
+- `def added_lines(lines: list[DiffLine]) -> set[int]:` 集合推导式,只收新增行的行号。实测返回 `{42, 43, 44}`。`main.py` 拿它判断模型给的行号能不能评论。
+
+</div>
+
 `render_for_model` 是个小技巧:与其让模型自己数行号(它数不准),不如把行号直接印在每行前面,让它抄。这一招对准确率的提升非常明显。
 
 ## 第二步:让模型给结构化意见
@@ -268,6 +305,27 @@ def review_file(rendered_diff: str, pr_title: str, pr_body: str) -> list[Finding
                 return []
     return []
 ```
+
+<div class="line-notes">
+
+- `client = OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"])` 下面的实测用练习仓 `.env` 里的 DeepSeek 配置。
+- `MODEL = os.getenv("LLM_MODEL", "deepseek-v4-pro")` 环境变量优先。实测 `.env` 里是 `deepseek-flash`,所以 `MODEL` 就是它;没设才用默认的 pro。审代码比客服问答更吃推理能力,默认值给的是贵一档的模型。
+- `SYSTEM = """你是一位资深代码审查者` 这段提示词花了一大半篇幅讲「什么不要说」,对应正文说的:机器人被嫌弃,大多是因为话太多。
+- `如果这个文件没有值得指出的问题,返回空列表,这是完全正常的结果。` 明确告诉模型可以不提意见。实测 click PR #3884 的 3 个文件,模型都返回 `{"findings": []}`,机器人就不发任何评论。
+- `只能评论以` 只能评论 `+` 开头的新增行。这条规则和 `render_for_model` 印上去的 `L42` 行号配合使用,模型照抄行号即可,不用自己数。
+- `class Finding(BaseModel):` 模型返回的每一条意见都用 pydantic 校验一遍。
+- `severity: str = Field(pattern="^(high|medium|low)$")` 只允许三个值。模型写成 `critical` 会校验失败,整次结果作废重试。
+- `confidence: float = Field(ge=0, le=1)` 0 到 1 之间。模型的自评置信度并不准,但可以用来排序和过滤。
+- `def review_file(rendered_diff: str, pr_title: str, pr_body: str) -> list[Finding]:` 下面用 Day 55 评测集里的 missing-await-01 实跑。
+- `user = f"PR 标题:{pr_title}\nPR 描述:{pr_body[:1500]}` PR 描述截断到 1500 字。描述是作者写的,对机器人来说是不可信输入,也不能让它把上下文撑爆。
+- `for attempt in range(2):` 最多试两次。
+- `response_format={"type": "json_object"},` JSON 模式,保证返回的是合法 JSON(能不能通过 schema 校验另说)。
+- `temperature=0.2,` 稍微留一点随机性。实测同一个用例两次跑出来意见条数不一样:off-by-one-01 一次给了 2 条,一次给了 3 条。
+- `return Findings.model_validate(json.loads(resp.choices[0].message.content)).findings` 实测模型原始返回:`{"findings": [{"line": 23, "severity": "high", "category": "bug", "comment": "write_audit_log 的返回值被赋给 audit,但并没有被 await;……审计日志根本不会写入……", "suggestion": "await write_audit_log(user.id, \"login\")……", "confidence": 0.85}]}`。校验后得到一个 `Finding(line=23, severity='high', ...)`,正好是埋 bug 的那一行。这次调用用了 312 个输入 token、275 个输出 token。
+- `except (json.JSONDecodeError, ValidationError):` 两种失败都重试:不是 JSON,或者字段不合规(比如 severity 写错)。
+- `return []` 两次都失败就当这个文件没有意见。审查机器人宁可少说也不要乱说,所以失败时返回空列表,不抛异常让整个 CI 挂掉。
+
+</div>
 
 PR 描述放进去有两个原因:模型能知道作者的意图(「这次只是重构,不改行为」),另外描述里有时会写「已知问题,下个 PR 修」,模型就不会重复提。但 PR 描述是作者写的、对机器人来说是不可信输入,所以截断长度,并且 Day 53 的道理同样适用:这个机器人除了发评论没有别的能力,被注入了最多是发几条奇怪的评论,风险可控。
 
@@ -344,6 +402,38 @@ if __name__ == "__main__":
         print(f"{c['path']}:{c['line']}  {c['body'][:80]}")
 ```
 
+<div class="line-notes">
+
+- `from diff import added_lines, parse_patch, render_for_model` 平级导入,所以要在 reviewbot 目录里运行 `python main.py`。
+- `SKIP_SUFFIXES = (".lock", ".min.js", ".svg", ".png", ".jpg", ".snap", ".pb.go")` 必须是元组,因为 `str.endswith` 可以接受一个元组,一次检查多个后缀,但不接受列表。
+- `MAX_PATCH_CHARS = 24_000` 数字里的下划线只是为了好读,等于 24000。
+- `MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.6"))` 阈值做成环境变量,扫阈值时不用改代码。
+- `SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}` 排序用。数字越小越靠前。
+- `Markdown 代码围栏` `FENCE` 就是三个反引号。不直接写在字符串里,是因为这段代码本身放在 Markdown 的代码块里,三个反引号会把文章的代码块提前截断。
+- `def should_skip(f: dict) -> bool:` 下面用一个假 PR 实跑:正文评测集的 3 个用例当成 3 个文件,再加 `uv.lock`、一个被删除的 `old.py`、一个没有 patch 字段的 `big.py`。后三个都被跳过,只有 3 个代码文件送去给模型审。
+- `or "patch" not in f` GitHub 对超大的 diff 会省略 `patch` 字段,这时没东西可审。
+- `or name.rsplit("/", 1)[-1] in SKIP_NAMES` `rsplit("/", 1)` 从右边切一刀,`[-1]` 取文件名。`"web/package-lock.json"` 得到 `"package-lock.json"`,子目录里的锁文件也能跳过。
+- `def run(repo: str, pr_number: int, dry_run: bool = False) -> list[dict]:` 真 PR 实测:`run("pallets/click", 3884, dry_run=True)`,3 个文件都审了,模型全部返回空列表,最后 `comments` 是 `[]`。
+- `valid_lines = added_lines(lines)` 这个文件里允许评论的行号。
+- `for fd in review_file(render_for_model(f["filename"], lines), pr["title"], pr.get("body") or ""):` `pr.get("body") or ""`:PR 没写描述时 GitHub 返回 `null`,也就是 `None`,`or ""` 把它变成空字符串,后面切片 `[:1500]` 才不会报错。
+- `if fd.line not in valid_lines:` 模型给的行号不是新增行就丢掉。GitHub 的行内评论只能挂在 diff 里出现的行上,行号不对整个 review 请求会直接 422。
+- `if fd.confidence < MIN_CONFIDENCE or fd.severity == "low":` 实测假 PR 里 `app/handlers.py` 那条意见是 `(23, 'medium', 'error_handling', 0.55)`,0.55 低于 0.6 被过滤掉了,正好是埋 bug 的那一行。阈值太高会漏报,这就是正文第五步要扫阈值的原因。
+- `candidates.append((f["filename"], fd))` 跨文件汇总,下面统一排序。
+- `seen, comments = set(), []` `seen` 记录 `(文件, 行号)`,保证同一行只评论一次。
+- `for path, fd in sorted(candidates, key=lambda x: (SEVERITY_RANK[x[1].severity], -x[1].confidence)):` 按元组排序:先比严重度,再比置信度;置信度取负号,就变成从高到低。实测排序结果:`search.py:5 (high, 0.98)` → `proration.py:15 (high, 0.65)` → `proration.py:14 (medium, 0.75)` → `proration.py:14 (medium, 0.6)`。
+- `if (path, fd.line) in seen:` 实测 `proration.py` 第 14 行有两条意见,一条 bug 0.75、一条 performance 0.6。排序后 0.75 那条在前面先进了 `seen`,0.6 那条被跳过。
+- `body = f"**[{fd.severity}/{fd.category}]** {fd.comment}"` 实测第一条评论的开头:`**[high/security]** 将用户输入 keyword 直接用 f-string 拼进 SQL……`。
+- `body += f"\n\n建议:\n{FENCE}\n{fd.suggestion}\n{FENCE}"` 建议放进代码围栏,GitHub 上会显示成代码块。
+- `comments.append({"path": path, "line": fd.line, "side": "RIGHT", "body": body})` `side: "RIGHT"` 表示评论新文件这一侧;`LEFT` 是旧文件那一侧。
+- `if len(comments) >= MAX_COMMENTS:` 最多 8 条,排在后面的低优先级意见直接截掉。实测假 PR 最后留下 3 条。
+- `summary = f"自动审查:看了改动,提出 {len(comments)} 条意见` 实测是「提出 3 条意见(只报 medium 及以上、置信度 ≥ 0.6)」。
+- `if not dry_run and comments:` 两个条件都满足才发:不是试运行,而且确实有意见。没有意见就什么都不发,不会在 PR 上留一句「我看过了,没问题」。
+- `repo, number = sys.argv[1], int(sys.argv[2])` 命令行是 `python main.py pallets/click 3884 --dry-run`,`sys.argv` 是 `['main.py', 'pallets/click', '3884', '--dry-run']`。
+- `dry_run="--dry-run" in sys.argv` 很简单的开关写法,只看列表里有没有这个字符串,不管它在第几个位置。
+- `print(f"{c['path']}:{c['line']}  {c['body'][:80]}")` 每条评论打一行,方便和 diff 对行号。
+
+</div>
+
 几个阈值(置信度 0.6、最多 8 条、不报 low)是起点,不是答案。后面的评测会告诉你该怎么调。我的经验是宁可漏报也不要误报:一个机器人如果十条意见里有七条是对的,大家会认真看;如果十条里只有三条对,大家会把它关掉,剩下那三条也就白提了。
 
 发评论前用 `--dry-run` 在终端里看一眼输出,确认行号对得上,再真正发。
@@ -380,6 +470,21 @@ jobs:
           LLM_MODEL: deepseek-v4-pro
         run: uv run python main.py ${{ github.repository }} ${{ github.event.pull_request.number }}
 ```
+
+<div class="line-notes">
+
+- `name: ai-review` 未实跑:要在 GitHub 上真的开 PR 才会触发。下面按 GitHub Actions 的规则讲。
+- `types: [opened, synchronize, ready_for_review]` 三种时机触发:新开 PR、往 PR 上推新提交(synchronize)、草稿转成正式。
+- `permissions:` 显式声明 `GITHUB_TOKEN` 的权限。只给代码读权限和 PR 写权限,其他一律没有,token 万一泄露,能造成的破坏也有限。
+- `if: github.event.pull_request.draft == false` 草稿 PR 不审,省钱也不打扰作者。
+- `repository: <你的用户名>/reviewbot` 机器人代码在另一个仓库里,checkout 到 `reviewbot` 子目录。注意这里拿的不是被审查 PR 的代码,机器人只通过 API 读 diff 文本。
+- `- uses: astral-sh/setup-uv@v6` 装 uv。下面 `uv run` 会按 reviewbot 的 lock 文件自动装依赖。
+- `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` Actions 每次运行自动生成的 token,任务结束就失效,不用自己建。
+- `LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}` `vars` 是普通变量,`secrets` 是加密的机密。地址不算机密,放 `vars` 就行。
+- `LLM_MODEL: deepseek-v4-pro` 这里写死了 pro。如果想和本地评测时用的模型一致,也可以放进 `vars`。
+- `run: uv run python main.py ${{ github.repository }} ${{ github.event.pull_request.number }}` `github.repository` 是 `owner/repo` 格式,正好对应 `main.py` 的第一个参数。这里没有加 `--dry-run`,会真的发评论。
+
+</div>
 
 在仓库 Settings 的 Secrets 里加 `LLM_API_KEY`,在 Variables 里加 `LLM_BASE_URL`(用 DeepSeek 就填它的 OpenAI 兼容地址 `api.deepseek.com`,前面加 https 协议头)。`GITHUB_TOKEN` 是 Actions 自动提供的,`permissions` 里给了它写 PR 评论的权限。
 
@@ -434,10 +539,22 @@ CASES = [
 ]
 ```
 
+<div class="line-notes">
+
+- `CASES = [` 每条用例是一个 dict:`path` 只是给模型看的文件名,`patch` 是改动,`bug_line` 是埋 bug 的新文件行号。
+- `"patch": """@@ -10,6 +10,9 @@ def prorate(amount, start, end, period_days):` 实测 `added_lines` 算出来的新增行是 `[13, 14, 15]`。
+- `"bug_line": 14,` 第 14 行就是 `for d in range(1, used):`。实测模型给了 3 条意见:14 行(medium/bug,0.75,说少算一天)、15 行(high/concurrency,0.65,说 `accrue` 有副作用、不幂等)、14 行(medium/performance,0.6)。按 2 行容差算命中。
+- `"id": "missing-await-01",` 新增行是 `[23, 24]`,bug 在 23 行。实测单独跑时模型给了 0.85;在评测里跑的那次给了 0.72;在 `main.py` 假 PR 里那次只给了 0.55,被 0.6 的阈值过滤掉了。同一条用例,置信度能在 0.55 到 0.85 之间浮动。
+- `"id": "sql-injection-01",` 新增行是 `[5, 6]`,bug 在第 5 行。这条最稳定,实测几次都是 high/security,置信度 0.98。hunk 头写的是 `-5,3 +5,5`,和实际行数对不上(实际只有 1 行删除、2 行新增),但 `parse_patch` 只用起始行号,不受影响。
+- `# ……照这个格式扩到 30 条以上` 3 条只能证明流程跑通了,算不出有意义的召回率。实测 3/3 全中,但这不能说明它在真实 PR 上也能全中。
+
+</div>
+
 上面三条:第一条 `range(1, used)` 少算了一天(假设业务语义是包含两端,这一点要在 PR 描述里写清楚,否则它就不算 bug);第二条 `write_audit_log` 如果是协程却没有 await,审计日志根本没写;第三条把参数化查询改成了字符串拼接。另外 10 条干净的改动,机器人只要发了任何 medium 以上的意见就算误报。
 
 ```python
 # reviewbot/evals/run_eval.py
+# 在 reviewbot 根目录跑:uv run python -m evals.run_eval(按文件路径 python evals/run_eval.py 会找不到 diff 模块)
 from diff import added_lines, parse_patch, render_for_model
 from evals.cases import CASES
 from review import review_file
@@ -475,6 +592,24 @@ def main(min_conf: float = 0.6) -> None:
 if __name__ == "__main__":
     main()
 ```
+
+<div class="line-notes">
+
+- `# 在 reviewbot 根目录跑:uv run python -m evals.run_eval` 实测直接 `python evals/run_eval.py` 会报 `ModuleNotFoundError: No module named 'diff'`:按路径跑时,搜索起点是 `evals/` 目录,看不到上一层的 `diff.py`。用 `-m` 时搜索起点是当前目录,也就是 reviewbot 根目录,`from diff` 和 `from evals.cases` 都能找到。
+- `TOLERANCE = 2` 指出的行和埋 bug 的行相差 2 行以内都算命中。实测 off-by-one 那条有一次模型主要盯着第 15 行,|15−14| = 1,照样算命中。
+- `hit = miss = fp_clean = 0` 链式赋值,三个变量都是 0。int 是不可变的,所以后面各自 `+= 1` 不会互相影响。
+- `findings = [` 这里的过滤条件和 `main.py` 一样(行号合法、置信度达标、不是 low),评测量的就是线上真正会发出去的那些意见。
+- `if f.line in valid and f.confidence >= min_conf and f.severity != "low"` 三个条件都满足才保留。
+- `total_comments += len(findings)` 实测两次完整运行:第一次三条用例共 5 条意见,平均 1.67;第二次共 4 条,平均 1.33。
+- `if case.get("bug_line") is None:  # 干净用例` 干净用例不写 `bug_line`,`get` 返回 None。正文的 3 条用例都有 bug,所以这一支实测没有走到。
+- `fp_clean += bool(findings)` `bool(列表)` 不为空是 True;True 参与加法时等于 1。一条干净用例不管说了几条意见,都只算一次误报。
+- `if any(abs(f.line - case["bug_line"]) <= TOLERANCE for f in findings):` 只要有一条意见在容差范围内就算命中,其他意见是对是错这里不管。正文说的「额外意见有用率」要靠人工标注。
+- `print(f"漏报 {case['id']}")` 实测两次都没有漏报。
+- `n_clean = sum(1 for c in CASES if c.get("bug_line") is None)` 实测是 0,所以下面那行「干净用例误报」不会打印。
+- `print(f"召回 {hit}/{n_bug}")` 实测两次都是 `召回 3/3`。
+- `print(f"平均每条用例意见数 {total_comments / max(len(CASES), 1):.2f}")` `max(..., 1)` 防止用例为空时除以零。
+
+</div>
 
 召回和误报只是两个数,还有一个指标比它们都重要:**有埋 bug 的用例里,除了命中 bug 的那条,机器人还额外说了几条?** 这些额外意见里一部分可能是对的,但大部分是噪音。人工看一遍,把额外意见标成「有用 / 没用」,算出「有用率」(precision 的近似)。字节跳动发表的 BitsAI-CR 论文里,他们在公司内部规模化部署后报告的审查意见精确率是 75%,并且用了一个很聪明的线上指标叫 Outdated Rate:机器人评论过的那一行,后来有没有被作者改掉。改掉了说明意见被采纳。你的机器人如果装在自己常用的仓库里,也可以统计这个数。
 
@@ -517,6 +652,22 @@ def grep(pattern: str, max_results: int = 30) -> str:
     ).stdout.splitlines()
     return "\n".join(out[:max_results]) or "没有结果"
 ```
+
+<div class="line-notes">
+
+- `REPO_ROOT = Path("target_repo")` 相对路径。实测我建了一个 `target_repo/`,里面放 `billing/proration.py`(3 行)和 `app.py`(2 行),又在它外面一层放了一个 `secret.env`。
+- `def read_file(path: str, start: int = 1, end: int = 200) -> str:` 返回带行号的文本,格式和 `render_for_model` 一样,模型引用行号时不用自己数。
+- `p = (REPO_ROOT / path).resolve()` `resolve()` 把 `..` 和符号链接都解析成绝对路径。`target_repo/../secret.env` 会被解析成外面那个 `secret.env` 的真实路径。
+- `if not p.is_relative_to(REPO_ROOT.resolve()) or not p.is_file():` `is_relative_to`(Python 3.9+)判断路径是不是在仓库目录里面。实测 `read_file('../secret.env')` 返回 `文件不存在`,`read_file('nope.py')` 也返回 `文件不存在`。两种情况回一样的话,模型没法借此探测仓库外面有哪些文件。
+- `lines = p.read_text(encoding="utf-8", errors="replace").splitlines()` `errors="replace"` 遇到非 UTF-8 的字节就替换成 `�`,不会因为一个二进制文件把工具弄崩。
+- `end = min(end, start + 199, len(lines))` 三个上限取最小:调用方要的结束行、最多 200 行、文件总行数。实测 `read_file('billing/proration.py', 2, 500)` 中,`end` 等于 `min(500, 201, 3) = 3`,返回第 2、3 两行。
+- `return "\n".join(f"{i}: {lines[i - 1]}" for i in range(max(start, 1), end + 1))` 行号从 1 开始,列表下标从 0 开始,所以取 `lines[i - 1]`。`max(start, 1)` 防止传 0:实测 `read_file(..., 0, 1)` 返回 `1: def prorate(...)`,不会去读 `lines[-1]`(那是最后一行)。
+- `def grep(pattern: str, max_results: int = 30) -> str:` 实测 `grep('prorate(')` 返回两行:`./app.py:2:x = prorate(100, a, b, 30)` 和 `./billing/proration.py:1:def prorate(...)`。这种查调用方的能力,正是只看 diff 时缺少的上下文。
+- `["grep", "-rnF", "--max-count=5", pattern, "."],` 参数用列表传,不经过 shell。`-r` 递归,`-n` 带行号,`-F` 按固定字符串搜(`prorate(` 里的括号不会被当成正则),`--max-count=5` 每个文件最多 5 条。实测传一个注入式的 pattern `"; rm -rf /`,只是在文件里搜这串字面文本,返回 `没有结果`。
+- `cwd=REPO_ROOT, capture_output=True, text=True, timeout=20,` `cwd` 让输出的路径相对于仓库根目录;`text=True` 让输出是 str 而不是 bytes;超过 20 秒抛 `TimeoutExpired`。
+- `return "\n".join(out[:max_results]) or "没有结果"` 空字符串是假值,`or` 换成一句人话,模型不会误以为工具坏了。grep 输出的顺序取决于文件系统遍历的顺序,不保证固定。
+
+</div>
 
 `is_relative_to` 那一行防止模型(或被注入的模型)用 `../../` 读到仓库外面的文件,比如 runner 上的环境配置。`grep` 用 `-F` 按固定字符串搜,并且用参数列表而不是拼接 shell 命令,避免命令注入。注意这里 checkout 了 PR 的代码,但只读不执行,前面说的 `pull_request_target` 风险依然要避开。
 

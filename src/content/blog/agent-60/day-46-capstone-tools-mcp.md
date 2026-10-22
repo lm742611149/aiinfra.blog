@@ -204,12 +204,18 @@ def decide_refund(conn, request_id: str, approved: bool, approver: str, note: st
 # ---------------- 工单本身的读写(给 API 和工作流用,不注册给模型) ----------------
 
 def create_ticket(conn, customer_email: str, subject: str, body: str) -> str:
-    n = conn.execute("SELECT count(*) AS n FROM biz.tickets").fetchone()["n"]
-    ticket_id = f"T{n + 1:06d}"
     cust = conn.execute("SELECT id FROM biz.customers WHERE email = %s", (customer_email.strip().lower(),)).fetchone()
-    conn.execute("INSERT INTO biz.tickets (id, customer_id, customer_email, subject, body) VALUES (%s, %s, %s, %s, %s)",
-                 (ticket_id, cust["id"] if cust else None, customer_email, subject, body))
-    return ticket_id
+    # 编号 = 现有最大编号 + 1,在同一条 INSERT 里算出来。两个请求同时算出同一个号时,
+    # 后到的那条撞主键被 DO NOTHING 跳过、RETURNING 拿不到行,就重算一次
+    for _ in range(5):
+        row = conn.execute(
+            "INSERT INTO biz.tickets (id, customer_id, customer_email, subject, body) "
+            "SELECT 'T' || lpad((coalesce(max(substring(id from 2)::int), 0) + 1)::text, 6, '0'), %s, %s, %s, %s "
+            "FROM biz.tickets ON CONFLICT (id) DO NOTHING RETURNING id",
+            (cust["id"] if cust else None, customer_email, subject, body)).fetchone()
+        if row:
+            return row["id"]
+    raise RuntimeError("工单编号连续冲突 5 次,数据库可能有大量并发写入")
 
 
 def finish_ticket(conn, ticket_id: str, status: str, category: str | None, summary: str) -> None:
@@ -218,13 +224,84 @@ def finish_ticket(conn, ticket_id: str, status: str, category: str | None, summa
                  (status, category, summary, status, ticket_id))
 ```
 
+<div class="line-notes">
+
+- `"""业务工具的真正实现` 模块 docstring 把这一层的定位写死:纯函数 + 一条连接,不认识 LLM 和 MCP。后面 registry、mcp_server、测试三处都直接 import 这里的函数。
+- `from decimal import ROUND_HALF_UP, Decimal` `Decimal` 是十进制精确小数,`ROUND_HALF_UP` 是「四舍五入」的舍入方式(Python 内置 `round` 用的是银行家舍入,`round(0.125, 2)` 得 0.12)。退款金额最后一步要用它保留两位。
+- `from ..config import get_settings` 两个点是「上一级包」:当前文件在 `supportpilot/tools/` 里,`..config` 就是 `supportpilot/config.py`。这里只用它拿 `sp_today`(固定成 2026-10-01 的「今天」)。
+- `class ToolError(Exception):` 自定义异常类,只用来装「给模型看的错误」。`registry.call_tool` 只捕获这一种,把它变成一句话交给模型;其他异常说明是代码 bug,不该被吞掉。
+- `def _audit(conn, actor: str, action: str, payload: dict) -> None:` 写审计日志的小工具,前缀 `_` 表示模块内部用,不对外。
+- `(actor, action, json.dumps(payload, ensure_ascii=False, default=str)))` `ensure_ascii=False` 让中文原样存进去,不变成 `年`;`default=str` 是兜底:遇到 json 不认识的类型(日期、Decimal)就转成字符串。实测创建李娜的退款申请后,`audit_log` 里多了一行:actor `agent`、action `create_refund_request`,payload 是 `{"id": "RF-T000001-INV-202609-0002", "rule": "annual_first_14_days", "refund_amount_cny": 950.0, ...}`。
+- `def _jsonable(row: dict) -> dict:` 数据库查出来的行里有 `Decimal('950.00')` 和 `datetime.date(2026, 9, 24)`,`json.dumps` 不认识,这里统一转成 `950.0` 和 `"2026-09-24"`。
+- `return {k: (float(v) if isinstance(v, Decimal) else v.isoformat() if isinstance(v, date) else v)` 字典推导式里套了两层条件表达式,读法是:「是 Decimal 就转 float,否则是 date 就转 ISO 字符串,否则原样」。注意 `datetime` 是 `date` 的子类,所以时间戳也会走 `isoformat()`,实测 `created_at` 变成了 `"2026-10-22T07:49:27.554428+08:00"`。
+- `def get_customer(conn, email: str) -> dict:` 第一个只读工具。参数第一个永远是 `conn`,由调用方传进来,函数自己不建连接,这样测试可以传测试库的连接。
+- `(email.strip().lower(),)).fetchone()` 先去空格再转小写,库里存的邮箱都是小写。实测传 `"  LiuYang@Example.com "` 照样查到 `{'id': 'C0004', 'name': '刘洋', 'email': 'liuyang@example.com', 'company': '洋帆科技', 'region': '上海', 'is_vip': False, 'created_at': '2025-06-01'}`。`(x,)` 末尾的逗号不能省,单元素元组要靠它。`%s` 是 psycopg 的参数占位符,值单独传,能防 SQL 注入。
+- `raise ToolError(f"没有找到邮箱为 {email} 的客户。` 错误信息里带下一步怎么做(让客户提供注册邮箱)。实测传 `nobody@x.com` 抛出的就是这句话,模型读到会去问客户,而不是瞎猜一个客户 ID。
+- `def list_subscriptions(conn, customer_id: str) -> list[dict]:` 实测 C0004 刘洋只有一条订阅:`{'id': 'S0004', 'plan': 'standard', 'billing_cycle': 'monthly', 'status': 'active', 'seats': 1, 'price_cny': 39.0, 'current_period_end': '2026-10-12', 'auto_renew': True, ...}`。
+- `limit = max(1, min(limit, 20))` 把模型传来的 limit 夹在 1 到 20 之间。实测传 `limit=100`,C0004 也只返回 5 条(他一共就 5 张账单);传 0 或负数会变成 1。
+- `params: list = [customer_id]` 参数列表和 SQL 一起拼:有 status 就在 SQL 后面加 `AND status = %s`,同时往 params 里追加值,两边一一对应。
+- `total = conn.execute(f"SELECT count(*) AS n FROM ({sql}) t", params).fetchone()["n"]` 把上面的查询当子查询包一层数总数,过滤条件完全一致。这里用 f-string 拼的是我们自己写的 SQL 片段,不是用户输入,所以安全。实测 C0004 `total = 5`。
+- `rows = conn.execute(sql + " ORDER BY issued_at DESC, id DESC LIMIT %s", [*params, limit]).fetchall()` `[*params, limit]` 是把列表展开再追加一个元素,得到 `["C0004", 2]`。同一天开的两张账单靠 `id DESC` 排出稳定顺序。
+- `return {"total": total, "returned": len(rows), "invoices": [_jsonable(r) for r in rows]}` 实测 `list_invoices(conn, "C0004", limit=2)` 返回 `{"total": 5, "returned": 2, "invoices": [INV-202609-0004, INV-202609-0003]}`,两张都是 39 元、2026-09-12、同一个周期 09-12 到 10-12,这就是刘洋的重复扣款。
+- `def _months_left(today: date, end: date) -> int:` 数「从今天起还剩几个完整月」:从今天开始一个月一个月往后数,数到超过到期日为止。
+- `m = today.month - 1 + n + 1` 和下一行一起,是「给日期加 n+1 个月」的标准写法:先把月份转成从 0 开始,加上偏移,`m // 12` 算进了几年,`m % 12 + 1` 再转回 1–12。比如 2026-10 加 3 个月:`m = 9 + 3 = 12` → 年份 `2026 + 1 = 2027`,月份 `12 % 12 + 1 = 1`,得到 2027-01。
+- `except ValueError:  # 比如 1 月 31 日加一个月` `date(2026, 2, 31)` 不存在会抛 ValueError,退到 28 日。实测 `_months_left(date(2026,1,31), date(2026,3,1))` 返回 1:2 月 31 日不存在退成 2 月 28 日,没超过 3 月 1 日,算一个整月。
+- `if nxt > end:` 第 n+1 个月的同一天超过了到期日,说明只剩 n 个完整月。实测 `_months_left(date(2026,10,1), date(2027,3,15))` 返回 5(11 月、12 月、1 月、2 月、3 月 1 日都没超过 3 月 15 日,4 月 1 日超过了)。
+- `def check_refund_eligibility(conn, invoice_id: str) -> dict:` 全项目最重要的函数。下面用 Day 44 的剧情客户逐个代入,`today` 固定是 2026-10-01。
+- `today = get_settings().sp_today` 不用 `date.today()`,否则评测结果会随真实日期漂移(Day 44 讲过)。
+- `"SELECT i.*, s.plan, s.billing_cycle FROM biz.invoices i JOIN biz.subscriptions s "` 账单表没有套餐和付费周期,要 JOIN 订阅表拿到。`i.*` 是账单的全部列。
+- `raise ToolError(f"账单 {invoice_id} 不存在。账单号格式是` 实测传 `INV-2026-001`(模型常见的瞎编格式)得到这句,里面告诉它正确格式是 `INV-年月-四位序号`,真实的长这样:`INV-202609-0002`。
+- `amount = Decimal(inv["amount_cny"])` psycopg 把 numeric 列读成 `Decimal('950.00')`,这里再包一层确保是 Decimal。
+- `def result(eligible: bool, rule: str, reason: str, refund: Decimal = Decimal(0)) -> dict:` 函数里面定义的小函数(闭包),能直接用外面的 `invoice_id` 和 `amount`。每个分支都用它返回,保证 7 种结果的字段完全一致。
+- `"refund_amount_cny": float(refund.quantize(Decimal("0.01"), ROUND_HALF_UP)),` `quantize(Decimal("0.01"))` 是保留到分。王芳那笔是 `950 × 7 / 12 × 0.9 = 498.75`,孙浩那笔是 `374 × 11 / 12 × 0.9 = 308.55`,算完再转 float 给 JSON。
+- `if inv["status"] != "paid":` 第 1 关:没付的钱谈不上退。
+- `pending = conn.execute("SELECT id, status FROM biz.refund_requests WHERE invoice_id = %s "` 第 2 关:这张账单已经有 pending/approved/executed 的申请,就不能再申请。rejected 的不算,被驳回后可以重新提。实测李娜建完申请后再查,返回 `{'eligible': False, 'rule': 'already_requested', 'reason': '这张账单已有退款申请 RF-T000001-INV-202609-0002(状态 pending),不要重复申请。'}`。
+- `dup = conn.execute(` 第 3 关:同一订阅、同一 `period_start`、另一张也是 paid 的账单,就是重复扣款。`id <> %s` 排除自己。
+- `return result(True, "duplicate_charge"` 实测 C0004 刘洋的 INV-202609-0004:找到同周期的 INV-202609-0003,返回 `eligible: True, rule: duplicate_charge, refund_amount_cny: 39.0`。注意他是月付,月付本来不退,所以这一关必须排在月付那关前面。
+- `if inv["plan"] == "enterprise":` 第 4 关:企业版走合同。实测 C0008 黄强(7080 元企业版年付)返回 `enterprise_contract`,`eligible: False`,金额 0。
+- `if inv["billing_cycle"] == "monthly":` 第 5 关:月付不退。实测 C0005 陈静的 39 元月付账单返回 `monthly_no_refund`。
+- `days = (today - inv["paid_at"]).days` 两个 date 相减得到 timedelta,`.days` 取天数。李娜 9 月 24 日付款:`2026-10-01 - 2026-09-24 = 7` 天。
+- `if inv["is_first_purchase"] and days <= 14:` 第 6 关:年付首购 14 天内全额退。实测 C0002 李娜第 7 天、950 元 → `annual_first_14_days`,退 950;C0011 徐丽 9 月 17 日付款,正好第 14 天,`<=` 包含边界,退 374。
+- `if not inv["is_first_purchase"] and days <= 7:` 第 7 关:年付续费 7 天内全额退。实测 C0007 赵敏 9 月 27 日续费,第 4 天 → `annual_renewal_7_days`,退 374。
+- `months = _months_left(today, inv["period_end"])` 剩下的都是「年付但过了全额期」。王芳 2026-05-20 买的,到期 2027-05-20,从 10-01 往后数:11-01、12-01……2027-05-01 都不超过,06-01 超过,`months = 7`。
+- `refund = amount * months / 12 * Decimal("0.9")` 全程 Decimal 运算。`0.9` 必须写成 `Decimal("0.9")`,如果写 `Decimal(0.9)`(不带引号)会把浮点误差带进来,得到 `0.90000000000000002220446…`。
+- `if months == 0:` 剩余不足一个整月,没得退。
+- `return result(True, "annual_prorated",` 实测 C0003 王芳:`'年付已过退款全额期,剩余完整月份 7 个,退 950.00 × 7/12 × 90%。'`,金额 498.75;C0012 孙浩 9 月 16 日首购,到今天第 15 天,刚好错过 14 天全额期,剩 11 个月,退 308.55。这 7 个剧情客户的结果和 `test_refund_rules` 里的参数表一一对上。
+- `def search_past_tickets(conn, customer_id: str, limit: int = 5) -> list[dict]:` 只查 resolved 的历史工单摘要。实测 C0004 在种子数据里没有已解决的工单,返回 `[]`,空列表也是合法答案,不报错。
+- `def create_refund_request(conn, invoice_id: str, reason: str, ticket_id: str) -> dict:` 唯一的写工具。注意参数里**没有金额**,模型没地方传「给我退 9999」。
+- `elig = check_refund_eligibility(conn, invoice_id)  # 不信任模型传来的金额,服务端重新算` 就算模型前一步刚调过资格检查,这里也再算一遍,防止中间有人改了数据,也防止模型跳过检查直接调用。
+- `raise ToolError(f"这张账单不符合退款条件:{elig['reason']} 不要创建退款申请,按规则向客户解释。")` 实测对陈静的月付账单调用,得到 `这张账单不符合退款条件:月付订阅不支持退款,可以关闭自动续费,当期结束后停止。 不要创建退款申请,按规则向客户解释。`
+- `req_id = f"RF-{ticket_id}-{invoice_id}"  # 幂等键` 实测工单 T000001、账单 INV-202609-0002 得到 `RF-T000001-INV-202609-0002`。同一张工单重复调用,ID 一样。
+- `"VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",` 主键冲突时什么也不做,不报错。这是第二道防重:第一道是上面资格检查里的 `already_requested`。
+- `row = conn.execute("SELECT * FROM biz.refund_requests WHERE id = %s", (req_id,)).fetchone()` 写完再读一次,拿到数据库填的默认值(`status='pending'`、`created_at`)。
+- `return {**_jsonable(row), "note": "已创建待审批的退款申请。` `{**a, "k": v}` 是复制字典再加字段。实测返回 `{'id': 'RF-T000001-INV-202609-0002', 'customer_id': 'C0002', 'amount_cny': 950.0, 'rule': 'annual_first_14_days', 'status': 'pending', 'decided_by': None, ..., 'note': '已创建待审批的退款申请。不要告诉客户退款已完成,只能说已提交审核。'}`。`note` 是写给模型的话,直接跟着工具结果进上下文。
+- `def escalate_to_human(conn, ticket_id: str, reason: str) -> dict:` 把工单标成 escalated 并记审计。实测返回 `{'ticket_id': 'T000154', 'status': 'escalated'}`。它不注册给模型,由工作流的 handoff 节点调用。
+- `def decide_refund(conn, request_id: str, approved: bool, approver: str, note: str = "") -> dict:` 只给人用。模型的工具列表里没有它。
+- `with conn.transaction():` 连接是 autocommit 模式,要几条语句一起成功或一起失败,就显式开事务。块里任何一步抛异常都会回滚。
+- `row = conn.execute("SELECT * FROM biz.refund_requests WHERE id = %s FOR UPDATE", (request_id,)).fetchone()` `FOR UPDATE` 给这一行加锁,直到事务结束。两个财务同时点「通过」,第二个会在这里等第一个提交。实测传不存在的 `RF-NOPE`,抛 `退款申请 RF-NOPE 不存在`。
+- `if row["status"] != "pending":` 已经处理过就原样返回。实测 amy 批准后,bob 再点「驳回」,返回的 status 还是 `executed`,没有被改成 rejected。
+- `status = "executed" if approved else "rejected"` 演示项目里批准就直接算「已执行」,真实系统会先 approved、调完支付网关成功再 executed。
+- `conn.execute("UPDATE biz.invoices SET status = 'refunded' WHERE id = %s", (row["invoice_id"],))` 实测批准后 INV-202609-0002 的状态变成了 `refunded`。所以测试结尾要把它改回 `paid`,不然下一个测试跑资格检查会撞上 `not_paid`。
+- `_audit(conn, f"human:{approver}", "decide_refund"` actor 写成 `human:amy`,审计里一眼能分出是 Agent 干的还是人干的。
+- `return _jsonable(conn.execute("SELECT * FROM biz.refund_requests WHERE id = %s", (request_id,)).fetchone())` 实测返回 `{'status': 'executed', 'decided_by': 'amy', 'decided_at': '2026-10-22T07:49:27.558934+08:00', 'note': '核对无误', ...}`。
+- `cust = conn.execute("SELECT id FROM biz.customers WHERE email = %s"` 发件邮箱查不到客户也照样建工单,`customer_id` 存 NULL。实测用 `stranger@x.com` 建的工单,`customer_id` 是 `None`。
+- `for _ in range(5):` 最多试 5 次。`_` 表示循环变量用不到。正常情况第一次就成功。
+- `"SELECT 'T' || lpad((coalesce(max(substring(id from 2)::int), 0) + 1)::text, 6, '0'), %s, %s, %s, %s "` 编号在 SQL 里算:`substring(id from 2)` 去掉开头的 T,`::int` 转成数字,取最大值加 1,`lpad(..., 6, '0')` 左边补零到 6 位,`||` 拼上 T。表是空的时 `max` 返回 NULL,`coalesce` 把它换成 0,第一张就是 T000001。种子数据最大是 T000152,实测新建的是 `T000153`。<br>为什么不用「工单数 + 1」:实测删掉 T000100 之后,工单数是 152 而最大编号是 T000153,旧公式算出 T000153,和已有的撞上。
+- `"FROM biz.tickets ON CONFLICT (id) DO NOTHING RETURNING id",` 两个请求同时算出同一个号时,先提交的成功,后到的撞主键被跳过,`RETURNING` 什么也不返回。实测 20 个线程同时建工单,拿到 T000155 到 T000174 共 20 个不重复的号,0 报错;同样 20 个线程跑旧写法,20 次全部 `UniqueViolation`。
+- `if row:` 拿到行说明插入成功,返回编号;拿不到就回到循环开头重新算一次最大值。
+- `raise RuntimeError("工单编号连续冲突 5 次` 连续 5 次都撞,说明并发量远超这个写法能承受的范围,该换数据库序列了,直接报错比静默丢工单好。
+- `def finish_ticket(conn, ticket_id: str, status: str, category: str | None, summary: str) -> None:` 工作流结束时写回工单状态和分类。
+- `"resolved_at = CASE WHEN %s = 'resolved' THEN now() ELSE resolved_at END WHERE id = %s",` 只有状态是 resolved 时才填解决时间,其他状态保留原值。`status` 在参数里传了两次,因为 SQL 里用到两次 `%s`。实测 `finish_ticket(conn, "T000154", "resolved", "billing", "测试摘要")` 后,`resolved_at` 有了值。
+
+</div>
+
 挑几处讲。
 
 **`list_invoices` 返回 total 和 returned。** 只返回列表的话,模型拿到 6 条就以为这是全部账单。告诉它"一共 14 条、这次给了 6 条",它才知道要不要翻页或者加过滤条件。limit 也被限制在 1 到 20 之间,防止模型一次要 1000 条把上下文撑爆。
 
 **`check_refund_eligibility` 是全项目最重要的函数。** 它按顺序检查:账单是否已支付 → 是否已有退款申请 → 是否重复扣款 → 是否企业版 → 是否月付 → 年付首购是否 14 天内 → 年付续费是否 7 天内 → 否则按剩余完整月份比例退。顺序是有讲究的:重复扣款放在月付之前,因为月付虽然不退,但被重复扣的那笔要退;已有申请放在最前面,防止重复申请。每个分支返回的 `rule` 字段是一个固定的英文标识,审批人和评测脚本都靠它判断。
 
-金额用 `Decimal` 而不是 `float`。`950 * 7 / 12 * 0.9` 用浮点算是 498.74999999999994,四舍五入到分可能变成 498.74。钱的计算一律 Decimal,这是做过账务系统的人的肌肉记忆。
+金额用 `Decimal` 而不是 `float`。浮点误差是碰运气的:`950 * 7 / 12 * 0.9` 在 Python 里恰好算出 498.75,可 `1.15 * 100` 算出来是 114.99999999999999,`round(2.675, 2)` 得到的是 2.67 而不是 2.68(2.675 在二进制里存成了 2.67499999…)。你没法提前知道哪个数会出事,所以钱的计算一律 Decimal,这是做过账务系统的人的肌肉记忆。
 
 **`create_refund_request` 不信任模型传来的任何金额。** 它根本不接收金额参数,而是自己重新调一遍 `check_refund_eligibility`。模型就算被客户说服"给我退 9999",也没有地方能传这个数。不符合条件直接抛 `ToolError`,错误信息里告诉模型"不要创建退款申请,按规则向客户解释"。
 
@@ -234,7 +311,7 @@ def finish_ticket(conn, ticket_id: str, status: str, category: str | None, summa
 
 **每个写操作都进 `audit_log`。** Agent 建了什么申请、谁批的、批的时候写了什么备注,全有记录。
 
-**`create_ticket` 和 `finish_ticket`** 是给 API 和工作流用的,不注册给模型。
+**`create_ticket` 和 `finish_ticket`** 是给 API 和工作流用的,不注册给模型。工单编号我第一版写的是「现有工单数 + 1」,有两个毛病:删过工单后算出来的号会和已有的撞上;两个请求同时进来会算出同一个号。现在改成在一条 INSERT 里用「最大编号 + 1」,撞了主键就 `ON CONFLICT DO NOTHING`、`RETURNING` 拿不到行,再算一次。不用改表结构。
 
 ## 权限分级和注册表
 
@@ -381,12 +458,58 @@ def call_tool(conn, name: str, arguments: str | dict, *, ticket_id: str, custome
     except biz.ToolError as e:
         return str(e), True
     if name == "create_refund_request":
-        send_refund_approval(out)  # 推给财务群;放在工具层而不是审批节点,恢复执行时不会重复发
+        try:  # 推给财务群;放在工具层而不是审批节点,恢复执行时不会重复发
+            send_refund_approval(out)
+        except Exception as e:  # noqa: BLE001  申请已经写进库了,通知失败不能让这次调用变成失败
+            out["notify_error"] = f"审批通知没发出去({type(e).__name__}),申请本身已创建,财务在工作台能看到"
     text = json.dumps(out, ensure_ascii=False, default=str)
     if len(text) > max_chars:
         text = text[:max_chars] + f"…(已截断,原始长度 {len(text)} 字符,请缩小查询范围)"
     return text, False
 ```
+
+<div class="line-notes">
+
+- `from collections.abc import Callable` `Callable` 是「可调用对象」的类型,下面 `Tool.fn` 用它标注:存的是一个函数。
+- `from enum import StrEnum` `StrEnum`(3.11+)的成员同时是字符串,`Level.READ == "read"` 为 True,序列化成 JSON 也直接是 `"read"`。
+- `from .notify import send_refund_approval` 一个点是同一个包:`tools/notify.py`。
+- `class Level(StrEnum):` 工具权限级别。只有两级,第三级「直接动钱」根本不进这个文件。
+- `class CustomerEmail(BaseModel):` 每个工具的参数用一个 pydantic 模型描述。模型调用时传来的 JSON 先过它校验,再交给业务函数。
+- `email: str = Field(description="客户注册邮箱,通常就是工单里的发件邮箱")` `description` 会原样出现在发给模型的 JSON Schema 里,这句话就是模型看到的参数说明。
+- `class InvoiceQuery(BaseModel):` 三个参数,只有 `customer_id` 必填。实测生成的 schema:`{"properties": {"customer_id": {"description": "客户 ID,形如 C0001", "type": "string"}, "status": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, ...}, "limit": {"default": 6, "type": "integer", ...}}, "required": ["customer_id"]}`。
+- `status: str | None = Field(None, description=` `Field` 第一个位置参数是默认值。`str | None` 在 schema 里变成 `anyOf: [string, null]`。
+- `class RefundRequest(BaseModel):` 只有 `invoice_id` 和 `reason` 两个参数。`ticket_id` 故意不放进来,下面由系统注入。
+- `description="要退款的账单号。先用 check_refund_eligibility 确认 eligible=true 再调用"` 前置条件写进参数说明,模型在决定调用时就能看到。
+- `@dataclass` 自动生成 `__init__`,下面 `Tool("get_customer", "...", CustomerEmail, biz.get_customer, Level.READ)` 按字段顺序传参就行。
+- `def schema(self) -> dict:` 把一个工具转成 OpenAI 的 tools 格式。
+- `params = self.args.model_json_schema()` pydantic 自动生成 JSON Schema,字段类型、默认值、是否必填、description 全在里面。
+- `params.pop("title", None)` 去掉 pydantic 自带的 `"title": "InvoiceQuery"`,这个类名对模型没用,还占 token。`pop` 的第二个参数是没有这个键时的默认值,避免 KeyError。字段级别的 `"title": "Customer Id"` 还在,实测输出里能看到。
+- `return {"type": "function", "function": {"name": self.name, "description": self.description,` 实测 `TOOLS["list_invoices"].schema()` 得到 `{"type": "function", "function": {"name": "list_invoices", "description": "查客户的账单列表,按开票日期倒序。返回 total 表示一共多少条,returned 表示本次给了多少条。", "parameters": {...}}}`。
+- `TOOLS: dict[str, Tool] = {t.name: t for t in [` 字典推导式:先写一个 Tool 列表,再按名字建索引。实测一共 7 个键,顺序就是列表里的顺序。
+- `Tool("get_customer", "按邮箱查客户档案` 工具描述里写「处理任何账户相关问题的第一步」,是在给模型排调用顺序。
+- `Tool("check_refund_eligibility", "按退款政策判断一张账单能否退款` 描述里明说「不要自己计算退款金额」。两段字符串相邻会自动拼接。
+- `RefundRequest, biz.create_refund_request, Level.PROPOSE),` 七个工具里只有它是 PROPOSE。
+- `"某段时间有几笔失败扣款。固定格式的查询优先用上面的专用工具,专用工具答不了的再用这个。\n" + SCHEMA_DOC,` 把三张表的结构说明拼进工具描述,模型写 SQL 时知道有哪些列、状态有哪些取值。
+- `def openai_tools(allowed: set[Level] | None = None) -> list[dict]:` 按级别筛出要发给模型的工具。
+- `allowed = allowed or {Level.READ, Level.PROPOSE}` 不传就是两级都给。实测默认返回 7 个工具名;传 `{Level.READ}` 返回 6 个,少了 `create_refund_request`。`decide_refund`、`escalate_to_human` 两种情况下都不在里面。
+- `def call_tool(conn, name: str, arguments: str | dict, *, ticket_id: str, customer_id: str | None = None,` 参数列表里的 `*` 表示后面的参数只能用关键字传,调用时必须写 `ticket_id="T1"`,不会因为位置传错把工单号当成客户 ID。
+- `"""执行一次工具调用,返回 (给模型看的文本, 是否出错)。` 返回一个二元组,第二个值是 `is_error`,Agent 循环据此决定要不要在日志里标红。
+- `return f"没有叫 {name} 的工具。可用工具:{', '.join(TOOLS)}", True` 遍历字典得到的是键,所以 `', '.join(TOOLS)` 就是工具名列表。实测调 `refund_everything` 返回 `('没有叫 refund_everything 的工具。可用工具:get_customer, list_subscriptions, list_invoices, check_refund_eligibility, search_past_tickets, create_refund_request, query_customer_data', True)`。
+- `raw = json.loads(arguments) if isinstance(arguments, str) else arguments` 模型返回的 arguments 是 JSON 字符串,测试和代码内部调用时可以直接传字典,两种都接。
+- `args = tool.args.model_validate(raw).model_dump()` 校验并转回普通字典,顺便填上默认值。传 `{"customer_id": "C0004"}` 得到 `{"customer_id": "C0004", "status": None, "limit": 6}`。
+- `except (json.JSONDecodeError, ValidationError) as e:` 两种错一起接。实测传 `'{"limit": "many"}'` 得到 `参数不合法:2 validation errors for InvoiceQuery\ncustomer_id\n  Field required ...\nlimit\n  Input should be a valid integer ...`;传残缺的 `'{"customer_id": "C0004",'` 得到 `参数不合法:Expecting property name enclosed in double quotes: line 1 column 25 (char 24)。` pydantic 的报错原文挺长,但模型能看懂缺了什么、哪个类型不对。
+- `args["ticket_id"] = ticket_id  # 工单号由系统注入,不让模型自己填` 实测模型参数里硬塞 `"ticket_id": "HACK"`,先被 pydantic 丢掉(`RefundRequest` 没这个字段,默认忽略多余字段),再被这里设成真实工单号。建出来的申请 ID 是 `RF-T000009-INV-202609-0002`,不是 HACK。
+- `if not customer_id:` 工单没关联到客户(陌生邮箱)时,SQL 工具直接拒绝。实测返回 `('当前工单没有关联到客户,不能查询客户数据。', True)`。
+- `args["customer_id"] = customer_id  # 查谁的数据由系统决定,模型改不了` 实测参数里写 `"customer_id": "C9999"`,结果查的仍是系统传进来的 C0004:今年已付总额 `195.0`(5 张 39 元)。
+- `out = tool.fn(conn, **args)` `**args` 把字典展开成关键字参数,等价于 `biz.list_invoices(conn, customer_id="C0004", status=None, limit=6)`。
+- `except biz.ToolError as e:` 只接业务错误。实测 `check_refund_eligibility` 传 `INV-2026-001`,返回 `('账单 INV-2026-001 不存在。账单号格式是 INV-年月-四位序号,可以先调 list_invoices 查。', True)`。
+- `try:  # 推给财务群;放在工具层而不是审批节点` 申请建好了才发通知,发通知包在 try 里。`notify.py` 自己只接网络错误,配置缺字段(比如 Settings 里漏了 `console_url`)会抛 AttributeError。我按文章重建项目时第一次就漏了上面那三行配置,撞上过这个错,当时申请已经写进库,工具调用却直接崩了。
+- `except Exception as e:  # noqa: BLE001  申请已经写进库了` 这里接所有异常是故意的:通知失败不该让模型以为申请没建成、再去重试。实测把通知函数换成一个抛 AttributeError 的假函数,`call_tool` 返回 `is_error=False`,申请状态 `pending`,数据库里有这一条。
+- `out["notify_error"] = f"审批通知没发出去` 结果里多一个字段说明情况,模型和工作台都能看到。实测内容是 `审批通知没发出去(AttributeError),申请本身已创建,财务在工作台能看到`。
+- `text = json.dumps(out, ensure_ascii=False, default=str)` 结果统一转成 JSON 文本交给模型。实测 `list_invoices` C0004 limit=2 的结果是 `{"total": 5, "returned": 2, "invoices": [{"id": "INV-202609-0004", ...}, {"id": "INV-202609-0003", ...}]}`,`is_error` 为 False。
+- `if len(text) > max_chars:` 超过上限就截断,并告诉模型原来有多长。实测用 `max_chars=200` 跑 `SELECT * FROM invoices`,结尾是 `…(已截断,原始长度 1353 字符,请缩小查询范围)`。
+
+</div>
 
 和 W2 手写的注册表比,多了这几样:
 
@@ -436,6 +559,22 @@ def send_refund_approval(request: dict) -> None:
         print(f"[notify] 发送失败:{e}")
 ```
 
+<div class="line-notes">
+
+- `import httpx` 发 HTTP 请求的库,和 requests 用法差不多,还支持异步。
+- `def _payload(platform: str, text: str) -> dict:` 三家群机器人的「纯文本消息」JSON 格式不一样,在这里统一。
+- `return {"msg_type": "text", "content": {"text": text}}` 飞书的格式。实测 `_payload("feishu", "hi")` 得到 `{'msg_type': 'text', 'content': {'text': 'hi'}}`。
+- `return {"msgtype": "text", "text": {"content": text}}` 钉钉和企业微信的格式,注意键名是 `msgtype` 没有下划线。实测 `_payload("dingtalk", "hi")` 得到 `{'msgtype': 'text', 'text': {'content': 'hi'}}`。
+- `def send_refund_approval(request: dict) -> None:` 参数就是 `create_refund_request` 的返回值。
+- `text = (f"【退款待审批】{request['id']}\n客户:{request['customer_id']}  金额:¥{request['amount_cny']}\n"` 几段 f-string 和普通字符串用 `+` 拼成一条消息。
+- `+ ("⚠️ 超过复核线,需财务复核\n" if request["amount_cny"] > s.refund_review_threshold else "")` 超过 1000 元(配置里的 `refund_review_threshold`)才多一行提醒。实测李娜 950 元那条没有这一行;拿一条 7080 元的假申请试,多出了 `⚠️ 超过复核线,需财务复核`。
+- `+ f"去审批:{s.console_url}/?ticket={request.get('ticket_id', '')}")` `.get('ticket_id', '')` 键不存在时给空串,不抛 KeyError。
+- `if not s.approval_webhook_url:` 没配 webhook 就打印。实测打印出来是:<br>`[notify:dry-run]`<br>`【退款待审批】RF-T000009-INV-202609-0002`<br>`客户:C0002  金额:¥950.0`<br>`规则:annual_first_14_days  原因:测试`<br>`去审批:http://localhost:8501/?ticket=T000009`
+- `httpx.post(s.approval_webhook_url, json=_payload(s.approval_webhook_platform, text), timeout=5)` `json=` 会自动序列化并带上 `Content-Type: application/json`。`timeout=5` 防止群机器人接口卡住拖慢整张工单。
+- `except httpx.HTTPError as e:  # 通知失败不能影响主流程` 只接网络类错误(超时、连不上、DNS 失败)。审批单已经在数据库里了,群消息只是提醒。
+
+</div>
+
 配置里加三项(`config.py` 的 Settings 类和 `.env.example` 各加几行):
 
 ```python
@@ -444,6 +583,15 @@ def send_refund_approval(request: dict) -> None:
     approval_webhook_platform: str = "feishu"
     console_url: str = "http://localhost:8501"
 ```
+
+<div class="line-notes">
+
+- `# Day 46:审批通知` 这三行加进 Day 44 的 `Settings` 类里,和别的字段一样会自动读同名环境变量 `APPROVAL_WEBHOOK_URL` 等。别漏加:我按文章重建项目时一开始没加,`notify.py` 里读 `s.console_url` 直接抛 `AttributeError: 'Settings' object has no attribute 'console_url'`。
+- `approval_webhook_url: str = ""` 默认空串,表示只打印不发送。
+- `approval_webhook_platform: str = "feishu"` 取值 feishu / dingtalk / wecom,决定 `_payload` 用哪种格式。
+- `console_url: str = "http://localhost:8501"` 群消息里「去审批」链接的前缀,8501 是 Day 49 Streamlit 工作台的默认端口。
+
+</div>
 
 ```bash
 # Day 46 审批通知:飞书/钉钉/企业微信群机器人 webhook,留空只打印到终端
@@ -558,6 +706,45 @@ if __name__ == "__main__":  # 手动试校验器:uv run python -m supportpilot.t
     except ToolError as e:
         print("拒绝:", e)
 ```
+
+<div class="line-notes">
+
+- `import sqlglot` SQL 解析器,能把 SQL 字符串变成语法树,也能把树再转回 SQL。
+- `from sqlglot import exp` `exp` 模块里是各种语法树节点的类型:`exp.Select`、`exp.Delete`、`exp.Table`、`exp.Func`……
+- `from .business import ToolError, _jsonable` 复用业务层的错误类型和转换函数,`registry.call_tool` 能用同一个 except 接住。
+- `ALLOWED = {"invoices", "subscriptions", "tickets"}` 表名白名单,用集合是因为只做 `in` 判断。
+- `BANNED_FUNCS = ("pg_", "dblink", "lo_", "current_setting", "set_config", "query_to_xml")` 写成元组是为了下面直接传给 `str.startswith`,它接受元组,任意一个前缀匹配就返回 True。`pg_` 一条就挡住了 `pg_sleep`、`pg_read_file` 这一大类。
+- `SCHEMA_DOC = """可查询的表` 给模型看的表结构说明,注册工具时拼进描述里。故意写「不需要再按 customer_id 过滤」,下面的 CTE 会保证这一点。
+- `sql = sql.strip().rstrip(";")` 去掉首尾空白和末尾分号。实测 `"SELECT sum(amount_cny) FROM invoices WHERE status = 'paid';"` 校验通过,返回 `SELECT SUM(amount_cny) FROM invoices WHERE status = 'paid'`,分号没了、函数名被 sqlglot 规范成大写。
+- `statements = sqlglot.parse(sql, dialect="postgres")` `parse` 返回语句列表(`parse_one` 只要一条)。实测 `"SELECT 1; DROP TABLE invoices"` 解析成 `[Select, Drop]` 两个节点。
+- `raise ToolError(f"SQL 语法错误:{str(e)[:200]}。请修正后重试。") from e` `from e` 保留原始异常链,调试时能看到 sqlglot 的原始报错。实测 `"SELEC 1"` 得到 `SQL 语法错误:Invalid expression / Unexpected token. Line 1, Col: 7. ...`(sqlglot 的报错里带终端下划线控制符,截到 200 字符)。
+- `if len(statements) != 1 or statements[0] is None:` 多条语句一律拒绝,`;` 拼接注入在这一步就挡住了。实测 `"SELECT * FROM invoices; DELETE FROM invoices"` 得到 `只能提交一条 SQL 语句。`。空字符串解析出来是 `[None]`,也在这里挡掉。
+- `if not isinstance(tree, exp.Query):  # Select / Union 等都是 Query 的子类` 根节点必须是查询。实测 `sqlglot.parse_one("DELETE FROM invoices")` 的类型是 `Delete`,不是 Query;`SELECT 1 UNION SELECT 2` 是 Query。
+- `for node in tree.walk():` `walk()` 遍历语法树里的每一个节点,包括子查询、CTE 里面的东西。只检查根节点不够,写操作可能藏在 CTE 里。
+- `exp.Command, exp.Into)):` `exp.Into` 对应 `SELECT ... INTO 新表`,它根节点是 Select 但会建表。实测 `SELECT * INTO t2 FROM invoices` 被拦,报 `只允许只读查询,不能包含写操作或 SELECT INTO。`
+- `if isinstance(node, exp.With) and node.args.get("recursive"):` 递归 CTE 可以写出无限循环。实测 `WITH RECURSIVE r AS (SELECT 1 n UNION ALL SELECT n+1 FROM r) SELECT * FROM r` 被拦。
+- `name = (node.sql_name() or "").lower()` sqlglot 认识的函数(SUM、COUNT)会被解析成专门的节点类,`sql_name()` 返回 `"SUM"`。
+- `if isinstance(node, exp.Anonymous):` 不认识的函数统一解析成 `Anonymous`,这时 `sql_name()` 返回的是 `'ANONYMOUS'`,真名在 `node.this` 里。实测 `pg_sleep(10)` 就是 Anonymous,`this` 是 `pg_sleep`。少了这两行,`pg_sleep` 会被当成名叫 anonymous 的函数放过去。
+- `if name.startswith(BANNED_FUNCS):` 实测 `SELECT pg_sleep(10)` 得到 `不允许调用函数 pg_sleep。`,`SELECT current_setting('x')` 得到 `不允许调用函数 current_setting。`
+- `cte_names = {c.alias_or_name for c in tree.find_all(exp.CTE)}` 模型自己写的 CTE 名字(比如 `WITH x AS (...)`)也算合法表名。实测 `WITH x AS (SELECT * FROM invoices) SELECT * FROM x` 通过。
+- `if t.name in cte_names and not t.db:` 引用自己定义的 CTE,跳过白名单检查。
+- `if t.db or t.catalog:` `t.db` 是 schema 部分。实测 `biz.customers` 的 db 是 `biz`,被拦:`表名不要带 schema 前缀:biz.customers。`;`pg_catalog.pg_tables` 也一样。藏在 JOIN 里也躲不过:`SELECT * FROM invoices i JOIN biz.customers c ON true` 报的是 `biz.customers AS c`。
+- `if t.name not in ALLOWED:` 实测 `SELECT * FROM customers` 得到 `不能查询表 customers。可用表:invoices, subscriptions, tickets`。
+- `return tree.sql(dialect="postgres")` 返回规范化后的 SQL,后面执行的是这一份而不是模型原文。
+- `safe = validate_sql(sql)` 先过第一道闸,不合法直接抛 ToolError。
+- `"WITH invoices AS (SELECT * FROM biz.invoices WHERE customer_id = %(cid)s), "` 第二道闸:定义一个和真表同名的 CTE。`%(cid)s` 是 psycopg 的命名占位符,值从后面的字典 `{"cid": customer_id}` 里取,三处用同一个值。
+- `"tickets AS (SELECT id, subject, category, status, created_at, resolved_at, resolution_summary "` 工单只暴露这几列,`customer_email` 和 `body` 不给。
+- `f"SELECT * FROM ({safe.replace('%', '%%')}) AS q LIMIT {int(max_rows) + 1}"` psycopg 把 `%` 当占位符开头,模型 SQL 里的 `LIKE '%2609%'` 要变成 `'%%2609%%'` 才能原样传到数据库。实测 `SELECT id FROM invoices WHERE id LIKE '%2609%'` 对 C0004 返回 `INV-202609-0003`、`INV-202609-0004` 两行。`int(max_rows) + 1` 多取一行用来判断是否被截断。
+- `conn.execute("SET TRANSACTION READ ONLY")` 第三道闸:这个事务里任何写操作都会被数据库拒绝,哪怕前两道闸漏了。必须是事务里的第一条语句。
+- `conn.execute("SET LOCAL statement_timeout = '2s'")` `SET LOCAL` 只在当前事务内生效,事务结束自动恢复,不会影响这条连接后面别的查询。
+- `rows = conn.execute(scoped, {"cid": customer_id}).fetchall()` 实测对 C0004 跑 `SELECT count(DISTINCT subscription_id) AS n, sum(amount_cny) AS s FROM invoices`,得到 `[{'n': 1, 's': 195.0}]`;不写任何 WHERE 的 `SELECT count(*) AS n FROM invoices` 得到 5,而真表里一共有 459 张账单。CTE 遮蔽生效了。
+- `raise ToolError(f"SQL 执行出错:{str(e).splitlines()[0][:200]}") from e` 数据库报错只取第一行。实测 `SELECT nope FROM invoices` 得到 `SQL 执行出错:column "nope" does not exist`,模型看了能自己改列名。
+- `truncated = len(rows) > max_rows` 多取的那一行在不在。实测 `max_rows=3` 查 C0004 的 5 张账单,`row_count=3`、`truncated=True`。
+- `"truncated": truncated, "sql": safe}` 把实际执行的(规范化后的)SQL 也返回,模型和人排查时都能看到到底跑了什么。
+- `if __name__ == "__main__":  # 手动试校验器` 直接运行这个模块时只做校验,不连数据库。
+- `print("通过:", validate_sql(sys.argv[1]))` `sys.argv[1]` 是命令行第一个参数,也就是引号里那条 SQL。
+
+</div>
 
 <figure>
 <svg viewBox="0 0 640 200" role="img" aria-label="text-to-SQL 三道闸">
@@ -712,6 +899,26 @@ if __name__ == "__main__":
     else:
         mcp.run()
 ```
+
+<div class="line-notes">
+
+- `"""同一套业务工具的 MCP 出口` docstring 里写了三种运行方式,其中 `npx @modelcontextprotocol/inspector` 要本机有 Node。
+- `from mcp.server import MCPServer` SDK 2.x 的写法,1.x 是 `from mcp.server.fastmcp import FastMCP`。
+- `mcp = MCPServer("cloudledger-support", instructions=` `instructions` 在握手时发给客户端,很多客户端会放进系统提示词。
+- `_conn = None` 模块级的全局连接,第一次用到时才建。
+- `def conn():` 懒加载连接。`global _conn` 声明要改的是模块级变量,不写的话赋值会创建一个同名局部变量。
+- `if _conn is None or _conn.closed:` 第一次调用或者连接断了,就新建一条。stdio 模式下一个 server 进程只服务一个客户端,一条连接够用。
+- `def _call(fn, *args) -> str:` `*args` 收集剩下的位置参数,原样转给业务函数,所以下面每个工具都只要一行。
+- `return f"ERROR: {e}"` 业务错误当成普通文本返回,不让 SDK 标成 `isError`。实测用内存客户端调 `check_refund_eligibility("INV-2026-001")`,拿到的文本是 `ERROR: 账单 INV-2026-001 不存在。...`,`is_error` 为 False。
+- `@mcp.tool()` 函数名就是工具名,docstring 就是描述,参数的类型标注生成 inputSchema。
+- `def list_invoices(customer_id: str, status: str | None = None, limit: int = 6) -> str:` 实测内存客户端调 `{"customer_id": "C0004", "limit": 2}`,返回的文本开头是 `{"total": 5, "returned": 2, "invoices": [{"id": "INV-202609-0004", ...`。
+- `@mcp.tool(description="用只读 SQL 查某个客户的账单/订阅/工单做统计。\n" + SCHEMA_DOC)` 描述要拼接字符串,docstring 写不了表达式,所以改用 `description=` 参数。
+- `def query_customer_data(customer_id: str, sql: str) -> str:` MCP 版要调用方自己传 customer_id,权限边界在「谁能连上这个 server」。
+- `def create_refund_request(invoice_id: str, reason: str, ticket_id: str) -> str:` 实测 `list_tools()` 列出 6 个工具:`get_customer, list_subscriptions, list_invoices, check_refund_eligibility, query_customer_data, create_refund_request`。没有 `search_past_tickets`、`escalate_to_human`、`decide_refund`。
+- `if "--http" in sys.argv:` 命令行带 `--http` 就用 Streamable HTTP 传输,默认地址是 `http://127.0.0.1:8000/mcp`。
+- `mcp.run()` 不带参数是 stdio,Claude Desktop 和 Claude Code 按 stdio 拉起子进程。
+
+</div>
 
 注意第一行 import:MCP Python SDK 2.x 把 1.x 的 `from mcp.server.fastmcp import FastMCP` 改成了 `from mcp.server import MCPServer`,老写法在 2.x 下直接 `ModuleNotFoundError`。网上大部分教程和视频还是 1.x 的写法,照抄会报错。我们在 Day 44 锁定了 `mcp>=2.0`。
 
@@ -890,6 +1097,33 @@ def test_sql_tool_only_sees_current_customer(conn):
     assert r["rows"] == [{"n": 1}]          # 没写 WHERE,也只看得到 C0002 自己的
 ```
 
+<div class="line-notes">
+
+- `import anyio` 运行异步代码的库。MCP 客户端是异步的,同步测试函数里用 `anyio.run(go)` 跑它。
+- `from mcp import Client` SDK 2.x 的内存客户端,可以直接连一个 server 对象,不用起子进程。
+- `def test_dangerous_tools_are_not_exposed():` 不连库、不花钱,`make test` 就会跑。
+- `names = {t["function"]["name"] for t in openai_tools()}` 集合推导式,实测得到 7 个名字。
+- `assert {t["function"]["name"] for t in openai_tools({Level.READ})} == names - {"create_refund_request"}` 集合相减:只给只读级时,正好少一个 `create_refund_request`。
+- `text, err = call_tool(None, "list_invoices", '{"limit": "many"}', ticket_id="T1")` 连接传 `None` 也没关系,参数校验在执行之前就失败了,根本用不到连接。
+- `def test_mcp_server_lists_tools_in_memory():` 用内存客户端连 server,验证 MCP 出口能列出工具。
+- `async with Client(mcp) as c:` 异步上下文管理器,进入时完成握手,退出时关闭会话。
+- `@pytest.fixture` fixture 是测试的前置准备,测试函数参数里写 `conn` 就会拿到这里 yield 出来的连接。
+- `c.execute("DELETE FROM biz.refund_requests")` 前后各清一次退款申请,保证每个测试从干净状态开始、也不给下一个留垃圾。
+- `def _first_invoice(conn, cid):` 取客户最新的一张账单。C0004 有两张同一天的,按 `id DESC` 拿到的是 INV-202609-0004。
+- `@pytest.mark.db` 打上 db 标记,`make test` 用 `-m "not db and not llm"` 跳过它们,`pytest -m db` 才跑。
+- `@pytest.mark.parametrize("cid,rule,amount", [` 参数化:同一个测试函数用 7 组数据各跑一次,报告里显示成 7 个测试。
+- `("C0012", "annual_prorated", 308.55),` 7 组期望值和实测完全一致:李娜 950、王芳 498.75、陈静月付 0、赵敏 374、黄强企业版 0、徐丽 374、孙浩 308.55。
+- `assert (r["rule"], r["refund_amount_cny"]) == (rule, amount)` 两个值打包成元组一起比,失败时 pytest 会把两边的元组都打出来。
+- `with pytest.raises(biz.ToolError, match="已有退款申请"):` 期望块里抛出 ToolError,并且信息里能搜到这几个字。实测第二次申请的报错是 `这张账单不符合退款条件:这张账单已有退款申请 RF-T000001-INV-202609-0002(状态 pending),不要重复申请。…`。
+- `assert biz.decide_refund(conn, a["id"], False, "bob")["status"] == "executed"  # 重复点击不改结果` amy 批了之后 bob 再点驳回,状态不变。
+- `conn.execute("UPDATE biz.invoices SET status = 'paid' WHERE id = %s", (inv,))` 批准会把账单改成 refunded,这里改回去,不然 `test_refund_rules` 里李娜那条会变成 `not_paid`。
+- `assert not err and data["returned"] == 2 and data["total"] >= 4` 实测 C0004 total 是 5,returned 是 2。
+- `for bad in ["SELECT * FROM biz.customers", "SELECT * FROM customers", "DELETE FROM invoices",` 六条危险语句各自应该抛 ToolError,每条的实测报错见上面 `sql_tool.py` 的注释。
+- `r = run_customer_sql(conn, "SELECT count(DISTINCT subscription_id) AS n FROM invoices", "C0002")` 没写 WHERE,全表有 200 个订阅,但 CTE 让它只看得到李娜自己的。
+- `assert r["rows"] == [{"n": 1}]          # 没写 WHERE,也只看得到 C0002 自己的` 我在本机临时库里跑这个文件,14 个测试全部通过(含 db 标记的)。
+
+</div>
+
 前四个测试不需要数据库,`make test` 就会跑。标了 `@pytest.mark.db` 的需要数据库:
 
 ```bash
@@ -919,6 +1153,15 @@ inv = conn.execute("SELECT id FROM biz.invoices WHERE customer_id='C0002'").fetc
 print(call_tool(conn, "create_refund_request", {"invoice_id": inv, "reason": "测试"}, ticket_id="T000001"))
 conn.execute("DELETE FROM biz.refund_requests")   # 测完清掉
 ```
+
+<div class="line-notes">
+
+- `from supportpilot.db import connect` 在 `uv run python` 的交互环境里一行行敲。
+- `inv = conn.execute("SELECT id FROM biz.invoices WHERE customer_id='C0002'").fetchone()["id"]` 李娜只有一张账单,实测是 `INV-202609-0002`。
+- `print(call_tool(conn, "create_refund_request", {"invoice_id": inv, "reason": "测试"}, ticket_id="T000001"))` 没配 webhook 时,先打印 `[notify:dry-run]` 加整条审批消息,再打印 `('{"id": "RF-T000001-INV-202609-0002", ... "status": "pending", ...}', False)`。
+- `conn.execute("DELETE FROM biz.refund_requests")   # 测完清掉` 不清的话,下次再跑这几行会得到「已有退款申请」。
+
+</div>
 
 群里应该收到一条"【退款待审批】"消息。没配 webhook 的话,终端会打印 `[notify:dry-run]` 加消息内容。
 

@@ -40,6 +40,16 @@ uv add --dev pytest ruff pre-commit
 
 `--package` 会生成 `src/supportpilot/` 这种 src 布局,并且把项目本身以可编辑模式装进虚拟环境。以后在任何目录 `uv run python -c "import supportpilot"` 都能找到,脚本和测试不用再折腾 `sys.path`。
 
+后面几天会在 `src/supportpilot/` 下面陆续建 `kb/`、`tools/`、`agent/`、`memory/`、`api/`、`ui/`、`obs/`、`security/` 这些子目录。建议今天就一次建好,每个目录放一个空的 `__init__.py`:
+
+```bash
+for d in kb tools agent memory api ui obs security; do
+  mkdir -p src/supportpilot/$d && touch src/supportpilot/$d/__init__.py
+done
+```
+
+不放 `__init__.py` 其实也能 import,我试过:没有它的目录会被 Python 当成「命名空间包」,`from supportpilot.tools.xxx import ...` 和包内的 `from ..config import ...` 都正常,`uv build` 打出来的 wheel 也包含这些文件。但命名空间包是给「一个包拆在多个安装位置」准备的,类型检查器、一些打包和测试工具对它的处理不完全一致,出了怪问题很难查。放一个空文件,明确告诉所有工具「这是普通的包」,省心。
+
 依赖一次装全,虽然有些今天用不到(streamlit 要到 Day 49),但好处是 `uv.lock` 从第一天就锁定了全部版本,后面不会出现"Day 49 装了 streamlit 结果把 numpy 升级了、Day 45 的代码挂了"这种事。uv.lock 要提交进 git。
 
 装完后的 `pyproject.toml` 长这样,我加了 ruff 和 pytest 的配置:
@@ -74,7 +84,7 @@ dependencies = [
 dev = ["pytest>=8", "ruff>=0.6", "pre-commit>=3.8"]
 
 [build-system]
-requires = ["uv_build>=0.11,<0.12"]
+requires = ["uv_build>=0.11,<1"]
 build-backend = "uv_build"
 
 [tool.ruff]
@@ -96,7 +106,7 @@ ruff 我关了 E501(行太长)。原因很实际:中文注释一个字算一个�
 
 pytest 定义了两个标记:`db`(需要真数据库)和 `llm`(会真的调用大模型花钱)。平时 `make test` 只跑既不连库也不花钱的测试,几秒钟跑完,可以每次提交都跑。
 
-`requires = ["uv_build>=0.11,<0.12"]` 是 uv 自己的构建后端,uv init 默认生成的就是它。如果你用的 uv 版本较老,生成的可能是 hatchling,保留生成的就行,不影响后面任何代码。
+`requires = ["uv_build>=0.11,<1"]` 是 uv 自己的构建后端,uv init 默认生成的就是它。uv init 生成的版本范围只包含你当前的 uv 版本(比如 uv 0.13 生成 `>=0.13.0,<0.14.0`),我原来照抄了旧版本的 `<0.12`,结果在 uv 0.13 下每次 `uv sync` 都会警告 `does not contain the current uv version 0.13.0`。上限放宽到 `<1` 之后实测不再警告,构建结果一样。如果你用的 uv 版本较老,生成的可能是 hatchling,保留生成的就行,不影响后面任何代码。
 
 ### pre-commit:让机器替你守规矩
 
@@ -115,6 +125,18 @@ repos:
       - id: detect-private-key
       - id: check-added-large-files
 ```
+
+<div class="line-notes">
+
+- `repos:` pre-commit 的配置就是一串「仓库 + 钩子」。`git commit` 时,它把这些钩子挨个跑一遍,有一个失败就不让提交。(这一块需要 git 仓库和网络拉钩子,未实跑;下面 ruff 那一条我在 scratchpad 用同样的规则跑过。)
+- `repo: https://github.com/astral-sh/ruff-pre-commit` ruff 官方提供的钩子仓库。pre-commit 第一次运行时会把它克隆到 `~/.cache/pre-commit`,以后就不用再下了。
+- `rev: v0.6.9` 钉死钩子版本。不钉的话,今天和下个月跑出来的检查结果可能不一样。想升级就跑 `pre-commit autoupdate`,它会改这一行。
+- `args: [--fix]` 能自动修的问题(比如 import 顺序)直接改掉。改过文件后这次提交会失败,你再 `git add` 一次才能提交,这是故意的:让你看见它改了什么。我在 scratchpad 里用和 pyproject 一样的规则(`E,F,I,B,UP`,忽略 E501)检查了今天全部 Python 文件,结果是 `All checks passed!`。
+- `- id: ruff-format` 格式化。和 `ruff` 那条分工不同:前一条查问题,这一条只管排版。
+- `- id: detect-private-key` 扫描暂存区里有没有 `-----BEGIN RSA PRIVATE KEY-----` 这类私钥头。注意它只认私钥格式,`sk-xxxx` 这种 API key 它不管,所以验收标准里还要再 `grep -r "sk-"`。
+- `- id: check-added-large-files` 默认拦截超过 500KB 的新文件,防止把数据库导出、模型文件提交进 git。
+
+</div>
 
 ```bash
 uv run pre-commit install    # 装 git hook,以后每次 git commit 自动跑
@@ -190,6 +212,29 @@ def get_settings() -> Settings:
     return Settings()
 ```
 
+<div class="line-notes">
+
+- `from datetime import date` `sp_today` 的类型是 `date`,pydantic 会把环境变量里的字符串 `"2026-11-15"` 自动转成 `date(2026, 11, 15)`。
+- `from functools import lru_cache` 给 `get_settings()` 做缓存用,见最后两行。
+- `from pydantic_settings import BaseSettings, SettingsConfigDict` `pydantic-settings` 是单独的包(Day 44 第一步装过)。`BaseSettings` 和 Day 6 用过的 `BaseModel` 很像,区别是:字段值可以从环境变量和 `.env` 里来。
+- `class Settings(BaseSettings):` 每个类属性就是一项配置,冒号后面是类型,等号后面是默认值。实测不传任何环境变量时:`Settings().llm_model` 是 `'deepseek-flash'`,`.sp_today` 是 `date(2026, 10, 1)`,`.rerank_enabled` 是 `False`。
+- `model_config = SettingsConfigDict(env_file=".env"` `env_file=".env"`:除了环境变量,也读**当前工作目录**下的 `.env`(所以 make 命令都在项目根目录跑)。`extra="ignore"`:`.env` 里有类里没定义的变量(比如你给别的工具写的)也不报错。优先级:真环境变量 > `.env` > 默认值。
+- `llm_base_url: str = "https://api.deepseek.com"` 字段名小写,对应的环境变量是 `LLM_BASE_URL`,大小写不敏感。
+- `llm_api_key: str = ""` 密钥默认空串,不写真值。没填就能启动,只会在真调模型时报 401,方便你在没 key 的机器上跑 `make test`。
+- `llm_model: str = "deepseek-flash"` 和练习仓一样的模型名(旧的 `deepseek-chat` 已经下线)。
+- `llm_small_model: str = ""` 空串表示「和 `llm_model` 一样」,Day 52 才会用到。
+- `price_in_per_m: float = 2.0` 元/百万 token。环境变量是字符串 `"2.0"`,pydantic 转成 float。
+- `emb_dim: int = 1024` 必须和 `schema.sql` 里的 `vector(1024)` 一致。
+- `rerank_enabled: bool = False` 布尔值的环境变量写 `true/false/1/0/yes/no` 都行。实测设 `RERANK_ENABLED=true`,读到的是 Python 的 `True`。注意不能用 `bool("false")` 来理解它,那会得到 True,pydantic 有自己的解析规则。
+- `database_url: str =` 默认连 docker compose 起的库。用 Postgres.app 的话,在 `.env` 里写 `DATABASE_URL=postgresql://你的用户名@localhost:5432/supportpilot`。我在 scratchpad 里就是这样指到一个临时库 `notes_d44` 跑的。
+- `sp_today: date = date(2026, 10, 1)` 固定的「今天」。实测设 `SP_TODAY=2026-11-15`,读出来是 `date(2026, 11, 15)`,类型是 `date` 不是字符串,后面可以直接做日期加减。
+- `refund_review_threshold: float = 1000.0` 业务参数也放配置,财务说「改成 2000」时不用改代码。
+- `max_act_steps: int = 5` 实测 `MAX_ACT_STEPS=7` 读到 int `7`;设成 `abc` 时,`Settings()` 直接抛 `1 validation error for Settings` 并指出是 `max_act_steps`。配置写错在启动时就炸,比跑到一半才发现好。
+- `@lru_cache` 函数没有参数,所以缓存里只有一份结果:第一次调用新建 `Settings()`,之后都返回同一个对象。实测 `get_settings() is get_settings()` 是 `True`。副作用是进程启动后再改环境变量不会生效,测试里要换配置就直接 `Settings(...)` 新建。
+- `def get_settings() -> Settings:` 全项目都通过它拿配置,不在模块顶层直接 `Settings()`,这样 import 模块时不会因为环境没配好就报错。
+
+</div>
+
 ```bash
 # supportpilot/.env.example  复制成 .env 再填。.env 已在 .gitignore 里,别提交。
 LLM_BASE_URL=https://api.deepseek.com
@@ -246,6 +291,20 @@ services:
 volumes:
   pgdata:
 ```
+
+<div class="line-notes">
+
+- `services:` compose 文件里每个 service 是一个容器。今天只有 `db` 一个。(本机没有 Docker,这一块未实跑。我用 Postgres.app 建了一个空库代替,下面的表、数据都是在那个库里实跑的。)
+- `image: pgvector/pgvector:pg17` 镜像名:冒号后面 `pg17` 是标签,表示 Postgres 17 加上 pgvector。和你本机 Postgres.app 的 PG17 版本一致。
+- `POSTGRES_USER: supportpilot` 这三个环境变量只在**第一次**初始化数据卷时生效:建用户、设密码、建同名数据库。卷里已经有数据后再改它们没用,要 `docker compose down -v` 删卷重来。
+- `- "5432:5432"` 「主机端口:容器端口」。注意:如果 Postgres.app 也在跑,它已经占了主机的 5432,这里会启动失败(`port is already allocated`)。两个只能开一个,或者把左边改成 `5433`,`DATABASE_URL` 里的端口跟着改。
+- `- pgdata:/var/lib/postgresql/data` 把容器里的数据目录挂到命名卷 `pgdata` 上。容器删了重建,数据还在。
+- `healthcheck:` 健康检查。`docker compose ps` 里显示 `healthy` 才说明数据库真的能连了,刚启动的几秒里状态是 `starting`。
+- `test: ["CMD-SHELL", "pg_isready -U supportpilot"]` `pg_isready` 是 Postgres 自带的小工具,能接受连接就返回 0。
+- `interval: 5s` 每 5 秒查一次,最多 10 次。也就是说最多等 50 秒,还不健康就标成 `unhealthy`。
+- `pgdata:` 文件末尾的顶层 `volumes:` 声明这个命名卷。只声明名字不写配置,就是用 Docker 默认的本地存储。
+
+</div>
 
 `pgvector/pgvector:pg17` 是 pgvector 官方镜像,Postgres 17 加上 vector 扩展,不用自己编译。数据放在命名卷 `pgdata` 里,`docker compose down` 不会删数据,`docker compose down -v` 才会。
 
@@ -361,6 +420,37 @@ CREATE TABLE IF NOT EXISTS kb.chunks (
 CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw ON kb.chunks USING hnsw (embedding vector_cosine_ops);
 ```
 
+<div class="line-notes">
+
+- `CREATE EXTENSION IF NOT EXISTS vector;` 开启 pgvector。`IF NOT EXISTS` 让整个脚本可以反复执行:我在 scratchpad 里把 `init_db.py` 连跑了两次,第二次照样输出 `schema ready`,不报「已存在」。
+- `CREATE SCHEMA IF NOT EXISTS biz;` schema 相当于库里的「文件夹」。表名写成 `biz.customers`,和 `kb.docs` 分开,一眼看出属于哪块。
+- `CREATE TABLE IF NOT EXISTS biz.customers (` 客户表。主键是 `C0001` 这种可读编号,Agent 回复和日志里看得懂。
+- `email       text NOT NULL UNIQUE,` 邮箱唯一。Day 46 的工具按邮箱找客户,如果允许重复,就可能查到两个人。
+- `is_vip      boolean NOT NULL DEFAULT false,` 实测 200 个客户里只有吴刚(C0010)和黄强(C0008)是 VIP,其余都走默认值 false。
+- `customer_id         text NOT NULL REFERENCES biz.customers(id),` 外键。和 Day 23 的 SQLite 不同,Postgres **默认就强制检查**外键:插一个不存在的客户编号会直接报错。
+- `plan                text NOT NULL CHECK (plan IN` CHECK 约束。实测往订阅表插一条 `plan='gold'`,数据库返回 `violates check constraint "subscriptions_plan_check"`,约束名是表名加列名自动生成的。
+- `price_cny           numeric(10,2) NOT NULL,` 金额用 `numeric(10,2)`:最多 10 位数字、2 位小数,精确存储,不会有浮点误差。psycopg 读出来是 Python 的 `Decimal`,比如 `Decimal('39.00')`。和 Day 23 存「分」是两种思路,都对。
+- `status          text NOT NULL CHECK (status IN ('paid'` 实测把 INV-202609-0002 的状态改成 `'paid?'`,报 `CheckViolation ... "invoices_status_check"`。模型就算编出一个奇怪的状态,也写不进去。
+- `paid_at         date,` 没有 `NOT NULL`:没付成功的账单这里是 NULL。实测杨磊 9 月那张 `failed` 账单(INV-202609-0006)的 `paid_at` 就是 None。
+- `is_first_purchase boolean` 是否首购。「年付 14 天无理由」只对首购有效,续费单不适用(赵敏那张 2026-09-27 的续费单就是 false)。
+- `id          text PRIMARY KEY,               -- RF-T000123` 退款申请的编号由「工单号 + 账单号」拼成。同一张工单对同一张账单只能有一条申请,Agent 重试时 `INSERT` 会撞主键,天然防重复。
+- `rule        text NOT NULL,` 命中了哪条退款规则,比如 `annual_first_14_days`。审批人看这个字段,不用猜。
+- `status      text NOT NULL DEFAULT 'pending'` 新建的申请一律是 pending。Agent 只建不批,状态往后走要靠人。
+- `created_at  timestamptz NOT NULL DEFAULT now(),` `timestamptz` 带时区的时间戳,`now()` 由数据库填,不用代码传。
+- `text REFERENCES biz.customers(id),` 工单表的 `customer_id` 允许为空:陌生邮箱发来的工单还对不上客户。所以另外存了 `customer_email`。
+- `customer_email      text NOT NULL,` 不管认不认识这个人,发件邮箱总是有的。
+- `status              text NOT NULL DEFAULT 'open'` 工单状态多了 `waiting_approval`(退款等人审)和 `escalated`(转人工)。实测造出来的 152 张历史工单全部是 `resolved`。
+- `CREATE TABLE IF NOT EXISTS biz.customer_profiles (` 主键同时是外键,一个客户最多一份画像。Day 48 才往里写,今天是空表。
+- `id          bigserial PRIMARY KEY,` 审计日志用自增 bigint。日志只追加不修改,用自增号正好表示先后顺序。
+- `payload     jsonb NOT NULL,` 每种操作的参数不一样,用 `jsonb` 存原样参数,不用为每种操作建列。
+- `content_hash  text NOT NULL,` 文章内容的哈希。Day 45 增量导入时用它判断文章变没变,没变就不重新 embedding。
+- `doc_id       text NOT NULL REFERENCES kb.docs(id) ON DELETE CASCADE,` `ON DELETE CASCADE`:删掉一篇文章,它的所有切块跟着删,不会留下孤儿切块。
+- `embedding    vector(1024) NOT NULL,` 1024 维向量。插入维度不对的向量会直接报错,不会悄悄存进去。
+- `UNIQUE (doc_id, chunk_index)` 同一篇文章的第几块只能有一条,重复导入时可以用 `ON CONFLICT` 更新。
+- `CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw` 实测查 `pg_indexes`,得到的定义是 `CREATE INDEX chunks_embedding_hnsw ON kb.chunks USING hnsw (embedding vector_cosine_ops)`。`vector_cosine_ops` 对应查询时的 `<=>`(余弦距离),Day 45 检索必须用 `<=>` 才走得到这个索引。
+
+</div>
+
 <figure>
 <svg viewBox="0 0 640 330" role="img" aria-label="SupportPilot 数据表关系">
 <g font-family="var(--font-mono)" font-size="11">
@@ -442,6 +532,24 @@ def session(url: str | None = None) -> Iterator[psycopg.Connection]:
         conn.close()
 ```
 
+<div class="line-notes">
+
+- `from collections.abc import Iterator` 下面 `session()` 是生成器函数,返回类型写 `Iterator[连接]`。
+- `from contextlib import contextmanager` 把「yield 一次的生成器」变成能用在 `with` 里的上下文管理器。
+- `from pgvector.psycopg import register_vector` pgvector 给 psycopg 3 的适配器,让 Python 的 list / numpy 数组能和 `vector` 类型互相转换。
+- `from psycopg.rows import dict_row` 让查询结果是 dict 而不是元组,效果和 Day 23 的 `sqlite3.Row` 差不多。
+- `from .config import get_settings` 开头的点是**相对导入**:从同一个包 `supportpilot` 里导入 `config`。src 布局的包内部都这样写。
+- `def connect(url: str | None = None)` 不传 url 就用配置里的 `database_url`。测试或脚本想连别的库,传一个进来就行。
+- `conn = psycopg.connect(url or get_settings().database_url, row_factory=dict_row, autocommit=True)` `url or ...`:url 是 None 时取后面的值。实测连 scratchpad 的临时库查 C0002,`fetchone()` 返回 `{'id': 'C0002', 'name': '李娜', 'is_vip': False, 'created_at': datetime.date(2025, 6, 1)}`,可以直接 `row["name"]`。`conn.autocommit` 实测是 `True`。
+- `register_vector(conn)` 实测两种情况:在已有 vector 扩展的库里,`conn.execute("select %s::vector(3)", (np.array([0.1, 0.2, 0.3]),))` 正常返回 `Vector([0.1000000015, ...])`(vector 内部存 float32,所以末尾有误差);在一个刚 `createdb` 的空库里调 `connect()`,直接报 `ProgrammingError: vector type not found in the database`。这就是下面 `init_db.py` 不能用这个函数的原因。
+- `@contextmanager` 把下面的生成器函数包装成上下文管理器:`with session() as conn:` 进入时执行到 `yield` 为止,`conn` 就是 yield 出来的值;离开 `with` 时继续执行 yield 后面的代码。
+- `def session(` 和 `connect()` 的区别:`session()` 保证用完一定关闭连接。
+- `yield conn` 把连接交给 `with` 块使用,函数在这里暂停,等 `with` 块结束。
+- `finally:` 无论 `with` 块是正常结束还是抛异常,都会走到这里。
+- `conn.close()` 关闭连接。Day 23 说过 sqlite3 的 `with` 不关连接,这里自己补上了。
+
+</div>
+
 ```python
 # supportpilot/scripts/init_db.py
 """建表。第一次连接时还没有 vector 扩展,所以这里用裸 psycopg,不走 db.connect()。"""
@@ -459,6 +567,18 @@ if __name__ == "__main__":
         conn.execute(SCHEMA.read_text(encoding="utf-8"))
     print("schema ready")
 ```
+
+<div class="line-notes">
+
+- `import psycopg` 直接用 psycopg,不经过 `db.connect()`,原因在上面 `register_vector` 那条:空库还没有 vector 类型。
+- `from supportpilot.config import get_settings` 脚本在 `scripts/` 目录下,不属于 `supportpilot` 包,但项目是可编辑安装的,所以能直接 import。我在 scratchpad 里没装包,用 `PYTHONPATH=src:scripts` 达到同样效果。
+- `SCHEMA = Path(__file__).resolve().parent.parent / "db" / "schema.sql"` 从脚本自己的位置往上两级找到项目根目录:`.../supportpilot/scripts/init_db.py` → `scripts/` → `supportpilot/`,再拼上 `db/schema.sql`。这样不管你在哪个目录运行脚本都能找到文件。
+- `if __name__ == "__main__":` 直接运行脚本时才建表,被 import 时什么也不做。
+- `with psycopg.connect(get_settings().database_url, autocommit=True) as conn:` psycopg 3 的连接用 `with` 会在结束时关闭连接(这一点和 sqlite3 不同)。`autocommit=True`:`CREATE EXTENSION` 这类语句立即生效。
+- `conn.execute(SCHEMA.read_text(encoding="utf-8"))` 一次执行整个文件里的十几条语句。不带参数时 psycopg 走的是「简单查询协议」,允许一个字符串里有多条用分号分隔的 SQL;如果带了 `%s` 参数,就只能一条一条执行。
+- `print("schema ready")` 实测输出 `schema ready`。重复运行也是这一行,因为每条语句都带了 `IF NOT EXISTS`。
+
+</div>
 
 `register_vector` 有个坑:它要求数据库里已经有 vector 扩展。第一次建库时扩展还不存在,所以 `init_db.py` 用裸的 psycopg 连接执行建表脚本,而不是用 `db.connect()`。我第一次就是在这里报了 `vector type not found in the database`,查了半天才反应过来是先有鸡还是先有蛋的问题。
 
@@ -729,6 +849,25 @@ ARTICLES += [
 ]
 ```
 
+<div class="line-notes">
+
+- `"""CloudLedger 帮助中心的"事实源"` 这个文件只有数据,没有逻辑。改这里就要重新生成文章、重新导入知识库、重新跑评测,docstring 写在最前面提醒自己。
+- `ENTERPRISE = "企业版按席位计费` 企业版的说明有两篇文章要用(套餐对比、企业版与席位),抽成常量,保证两处一字不差。实测 `KB-plans-001` 的「价格」一节和 `KB-plans-005` 的「计费」一节结尾都是这句话。
+- `ARTICLES: list[dict] = [` 每篇文章是一个 dict:`id`、`title`、`category`、`sections`。`sections` 是 (小标题, 正文) 元组组成的列表,顺序就是文章里的顺序。实测一共 50 篇,按分类数:billing 9、technical 9、plans 8、invoice 7、account 7、refund 6、api 4。
+- `{"id": "KB-plans-001",` 编号格式统一是「KB-分类-三位数」。`gen_kb.py` 会从编号里切出 `001` 拼进 url。
+- `打八折。" + ENTERPRISE` 字符串拼接。这一节的完整内容就是前半句加上 `ENTERPRISE` 常量。
+- `("功能差异", "账套数量` 正文分好几行写:括号里相邻的字符串字面量会自动拼成一个(Day 23 讲过),这里只是为了不让一行太长。
+- `{"id": "KB-refund-001",` 退款政策总览。评测集里退款类问题的标准答案都以它为准,下面几条规则也会在 Day 46 的退款计算代码里再写一遍。
+- `("年付首次购买",` 「14 天内(含第 14 天)」这几个括号里的字很重要。徐丽(9 月 17 日付款)在 10 月 1 日正好是第 14 天,要能全额退;孙浩(9 月 16 日)是第 15 天,不能。
+- `("年付超过 14 天"` 公式写成文字:年付金额 × 剩余完整月数 / 12 × 90%。王芳 950 元、剩 7 个月,就是 950 × 7 / 12 × 0.9 = 498.75。
+- `ERRORS = [` 报错码单独一张表。每项是 5 元组:(报错码, 名称, 所属模块, 原因, 处理步骤列表),一共 12 个。
+- `("E1001", "验证码已过期", "account",` 第一个报错码。`gen_kb.py` 会把它渲染成 `KB-error-001`,标题是 `E1001 验证码已过期`。
+- `("E3001", "银行流水同步失败"` 第 5 个,对应 `KB-error-005`。吴刚的三张历史工单都是这个错,Day 48 客户画像会用到。
+- `ARTICLES += [` 往列表后面再追加 4 篇。`+=` 对列表来说是原地扩展,和 `ARTICLES.extend([...])` 一样。46 篇加 4 篇是 50 篇,再加 12 篇报错码文章,一共 62 篇。
+- `{"id": "KB-technical-009",` 最后一篇。编号没有和前面的连在一起排,是因为它是后补的,真实帮助中心的编号也常常这样。
+
+</div>
+
 最后那段 `ARTICLES +=` 是我写完前面 58 篇后补的 4 篇,凑够 60 篇以上,也顺便留着这个痕迹:真实项目里知识库就是这样一点点补的,Day 45 的增量导入就是为这种情况准备的。
 
 渲染脚本:
@@ -774,6 +913,29 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
+<div class="line-notes">
+
+- `from kb_facts import ARTICLES, ERRORS` 没写包名,所以要在 `scripts/` 目录里运行(Makefile 里是 `cd scripts && uv run python gen_kb.py`),或者像测试那样把 `scripts/` 加进 `sys.path`。
+- `OUT = Path(__file__).resolve().parent.parent / "data" / "kb"` 输出到项目根目录下的 `data/kb/`。实测路径是 `.../supportpilot/data/kb`。
+- `UPDATED = "2026-09-15"` 更新日期写死,不用 `date.today()`。每次生成的文件一字不差,`git diff` 才不会因为日期变了出现一堆假改动。
+- `def render(` 把一篇文章拼成 markdown 字符串,纯函数,不写文件。
+- `num = doc_id.rsplit("-", 1)[1]` `rsplit("-", 1)` 从右边切一刀。实测 `"KB-error-005".rsplit("-", 1)` 得到 `['KB-error', '005']`,取 `[1]` 就是 `'005'`。用 `split("-")` 也能拿到,但从右切更稳:就算分类名里带连字符也不受影响。
+- `head = (f"---\nid: {doc_id}` 文件开头的 frontmatter,两行 `---` 中间是 YAML。括号里两段 f-string 自动拼接。
+- `f"updated_at: {UPDATED}\nurl_path: /help/{category}/{num}` url 由分类和编号拼成,比如 `/help/refund/002`。Day 45 会用它把 `[KB-refund-002]` 换成客户能点的链接。
+- `body = "".join(f"\n## {h}\n\n{t}\n" for h, t in sections)` 每个小节变成一个二级标题加正文。`for h, t in sections` 直接把元组拆成两个变量。
+- `return head + body` 实测 `render("KB-refund-002", "t", "refund", [("条件", "x")])` 返回 `'---\nid: KB-refund-002\ntitle: t\ncategory: refund\nupdated_at: 2026-09-15\nurl_path: /help/refund/002\n---\n\n# t\n\n## 条件\n\nx\n'`。
+- `OUT.mkdir(parents=True, exist_ok=True)` 目录不存在就连上级一起建,已存在也不报错。
+- `for old in OUT.glob("*.md"):` 先删光旧文件再写。不删的话,改了编号的文章旧文件会一直留着,Day 45 导入时就会多出一篇过时的文章。
+- `docs = [(a["id"], a["title"]` 把 50 篇普通文章转成统一的 4 元组 (编号, 标题, 分类, 小节),下面报错码文章也转成同样的格式,最后一起写文件。
+- `for i, (code, name, cat, cause, steps) in enumerate(ERRORS, start=1):` `enumerate(..., start=1)` 让序号从 1 开始;`(code, name, ...)` 直接把 5 元组拆开。以第 5 个为例:`i=5`、`code='E3001'`、`name='银行流水同步失败'`、`cat='technical'`。
+- `steps_md = "\n".join(f"{n}. {s}"` 把步骤列表变成编号列表。实测 E3001 得到三行:`1. 进入「银行账户」点击「重新授权」`、`2. 授权成功后点「立即同步」`、`3. 仍失败的,确认网银没有修改密码或注销`。
+- `docs.append((f"KB-error-{i:03d}"` `{i:03d}` 补零到三位,5 变成 `005`。报错码文章的分类统一是 `error`,原来的模块名 `technical` 写进正文最后一节。
+- `("仍未解决", f"请提交工单` 每篇报错码文章的最后一节都是同一个模板,告诉客户提工单时要附什么。
+- `(OUT / f"{doc_id}.md").write_text(` 文件名就是编号,比如 `KB-error-005.md`。
+- `print(f"wrote {len(docs)} articles to {OUT}")` 实测输出 `wrote 62 articles to .../supportpilot/data/kb`,目录里正好 62 个 `.md` 文件。
+
+</div>
 
 跑完 `data/kb/` 下有 62 个文件。看一篇长什么样:
 
@@ -1011,6 +1173,77 @@ if __name__ == "__main__":
     main()
 ```
 
+<div class="line-notes">
+
+- `import random` 只用它的 `random.Random` 类建独立的生成器,不用全局函数。
+- `from supportpilot.config import get_settings` 造数据也读配置里的「今天」,和业务规则用的是同一个日期。
+- `from supportpilot.db import session` 写库用 `session()`,用完自动关连接。
+- `TODAY = get_settings().sp_today` 实测是 `date(2026, 10, 1)`。
+- `PRICE = {("standard", "monthly"): 39` 用 (套餐, 周期) 元组当字典的键,元组不可变,可以做 dict 的 key。企业版不在表里,因为它按席位算,造数时直接传 `price=`。
+- `def add_months(d: date, n: int) -> date:` 标准库没有「加几个月」(`timedelta` 只能加天),自己写一个。
+- `m = d.month - 1 + n` 先把月份换成从 0 开始数,方便取模。代入 `d=2026-11-15, n=3`:`m = 11 - 1 + 3 = 13`。
+- `y, m = d.year + m // 12, m % 12 + 1` 接上例:`y = 2026 + 13 // 12 = 2027`,`m = 13 % 12 + 1 = 2`,得到 2027 年 2 月。实测 `add_months(date(2026, 11, 15), 3)` 返回 `2027-02-15`。
+- `days_in_month = [31, 29 if y % 4 == 0 and (y % 100 or y % 400 == 0) else 28,` 每月天数表,2 月按闰年规则算:能被 4 整除,并且(不能被 100 整除,或者能被 400 整除)。`y % 100` 不为 0 就是真,这里借用了「非零即真」。
+- `return date(y, m, min(d.day, days_in_month))` 日子超过当月天数时取月底。实测:`add_months(date(2026, 1, 31), 1)` 是 `2026-02-28`;`add_months(date(2024, 1, 31), 1)` 是 `2024-02-29`(闰年);`add_months(date(2025, 9, 27), 12)` 是 `2026-09-27`。
+- `class Builder:` 在内存里攒数据的小工具,四个列表最后一起写库。
+- `self._inv_seq: dict[str, int] = {}` 每个月的账单流水号计数器,键是 `"202609"` 这种年月。实测造完后 `"202603"` 到了 32、`"202604"` 到了 34,一共涉及 15 个月份。
+- `def customer(self, cid: str` 参数里那个单独的 `*` 表示:后面的参数(vip、created、region)只能写成 `vip=True` 这种关键字形式,不能按位置传。剧情客户的代码读起来更清楚。
+- `self.customers.append({"id": cid` dict 的键和表的列名一一对应,写库时直接拿键当列名。实测第一个是 `{'id': 'C0001', 'name': '张伟', 'email': 'zhangwei@example.com', 'company': '张伟工作室', 'region': '上海', 'is_vip': False, 'created_at': datetime.date(2025, 6, 1)}`。
+- `def sub(self, cid: str, plan: str` 建一条订阅,返回订阅编号。
+- `sid = f"S{len(self.subs) + 1:04d}"` 第一条时 `len(self.subs)` 是 0,得到 `S0001`。订阅编号和客户编号的数字正好一样,因为每个客户恰好一条订阅。
+- `price = PRICE[(plan, cycle)] if price is None else price` 没传价格就查表。黄强是企业版,表里没有,所以调用时传了 `price=7080`,否则这里会 `KeyError`。
+- `if period_end is None:` 没指定本期结束日就自动算。只有杨磊是手动传的(他逾期了,周期停在 10 月 22 日)。
+- `step = 1 if cycle == "monthly" else 12` 月付每次往后推 1 个月,年付推 12 个月。
+- `while period_end <= TODAY:` 从开始日往后推,直到越过「今天」。代入张伟(2026-03-05 开始,月付):依次得到 04-05、05-05、06-05、07-05、08-05、09-05、10-05,第 7 次超过 10-01 后停下,本期结束日是 `2026-10-05`。李娜(2026-09-24 年付)推一次就是 `2027-09-24`。
+- `self.subs.append({"id": sid` `auto_renew` 一律是 True,今天的数据里没有关掉自动续费的人。
+- `def invoice(self, cid: str, sid: str, amount: float` 建一张账单,返回账单号。
+- `ym = issued.strftime("%Y%m")` 开票日期格式化成年月。`2026-09-24` 变成 `"202609"`。
+- `self._inv_seq[ym] = self._inv_seq.get(ym, 0) + 1` `get(ym, 0)`:这个月第一次出现时还没有键,当成 0。每个月从 1 开始单独编号。
+- `iid = f"INV-{ym}-{self._inv_seq[ym]:04d}"` 实测 9 月的账单号是这样发出去的:张伟 `INV-202609-0001`、李娜 `0002`、刘洋按月的那张 `0003`、刘洋重复的那张 `0004`、陈静 `0005`、杨磊失败的那张 `0006`、赵敏续费 `0007`。正文说的「账单号不按日期排」就是这个原因。
+- `"paid_at": issued if status in ("paid", "refunded") else None,` 付了钱的账单才有付款日期。实测杨磊 5 张 paid 的 `paid_at` 都等于开票日,9 月那张 failed 是 `None`。
+- `def monthly_history(` 给月付客户补齐从开始到今天的每一张账单。
+- `while d <= TODAY:` 从开始日起每月一张,直到超过今天。
+- `self.invoice(cid, sid, PRICE[(plan, "monthly")], d, d, add_months(d, 1), first=first)` 实测张伟 7 张:`INV-202603-0001`(首购 True)、`INV-202604-0001` … `INV-202609-0001`,每张的周期是这次扣款日到下个月同一天。
+- `d, first = add_months(d, 1), False` 同时更新两个变量:日期推一个月,之后的账单都不是首购。
+- `def ticket(` 只造历史工单,状态一律 resolved,并带上客服当时的处理摘要。
+- `self.tickets.append({"id": f"T{len(self.tickets) + 1:06d}"` 工单号补零到 6 位。实测吴刚的三张是 `T000001`、`T000002`、`T000003`,因为他是第一个被造工单的人。
+- `def build() -> Builder:` 只在内存里造数据,不碰数据库,测试能直接调。
+- `c = b.customer("C0001", "张伟"` 剧情客户一个个手写,注释里写着这个人是为了测哪种情况。
+- `s = b.sub(c, "standard", "monthly", date(2026, 3, 5))` 返回 `S0001`,本期结束日实测是 `2026-10-05`。
+- `b.monthly_history(c, s, "standard", date(2026, 3, 5))` 张伟的 7 张月付账单。
+- `c = b.customer("C0002", "李娜"` 李娜只有一张 950 元的首购年付账单,实测账单号是 `INV-202609-0002`,9 月 24 日到 10 月 1 日是第 7 天。
+- `b.invoice(c, s, 39, date(2026, 9, 12)` 刘洋的 `monthly_history` 已经生成了 9 月 12 日那张(`INV-202609-0003`),这一行再插一张一模一样周期的(`INV-202609-0004`),这就是「重复扣款」。实测查库,刘洋最近两张账单的 `period_start` 都是 2026-09-12。
+- `c = b.customer("C0006", "杨磊"` 杨磊的订阅手动传了 `status="past_due"` 和 `period_end`,不走自动计算。
+- `for m in range(5):` 4 月到 8 月 5 张正常扣款,`first=(m == 0)` 只有第一张是首购。
+- `status="failed")` 9 月那张扣款失败,实测账单号 `INV-202609-0006`,`paid_at` 是 None。
+- `c = b.customer("C0007", "赵敏"` 去年首购(`INV-202509-0001`,首购 True),今年 9 月 27 日自动续费(`INV-202609-0007`,首购 False)。到 10 月 1 日是续费第 4 天,适用「续费 7 天内全额退」。
+- `seats=10, price=7080)` 企业版 10 席 × 59 元 × 12 个月 = 7080 元。
+- `b.sub(c, "free", "monthly", date(2026, 8, 1), price=0)` 免费版只建订阅不建账单。实测本期结束日是 `2026-11-01`:08-01 往后推,09-01、10-01 都还 `<= TODAY`,推到 11-01 才停。
+- `for d in (date(2026, 4, 11)` 吴刚三次遇到 E3001,每次间隔大约 3 个月,正好对应「银行授权 90 天到期」。
+- `c = b.customer("C0011", "徐丽"` 9 月 17 日付款,到 10 月 1 日正好第 14 天;下面孙浩 9 月 16 日付款,是第 15 天。两人只差一天,结论相反。
+- `rng = random.Random(42)` 独立的随机数生成器,固定种子 42。实测两次 `build()` 的 459 个账单号完全一致(下面的测试就在检查这一点)。
+- `for i in range(13, 201):` 13 到 200,共 188 个随机客户。
+- `name = rng.choice(surnames) + rng.choice(given)` 姓和名各抽一个拼起来。实测 C0013 是「刘静」,C0014 是「张燕」,C0200 是「何磊」。
+- `cid = b.customer(f"C{i:04d}", name, f"user{i:04d}@example.com"` 邮箱按编号生成,保证唯一。实测 C0013 是 `刘静 / user0013@example.com / 刘静餐饮 / 上海`,注册日期 `2025-09-08`。
+- `plan = rng.choices(["free", "standard", "pro"], weights=[3, 5, 2])[0]` `choices` 按权重抽,返回的是列表,所以取 `[0]`。权重 3:5:2,实测 188 人里免费版 61、标准版 93、专业版 34,大致符合 30%、50%、20%。
+- `cycle = "monthly" if plan == "free" else rng.choice(` 免费版记成 monthly(反正不扣钱)。付费的 127 人里实测年付 75、月付 52。
+- `started = TODAY - timedelta(days=rng.randint(20, 400))` 订阅开始于今天之前 20 到 400 天。实测 C0013 是 `2026-07-21`。
+- `sid = b.sub(cid, plan, cycle, started)` C0013 是免费版,实测 `S0013`,本期结束日 `2026-10-21`。
+- `if plan != "free":` 免费版没有账单,实测 C0013、C0014 都是 0 张。
+- `b.invoice(cid, sid, PRICE[(plan, cycle)], d, d, add_months(d, 12), first=first)` 年付客户每 12 个月一张,逻辑和 `monthly_history` 一样。
+- `for _ in range(rng.choice([0, 0, 1, 1, 2])):` 每人 0、1 或 2 张历史工单,0 和 1 的概率更高。`_` 表示循环变量用不上。实测 188 人里 83 人有 1 张、33 人有 2 张,一共 149 张,加上吴刚的 3 张就是 152。
+- `subj, cat, summary = rng.choice(topics)` 从 5 个常见话题里随机抽一个。实测第一张随机工单是 `T000004`,属于 C0013,标题「怎么开专票」。
+- `def main() -> None:` 唯一碰数据库的函数。
+- `with session() as conn, conn.transaction():` 一个 `with` 里写两个上下文:先拿连接,再开事务。下面的清表加插入要么全部成功,要么全部回滚。
+- `conn.execute("TRUNCATE biz.audit_log` 先清空 7 张业务表。`CASCADE` 把引用这些表的数据一起清掉,不用管外键顺序。实测连跑两次 `seed_db.py`,第二次结果还是 200/200/459/152,没有翻倍。
+- `for table, rows in [("customers", b.customers)` 顺序很重要:先客户、再订阅、再账单、最后工单,否则外键检查会报错。
+- `cols = list(rows[0].keys())` 拿第一行 dict 的键当列名,所以每行 dict 的键必须一样。
+- `sql = (f"INSERT INTO biz.{table} ({', '.join(cols)}) "` 实测客户表拼出来是 `INSERT INTO biz.customers (id, name, email, company, region, is_vip, created_at) VALUES (%(id)s, %(name)s, %(email)s, %(company)s, %(region)s, %(is_vip)s, %(created_at)s)`。`%(id)s` 是 psycopg 的命名占位符,值从每行 dict 里按键取。表名和列名是我们自己的常量,所以可以拼进 SQL;值始终走占位符。
+- `cur.executemany(sql, rows)` 一条 SQL 配一列表的参数,批量插入。
+- `print(f"{table}: {len(rows)}")` 实测输出四行:`customers: 200`、`subscriptions: 200`、`invoices: 459`、`tickets: 152`,和正文的期望值一致。
+
+</div>
+
 几点说明。
 
 `random.Random(42)` 是一个独立的随机数生成器,固定种子,每次生成的 188 个随机客户一模一样。别用全局的 `random.seed(42)`,别的库也可能调全局随机数,种子会被打乱。
@@ -1063,6 +1296,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests"), str(ROOT / "scripts"), str(ROOT)]  # 让测试能 import fakes、seed_db、evals
 ```
 
+<div class="line-notes">
+
+- `ROOT = Path(__file__).resolve().parent.parent` `tests/conftest.py` 往上两级就是项目根目录。pytest 会在收集测试前自动加载 `conftest.py`,不用 import。
+- `sys.path[:0] = [` 切片赋值:把列表插到 `sys.path` 的**最前面**,优先级高于已安装的包。实测加上之后,`from seed_db import build` 能找到 `scripts/seed_db.py`。
+
+</div>
+
 ```python
 # supportpilot/tests/test_seed.py
 from seed_db import build
@@ -1076,6 +1316,18 @@ def test_seed_is_deterministic_and_has_story_customers():
     dup = [i for i in a.invoices if i["customer_id"] == "C0004" and str(i["period_start"]) == "2026-09-12"]
     assert len(dup) == 2                                                     # 刘洋的重复扣款剧情还在
 ```
+
+<div class="line-notes">
+
+- `from seed_db import build` 只导入 `build`,不碰数据库,所以这个测试不需要打 `db` 标记,`make test` 会跑它。
+- `a, b = build(), build()` 造两遍。
+- `assert [i["id"] for i in a.invoices] == [i["id"] for i in b.invoices]` 两次的 459 个账单号逐个相同,说明固定种子生效了。
+- `assert len(a.customers) == 200` 12 个剧情客户加 188 个随机客户。
+- `assert len({i["id"] for i in a.invoices}) == len(a.invoices)` 大括号推导式得到集合,会去重。集合大小等于列表长度,就说明没有重复的账单号。实测两边都是 459。
+- `dup = [i for i in a.invoices if i["customer_id"] == "C0004"` 刘洋周期从 2026-09-12 开始的账单。`str(...)` 是因为 `period_start` 是 date 对象,转成字符串才能和 `"2026-09-12"` 比较。
+- `assert len(dup) == 2` 实测通过:`1 passed in 0.25s`。以后谁改了造数脚本把重复扣款弄丢了,这个测试会第一个报错。
+
+</div>
 
 `conftest.py` 把几个目录加进 import 路径,测试里就能直接 `from seed_db import build`。用 `uv run pytest` 跑时 `src` 已经通过可编辑安装可见,这里再加一次是让你直接用 `python -m pytest` 也能跑。
 
@@ -1141,6 +1393,23 @@ WHERE customer_id = 'C0004' ORDER BY issued_at DESC LIMIT 3;"
 ```
 
 期望输出:customers 200、subs 200、invoices 459、tickets 152;刘洋最近两张账单的 `period_start` 都是 2026-09-12。如果你改过造数脚本,数字会不同,这没问题,但要确认剧情客户的数据和上面那张表一致。
+
+**没有 Docker、用 Postgres.app 的走法。** Day 17 起我们一直用的是 Postgres.app(5432 端口,用户就是你的系统用户名,没有密码),步骤 3、4 换成下面这样就行,`make up` 那一步跳过。注意 Postgres.app 开着的时候 docker compose 的 5432 会冲突,两个只开一个。
+
+```bash
+createdb supportpilot
+# .env 里把 DATABASE_URL 改成(minliu 换成你的用户名):
+# DATABASE_URL=postgresql://minliu@localhost:5432/supportpilot
+uv run python scripts/init_db.py      # schema.sql 第一行就是 CREATE EXTENSION IF NOT EXISTS vector,不用手动开
+uv run python scripts/seed_db.py
+cd scripts && uv run python gen_kb.py && cd ..
+
+# 核对:把 docker compose exec db psql -U supportpilot 换成 psql -d supportpilot
+psql -d supportpilot -c "SELECT count(*) FROM biz.customers;"
+psql -d supportpilot -c "SELECT id, amount_cny, status, period_start FROM biz.invoices WHERE customer_id = 'C0004' ORDER BY issued_at DESC LIMIT 3;"
+```
+
+我用一个新建的空库按这个顺序跑过一遍:`init_db` 输出 `schema ready`,`pg_extension` 里能看到 `vector`;`seed_db` 写入 200 个客户、459 张账单、152 张工单;刘洋最近两张账单是 `INV-202609-0003` 和 `INV-202609-0004`,`period_start` 都是 2026-09-12,和上面的期望一致。想手动开扩展也可以 `psql -d supportpilot -c "CREATE EXTENSION IF NOT EXISTS vector;"`,效果一样。
 
 **步骤 5:跑测试、提交。**
 

@@ -596,12 +596,14 @@ def run(user_msg: str, model: str, max_steps: int = 8) -> str:
         for call in msg.tool_calls:
             name = call.function.name
             try:
-                fn, _ = TOOLS[name]
-                result = fn(**json.loads(call.function.arguments))
+                fn, _ = TOOLS[name]  # try 只包查找这一步,工具自己抛的 KeyError 不会被说成「没有这个工具」
             except KeyError:
                 result = {"error": f"没有名为 {name} 的工具"}
-            except Exception as e:  # 参数错误或执行失败,把原因告诉模型让它纠正
-                result = {"error": f"{type(e).__name__}: {e}"}
+            else:
+                try:
+                    result = fn(**json.loads(call.function.arguments))
+                except Exception as e:  # 参数错误或执行失败,把原因告诉模型让它纠正
+                    result = {"error": f"{type(e).__name__}: {e}"}
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.id,
@@ -609,6 +611,30 @@ def run(user_msg: str, model: str, max_steps: int = 8) -> str:
             })
     return "步数超限,已转人工"
 ```
+
+<div class="line-notes">
+
+- `client = OpenAI()` 不传参数时,SDK 从环境变量 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL` 读配置。面试时这样写最省事。实测时我把这两个变量设成练习仓 `.env` 里的 DeepSeek 地址和 key,模型用 `deepseek-flash`。
+- `TOOLS = {}  # name -> (python 函数, JSON Schema)` 工具注册表:名字对应一个二元组,一份给 Python 调用,一份给模型看。
+- `def tool(schema: dict):` 带参数的装饰器,有三层:`tool(schema)` 先返回 `deco`,`deco(fn)` 才真正处理函数。用法是 `@tool({...})`。
+- `TOOLS[fn.__name__] = (fn, {"type": "function", "function": {"name": fn.__name__, **schema}})` `**schema` 把传进来的 description、parameters 展开合并进去。实测我注册了一个 `get_temp`,生成的 spec 是 `{"type": "function", "function": {"name": "get_temp", "description": "查城市当前气温(摄氏度)", "parameters": {...}}}`。
+- `return fn` 原函数原样返回,加了装饰器以后照样能直接调用。
+- `messages = [{"role": "user", "content": user_msg}]` 实测问的是「北京和上海哪个更冷?差几度?」。
+- `specs = [spec for _, spec in TOOLS.values()]` `_` 表示这个位置的值(Python 函数)用不上。只把 schema 列表发给模型。
+- `for _ in range(max_steps):` 步数上限,默认 8。模型一直要调工具也最多转 8 圈,这是面试官最想看到的保护措施之一。
+- `resp = client.chat.completions.create(model=model, messages=messages, tools=specs)` 实测第 1 步只发了 1 条消息,模型一次返回两个工具调用:`get_temp({"city": "北京"})` 和 `get_temp({"city": "上海"})`,content 是「我先查一下两地当前气温。」。用量 299/89。
+- `messages.append(msg.model_dump(exclude_none=True))` 把 SDK 对象转成 dict 再放回历史,`exclude_none` 去掉值为 None 的字段。实测 DeepSeek 返回的 dict 有 `content`、`role`、`tool_calls`、`reasoning_content` 四个键。`reasoning_content` 也一起带回去了:DeepSeek 开着思考模式做工具调用时,下一轮要把这段思考原样传回去,`model_dump` 正好替你做了这件事。
+- `if not msg.tool_calls:` 模型不再调工具,就把它的文字回答当成最终结果。实测第 2 步(此时消息有 4 条:user、assistant、两条 tool)返回「北京更冷……北京比上海低 **11.7°C**。」,`finish_reason` 是 `stop`。
+- `for call in msg.tool_calls:` 同一轮的多个调用按顺序逐个执行。Day 58 会改成并行。
+- `fn, _ = TOOLS[name]  # try 只包查找这一步` 这个 `try` 只包住「按名字找工具」这一步,工具名不存在才会抛 `KeyError`。用假客户端让模型调一个不存在的 `get_weather`,得到 `{"error": "没有名为 get_weather 的工具"}`。
+- `else:` `try/except/else` 的写法:`try` 里没出异常才走 `else`,也就是工具找到了才去执行它。这样做是为了避开一个坑:原来 `try` 把执行也包了进去,工具自己内部抛的 `KeyError` 也会被误报成「没有这个工具」。实测一个查字典的 `get_temp(city="拉萨")`(字典里只有北京),现在返回的是如实的 `{"error": "KeyError: '拉萨'"}`,不会再变成「没有名为 get_temp 的工具」让模型以为工具不存在。
+- `result = fn(**json.loads(call.function.arguments))` 模型给的参数是 JSON 字符串,解析成 dict 后用 `**` 展开成关键字参数。实测 `{"city": "北京"}` 变成 `get_temp(city="北京")`,返回 `{"city": "北京", "temp_c": 4.5}`。
+- `except Exception as e:  # 参数错误或执行失败,把原因告诉模型让它纠正` 实测两种情况。参数名写错 `{"town": "北京"}`,得到 `TypeError: get_temp() got an unexpected keyword argument 'town'`;JSON 只写了一半 `{"city":`,得到 `JSONDecodeError: Expecting value: line 1 column 9 (char 8)`。都变成 `{"error": ...}` 交给模型,循环不会崩。
+- `"tool_call_id": call.id,` 每条工具结果必须带上对应调用的 id。实测 DeepSeek 给的 id 形如 `call_00_JD8GDdMV4Xgh7a8DLz580674`。漏了或者写错,下一次请求会直接 400。
+- `"content": json.dumps(result, ensure_ascii=False)[:4000],` `ensure_ascii=False` 让中文原样输出,而不是 `北` 这种转义,能省不少 token。`[:4000]` 截断超长结果,防止一个工具把上下文撑爆。
+- `return "步数超限,已转人工"` 实测用假客户端让模型每轮都调工具、`max_steps=2`,两圈之后返回这句话。此时消息有 9 条:1 条 user,加上两轮各 1 条 assistant 和 3 条 tool。
+
+</div>
 
 写完主动补充三点没写进代码的东西:超时(每次模型调用和工具调用都应该有)、成本上限、日志或 tracing。面试官通常会顺着问「如果工具很慢怎么办」「如果模型一直重复调同一个工具怎么办」,对应第 18 题和第 35 题。
 

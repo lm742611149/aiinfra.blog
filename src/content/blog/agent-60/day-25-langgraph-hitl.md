@@ -152,6 +152,7 @@ uv add langgraph-checkpoint-sqlite
 """
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -234,11 +235,12 @@ def after_approval(state: RefundState) -> str:
 
 def execute_refund(state: RefundState) -> dict:
     p = state["proposal"]
+    now = datetime.now().isoformat(timespec="seconds")  # 和 Day 23 server.py 一样用本地时间;SQLite 的 datetime('now') 是 UTC
     with biz() as conn:
         conn.execute(
             "INSERT INTO refund_requests (invoice_id, amount_cents, reason, status, created_at, decided_at, decided_by) "
-            "VALUES (?, ?, ?, 'approved', datetime('now'), datetime('now'), 'supervisor')",
-            (p["invoice_id"], round(p["amount_yuan"] * 100), p["reason"]),
+            "VALUES (?, ?, ?, 'approved', ?, ?, 'supervisor')",
+            (p["invoice_id"], round(p["amount_yuan"] * 100), p["reason"], now, now),
         )
     return {"outcome": f"已批准:{p['invoice_id']} 退 {p['amount_yuan']:.2f} 元。审批备注:{state['decision']['note']}"}
 
@@ -295,6 +297,61 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
+<div class="line-notes">
+
+- `"""退款人工审批:` docstring 里列了六个子命令。下面每条注释用的数据,都是按这个顺序在一份种子 42 的 `cloudledger.db` 上实跑出来的。
+- `import sqlite3` 这个文件要连两个 SQLite 库:业务库 `cloudledger.db` 和存执行状态的 `checkpoints.db`。
+- `from langgraph.checkpoint.sqlite import SqliteSaver` 来自 `langgraph-checkpoint-sqlite` 包。实测版本是 3.1.2,配 langgraph 1.2.16。
+- `from langgraph.types import Command, interrupt` `interrupt` 用来暂停,`Command(resume=...)` 用来恢复。
+- `BIZ_DB = Path(__file__).parents[1] / "cloudledger" / "cloudledger.db"` `parents[0]` 是 `lgdemo` 目录,`parents[1]` 是 `w4`,拼起来就是 `w4/cloudledger/cloudledger.db`,也就是 Day 23 造的那个库。
+- `CKPT_DB = Path(__file__).with_name("checkpoints.db")` checkpoint 库放在脚本旁边。实测跑完 start、approve、rewind、reject 一整套之后,这个文件是 53 KB,里面有 `checkpoints` 和 `writes` 两张表,分别是 9 行和 20 行。
+- `class Proposal(BaseModel):` 让模型起草的退款方案。
+- `invoice_id: str = Field(description="要退款的发票号,必须是工单里或发票列表里出现过的")` description 里写了约束,降低模型编造发票号的概率。
+- `amount_yuan: float = Field(gt=0, description="退款金额(元)")` `gt=0` 在 schema 里变成 `"exclusiveMinimum": 0`,模型和 pydantic 两边都会看到这个约束。
+- `class Decision(BaseModel):` 主管给出的决定:批不批,加一句备注。
+- `class RefundState(TypedDict, total=False):` 字段一步步填,所以 `total=False`。
+- `proposal: dict   # Proposal.model_dump()` 存字典,不存 pydantic 对象,原因见正文「State 里只放能直接序列化的数据」。
+- `def biz() -> sqlite3.Connection:` 业务库连接,写法和 Day 23 的 `db()` 一样。
+- `def load_ticket(state: RefundState) -> dict:` 第一个节点:读工单和这个客户最近的发票,不调模型。
+- `t = conn.execute("SELECT * FROM tickets WHERE id = ?", (state["ticket_id"],)).fetchone()` 实测 T1041 的正文是 `你好,10 月 8 号我被扣了两次款,INV-2026-0026 和 INV-2026-0123 金额一模一样,麻烦把多扣的那笔退给我。`
+- `"ORDER BY issued_at DESC, id DESC LIMIT 5",` 取最近 5 张,同一天的按 id 倒序,所以 0123 排在 0026 前面。
+- `lines = [f"{r['id']} {r['amount_cents'] / 100:.2f}元 {r['status']} {r['issued_at']}" for r in invs]` 把每张发票压成一行文字给模型看。实测 5 行里前两行是 `INV-2026-0123 2392.00元 paid 2026-10-08` 和 `INV-2026-0026 2392.00元 paid 2026-10-08`,后三行是 9、8、7 月的。
+- `return {"ticket_text": t["body"], "invoices": "\n".join(lines)}` 两个字段写进 State,下一个节点直接用。
+- `def draft_proposal(state: RefundState) -> dict:` 整张图里唯一调模型的节点。
+- `llm = get_llm().with_structured_output(Proposal, method="function_calling")` 和昨天的分类器同一个用法。要用昨天修好的、带 `extra_body` 的 `llm.py`,否则 DeepSeek 在这里会报 400。
+- `"重复扣款只退重复的那一笔(通常是开票日期相同、较晚生成的那张)。\n\n"` 把业务规则写进提示词。这次实跑模型选了 `INV-2026-0123`,理由原文是:`与 INV-2026-0026 为同日(2026-10-08)同额 2392.00 元的重复扣款,INV-2026-0123 为较晚生成的一张,退还该笔重复款项。`
+- `return {"proposal": proposal.model_dump()}` 实测存进 State 的是 `{'invoice_id': 'INV-2026-0123', 'amount_yuan': 2392.0, 'reason': '…'}`。
+- `def human_approval(state: RefundState) -> dict:` 审批节点。下面这个「会重复执行」的现象是今天的重点。
+- `decision = interrupt(` 第一次执行到这里,图暂停,传进去的字典交给调用方。我在节点开头加了一行打印做实验:start 时打印 1 次;拿缺字段的数据恢复(校验失败)又打印 1 次;拿正确数据恢复再打印 1 次。**每次恢复,这个节点都从第一行重新执行**,所以 interrupt 前面不能放发通知、写库这类有副作用的代码。
+- `**p,` 把方案的三个字段摊进暂停时交出去的数据里。实测 start 打印的就是 `{'question': '是否批准这笔退款?', 'invoice_id': 'INV-2026-0123', 'amount_yuan': 2392.0, 'reason': '…'}`。
+- `response_schema=Decision,  # 恢复值会按 Decision 校验,返回的是 Decision 实例` 实测恢复时传 `{"note": "缺 approved"}`,抛 `ValidationError: 1 validation error for Decision / approved / Field required`。传 `{"approved": True, "note": "核实无误"}` 时,`interrupt()` 返回 `Decision(approved=True, note='核实无误')`。
+- `return {"decision": decision.model_dump()}` 转回字典再存进 State。
+- `def after_approval(state: RefundState) -> str:` 条件边:批了去 `execute`,没批去 `reject`。
+- `def execute_refund(state: RefundState) -> dict:` 只有主管批准后才会走到这里,真正写业务库。
+- `now = datetime.now().isoformat(timespec="seconds")` 审批时间在 Python 里生成本地时间,和 Day 23 `server.py` 写 `created_at` 的方式一致。最早的版本在 SQL 里写 `datetime('now')`,实测北京时间 22 日早上 7:53 批的单,库里记成了 21 日 23:53,因为 SQLite 的 `datetime('now')` 是 **UTC**,和 Day 23 写进去的本地时间混在一张表里,排序和对账都会乱。
+- `"VALUES (?, ?, ?, 'approved', ?, ?, 'supervisor')",` 时间也走占位符。实测写进去的一行是 `1|INV-2026-0123|239200|…|approved|2026-10-22T08:02:05|2026-10-22T08:02:05|supervisor`,和本机时间 08:02:05 一致。
+- `(p["invoice_id"], round(p["amount_yuan"] * 100), p["reason"], now, now),` 元转分用 `round`,原因和 Day 23 一样:浮点乘 100 可能差一点点。`created_at` 和 `decided_at` 都用同一个 `now`。
+- `return {"outcome": f"已批准:{p['invoice_id']} 退 {p['amount_yuan']:.2f} 元。审批备注:{state['decision']['note']}"}` 实测打印 `已批准:INV-2026-0123 退 2392.00 元。审批备注:核实无误`。
+- `def reject_refund(state: RefundState) -> dict:` 驳回分支,不碰业务库。实测 `reject T1041 "金额不对"` 打印 `已驳回,转人工跟进。原因:金额不对`。
+- `builder.add_edge("draft", "approval")` 起草完一定进审批,没有绕过人的路径。
+- `builder.add_conditional_edges("approval", after_approval, ["execute", "reject"])` 审批之后分两路。
+- `action, ticket_id = sys.argv[1], sys.argv[2]` 命令行参数。`sys.argv[0]` 是脚本名,所以从 1 开始取。
+- `note = sys.argv[3] if len(sys.argv) > 3 else ""` 备注可以不写。
+- `config = {"configurable": {"thread_id": f"refund-{ticket_id}"}}` 同一张工单永远是同一个 thread_id(`refund-T1041`),所以不同进程能接上同一次执行。
+- `with sqlite3.connect(CKPT_DB, check_same_thread=False) as conn:` 每个子命令都是一个新进程,各自打开 checkpoint 库。
+- `graph = builder.compile(checkpointer=SqliteSaver(conn))` 带上 checkpointer 编译,每个节点执行完都会存一个快照。
+- `result = graph.invoke({"ticket_id": ticket_id}, config)` start:从头跑,跑到 interrupt 停下。实测返回值的键是 `['ticket_id', 'ticket_text', 'invoices', 'proposal', '__interrupt__']`,还没有 `decision` 和 `outcome`。
+- `payload = result["__interrupt__"][0].value` `__interrupt__` 是一个列表,因为并行分支可能同时有多个中断。这里只有一个,实测元素类型是 `Interrupt`,`.value` 就是传给 `interrupt()` 的那个字典。
+- `snap = graph.get_state(config)` status:不执行任何节点,只读最新快照。
+- `print("下一步要执行的节点:", snap.next)` 实测 `('approval',)`。`snap.interrupts` 里有 1 个待处理中断,`snap.values` 的键是 `['ticket_id', 'ticket_text', 'invoices', 'proposal']`。
+- `result = graph.invoke(Command(resume={"approved": action == "approve", "note": note}), config)` approve/reject 共用这一行,`action == "approve"` 算出 True 或 False。**对已经跑完的 thread 再 approve 一次**:实测打印的还是上一次的 `…审批备注:核实无误`(不是新备注「再批一次」),业务库仍然只有 1 行,没有重复写入。
+- `target = next(s for s in graph.get_state_history(config) if s.next == ("approval",))` rewind:从新到旧找第一个「下一步是 approval」的快照。`next(生成器)` 取第一个满足条件的元素。
+- `result = graph.invoke(None, target.config)` 输入传 `None` 表示不加新输入,从那个快照接着跑。实测又停在了审批点,打印出和第一次一样的方案(方案是从快照里读的,不会重新调模型)。
+- `for s in graph.get_state_history(config):` history:列出所有快照,最新的在前。实测 start 之后有 4 个:`next` 依次是 `('approval',)`、`('draft',)`、`('load',)`、`('__start__',)`。approve 之后又多了 `('execute',)` 和 `()` 两个。rewind 再 reject 之后一共 9 个:最上面 3 个是新分叉出来的(`()`、`('reject',)`、`('approval',)`),原来那条批准的执行记录还在下面,没有被覆盖。
+- `print(s.config["configurable"]["checkpoint_id"], "next =", s.next)` checkpoint_id 是按时间递增的 UUID,所以大致能看出先后。实测某个快照的完整 config 是 `{'configurable': {'thread_id': 'refund-T1041', 'checkpoint_ns': '', 'checkpoint_id': '1f1cdaab-…'}}`。
+
+</div>
 
 几处设计说明:
 
@@ -396,6 +453,18 @@ for token, meta in graph.stream(inputs, stream_mode="messages"):
     if meta["langgraph_node"] == "llm" and token.content:
         print(token.content, end="", flush=True)
 ```
+
+<div class="line-notes">
+
+- `for chunk in graph.stream(inputs, stream_mode="updates"):` 下面三种模式都用 Day 24 的 `agent_graph` 和「上海和北京现在温差几度?」实跑。updates 模式实测吐了 5 次:`llm`(1 条消息,llm_calls=1)→ `tools`(2 条)→ `llm`(1 条,llm_calls=2)→ `tools`(1 条)→ `llm`(1 条,llm_calls=3)。
+- `print(chunk)          # {'llm': {'messages': [...], 'llm_calls': 1}}` 每个 chunk 都是「节点名 → 该节点返回的那个字典」,只有增量,看不到完整状态。
+- `for state in graph.stream(inputs, stream_mode="values"):` values 模式每一步吐完整状态,包括最开始的输入。
+- `print(len(state["messages"]))` 实测依次打印 `1, 2, 4, 5, 6, 7`:输入 1 条 → 模型回 1 条 → 两个工具结果 → 模型调 calculate → 工具结果 → 最终回答。
+- `for token, meta in graph.stream(inputs, stream_mode="messages"):` messages 模式逐 token 吐,每项是 `(消息片段, 元数据)` 元组。实测整轮一共吐了 75 项,片段类型是 `AIMessageChunk`;`tools` 节点的工具结果也会出现在这里。
+- `if meta["langgraph_node"] == "llm" and token.content:` `meta` 里有 `langgraph_node`、`langgraph_step` 等字段。按节点过滤掉工具结果,`token.content` 判空是为了跳过只有工具调用、没有文字的片段。
+- `print(token.content, end="", flush=True)` `end=""` 不换行,`flush=True` 立刻刷到终端,打字机效果就靠这两个参数。实测最后一轮回答是一小段一小段到的:`现在|上海| |19|°|C|(|小雨|),|北京|…|两地|温差| **|4|°|C|**|…`(竖线是我加的分隔)。
+
+</div>
 
 `updates` 用来做后台日志和进度展示(「正在查发票……」);`values` 用来调试,看状态怎么一步步变;`messages` 用来做打字机效果,用户不用干等整段回复生成完。三种可以组合:`stream_mode=["updates", "messages"]`,这时每个 chunk 是一个 `(模式, 数据)` 元组。
 

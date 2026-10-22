@@ -187,6 +187,33 @@ class BrowserTools:
         self._pw.stop()
 ```
 
+<div class="line-notes">
+
+- `from urllib.parse import urlparse` 用来从网址里取出主机名。下面的实测是在本机用 `python3 -m http.server` 起了一个两页的小站(帮助中心首页、提交工单页),用系统 Python 里装的 Playwright 加 Chromium 跑的。
+- `from playwright.sync_api import sync_playwright` 同步版 API,写起来像普通函数调用,正好接 Day 9 的同步循环。
+- `ALLOWED_HOSTS = {"demo.your-domain.com", "help.cloudledger.example"}` 白名单。实测时我往里加了一个 `127.0.0.1`,本地小站才能访问。
+- `_MARK_ELEMENTS = """` 一段 JavaScript,用 `page.evaluate` 放到浏览器里执行。作用是给页面上每个可交互的元素编号。
+- `const els = [...document.querySelectorAll('a, button, input, textarea, select')]` `[...]` 把 NodeList 展开成数组,后面才能用 `filter`、`map`。
+- `.filter(e => e.offsetParent !== null)` 过滤掉看不见的元素:`display:none` 的元素 `offsetParent` 是 null。实测首页有一个 `style="display:none"` 的隐藏链接,没有出现在列表里。藏在页面里的看不见的按钮也是注入攻击的常用手段。
+- `.slice(0, 80);` 最多 80 个,复杂页面上不会生成几百个元素把上下文撑爆。
+- `e.setAttribute('data-agent-id', String(i));` 把编号直接写到 DOM 上,之后点击时就用 `[data-agent-id="2"]` 这个选择器定位元素。
+- `const label = e.innerText || e.value || e.placeholder || e.getAttribute('aria-label') || '';` 依次找一个能看的说明文字。实测:输入框的 `innerText` 和 `value` 都是空的,所以取 `placeholder`,得到「搜索问题」;`textarea` 用的是 `aria-label`「问题描述」;`select` 的 `innerText` 是所有选项拼起来的「账单\n技术」。
+- `return { id: i, tag: e.tagName.toLowerCase(), text: label.trim().slice(0, 60) };` `tagName` 默认是大写的 `INPUT`,转成小写。文字截到 60 个字符。
+- `self._pw = sync_playwright().start()` 不用 `with` 写法,手动 start,因为浏览器要在多次工具调用之间一直开着。所以最后必须调用 `close()`。
+- `self._browser = self._pw.chromium.launch(headless=headless)` 默认无头模式。调试时传 `headless=False`,能看到浏览器窗口被操作的过程。
+- `self.page = self._browser.new_page()` 每个 `BrowserTools` 实例用一个全新的浏览器上下文,没有你自己浏览器里的登录态和 cookie。这就是正文说的「独立的浏览器配置」。
+- `elements = self.page.evaluate(_MARK_ELEMENTS)` 实测首页返回 `[{"id": 0, "tag": "input", "text": "搜索问题"}, {"id": 1, "tag": "button", "text": "搜索"}, {"id": 2, "tag": "a", "text": "提交工单"}]`。
+- `text = self.page.inner_text("body")[:3000]` 页面正文最多 3000 字。实测首页是「帮助中心\n\n搜索常见问题,或提交工单。\n\n搜索 提交工单」。
+- `return {"url": self.page.url, "title": self.page.title(), "text": text, "elements": elements}` 每次操作完都返回整页的新状态,模型不需要另外调一个「看页面」的工具。
+- `if urlparse(url).hostname not in ALLOWED_HOSTS:` 实测 `goto("https://evil.example.com/x")` 返回 `{"error": "该域名不在允许访问的列表里"}`。不带协议头的 `help.cloudledger.example/x`,`hostname` 解析出来是 `None`,同样会被拒绝,默认是安全的。
+- `self.page.goto(url, timeout=15_000)` 单位是毫秒,15 秒。超时会抛异常,由 Day 9 循环里的工具异常处理接住,交给模型看。
+- `self.page.click(f'[data-agent-id="{element_id}"]', timeout=5_000)` 实测 `click(2)` 点「提交工单」,跳到 `ticket.html`。新页面返回 `[{"id": 0, "tag": "textarea", "text": "问题描述"}, {"id": 1, "tag": "select", ...}, {"id": 2, "tag": "button", "text": "提交"}]`。注意编号每一页都会重新从 0 开始:上一页的 2 是链接,这一页的 2 是按钮,所以模型必须用最新一次返回的列表。点一个不存在的编号 `click(99)`,5 秒后抛 `TimeoutError: Page.click: Timeout 5000ms exceeded`。
+- `self.page.wait_for_load_state("domcontentloaded")` 点击可能触发跳转,等新页面的 DOM 加载完再读页面。
+- `self.page.fill(f'[data-agent-id="{element_id}"]', text, timeout=5_000)` `fill` 会先清空再填。实测 `type_text(0, "怎么退款")` 之后,输入框的值是「怎么退款」。
+- `self._browser.close()` 先关浏览器,再停 Playwright。不关的话,Chromium 进程会一直留在后台。
+
+</div>
+
 给元素编号再让模型按编号操作,是 browser-use 这类开源项目常用的思路,比让模型自己写 CSS 选择器可靠得多。正式的项目还会加截图让多模态模型看,加滚动和等待,处理弹窗和登录态。
 
 浏览器 Agent 把 Day 53 讲过的风险放大了好几倍:它读的每一个网页都是不可信内容,可能藏着注入;它能点「确认付款」「删除」「发送」这类不可逆按钮;如果用的是已登录的浏览器会话,它拥有你的全部权限。所以最小原则是:域名白名单、独立的浏览器配置(不复用你自己登录过的浏览器)、敏感按钮之前强制人工确认、全程录屏或记录操作日志。练手时只在你自己部署的 SupportPilot 演示站上操作,比如让它「登录演示账号,提交一张工单,把回复内容读出来」,这本身就是一个不错的端到端测试。

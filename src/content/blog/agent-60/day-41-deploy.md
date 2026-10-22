@@ -62,6 +62,29 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 CMD ["uvicorn", "w6.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
 ```
 
+<div class="line-notes">
+
+- `FROM python:3.12-slim-trixie AS base` 本机没有 Docker,这个文件未实跑。基础镜像是 Python 3.12 的精简版,系统是 Debian 13(代号 trixie)。`AS base` 给这个构建阶段起个名字,多阶段构建时可以引用。
+- `COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /bin/` 直接从 uv 的官方镜像里复制两个二进制文件,不用 pip 安装。
+- `ENV UV_NO_DEV=1` 不装 dev 依赖组(pytest 这类)。
+- `UV_COMPILE_BYTECODE=1` 安装时就把 .py 编译成 .pyc,容器启动时省掉这一步。
+- `UV_LINK_MODE=copy` uv 默认用硬链接把包从缓存装进 .venv,在容器里缓存和目标不在同一个文件系统时会报警告,改成直接复制。
+- `PYTHONUNBUFFERED=1` 输出不缓冲,`docker logs` 能实时看到日志。
+- `WORKDIR /app` 后面的命令都在 /app 下执行,目录不存在会自动创建。
+- `COPY pyproject.toml uv.lock ./` 先只复制两个依赖文件。
+- `RUN uv sync --locked --no-install-project` 只装依赖,不装项目本身。`--locked` 表示 uv.lock 和 pyproject.toml 对不上就直接失败,不会悄悄更新锁文件。
+- `COPY . .` 再复制全部代码,.dockerignore 里列的文件不会进来。
+- `RUN uv sync --locked` 第二次 sync 只是把项目本身装进去,依赖已经在了,几秒钟就完。
+- `RUN useradd --create-home --uid 10001 app && chown -R app:app /app` 建一个普通用户,把 /app 的所有权交给它。
+- `USER app` 从这里开始,包括容器运行时,都以 app 用户执行。
+- `ENV PATH="/app/.venv/bin:$PATH"` 让 uvicorn、arq 这些命令直接用 .venv 里的版本。
+- `EXPOSE 8000` 只是声明一下,不会真的开放端口。
+- `HEALTHCHECK --interval=30s --timeout=5s --retries=3` 每 30 秒检查一次,单次 5 秒超时,连续 3 次失败才标记为 unhealthy。
+- `CMD python -c "import urllib.request;` slim 镜像里没有 curl,就用 Python 自带的 urllib 请求 /healthz。返回非 200 时 urlopen 会抛异常,退出码不为 0,就算一次检查失败。
+- `CMD ["uvicorn", "w6.app.main:app"` JSON 数组写法(exec 形式):uvicorn 是容器里的 1 号进程,能直接收到 `docker stop` 发来的 SIGTERM,优雅退出。`--forwarded-allow-ips "*"` 信任所有来源的转发头,前提是只有 Caddy 能连到它。
+
+</div>
+
 配一个 `.dockerignore`,这一步经常被忘,忘了的后果是本地的 `.venv`、`.env` 甚至 `.git` 被打进镜像:
 
 ```text
@@ -92,6 +115,14 @@ async def healthz():
         await conn.execute("SELECT 1")
     return {"ok": True}
 ```
+
+<div class="line-notes">
+
+- `@app.get("/healthz")` 下面是在临时数据库里实跑的:用 psycopg_pool 建连接池,用 httpx 直接调 ASGI 应用。数据库正常时返回 `200 {"ok":true}`。
+- `async with app.state.sessions.pool.connection() as conn:` 从连接池借一个连接,块结束时自动还回去。实测把连接池指向一个没有数据库的端口(5999),这里拿不到连接,等到超时后抛异常,接口返回 `500 Internal Server Error`。Docker 的 HEALTHCHECK 看到非 200,就记一次失败。
+- `await conn.execute("SELECT 1")` 最便宜的「数据库还活着吗」查询。
+
+</div>
 
 健康检查连一下数据库,而不是只返回 200。只返回 200 的健康检查会在数据库挂掉时依然报告「健康」,这就失去了它的意义。但也不要在健康检查里调模型 API,那样每 30 秒烧一次钱,而且模型 API 偶尔慢一下就会让容器被判定为不健康。
 
@@ -177,6 +208,33 @@ volumes:
   redisdata:
   caddydata:
 ```
+
+<div class="line-notes">
+
+- `services:` 本机没有 Docker,这个文件未实跑,只用 PyYAML 解析过。实测解析出 6 个服务:postgres、redis、migrate、api、worker、caddy。
+- `image: pgvector/pgvector:pg17` 自带 pgvector 扩展的 Postgres 17。
+- `POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}` `${变量:?提示}` 表示变量没设或为空时,compose 直接报错退出并打印这句提示,不会用空密码把数据库起起来。
+- `- pgdata:/var/lib/postgresql/data` 命名卷,容器删掉重建数据还在。
+- `test: ["CMD-SHELL", "pg_isready -U postgres -d agent"]` pg_isready 是 Postgres 自带的命令,能接受连接时返回 0。
+- `restart: unless-stopped` 崩了自动重启,除非你手动 stop。
+- `# 不映射端口到宿主机` 实测解析结果里 postgres 的 ports 是 None。
+- `command: ["redis-server", "--appendonly", "yes"]` 打开 AOF 持久化,Redis 重启后 arq 的任务队列不会丢。
+- `image: postgres:17` migrate 只是要用它自带的 psql 客户端。
+- `postgres: { condition: service_healthy }` 等 postgres 的 healthcheck 通过才启动。
+- `- ./w6/sql:/sql:ro` 把 SQL 目录只读挂进去。
+- `entrypoint: ["sh", "-c", "for f in /sql/*.sql;` 实测解析出来的命令是 `for f in /sql/*.sql; do echo "== $$f"; psql ... -f $$f || exit 1; done`。`$$` 是 compose 的转义,交给 shell 时变成 `$f`。`/sql/*.sql` 展开时按文件名排序,001 到 006 的顺序就是执行顺序,所以 Day 40 的 005 不能引用 006 才建的表,编号也不能和前面的文件重复。`|| exit 1` 任何一个文件失败就整体失败。
+- `restart: "no"` 必须加引号:YAML 1.1 里裸写的 no 会被解析成布尔值 false。
+- `build: .` 用当前目录的 Dockerfile 构建镜像。
+- `env_file: .env` 把 .env 里的变量(模型的 key 等)注入容器。
+- `DATABASE_URL: postgresql://agent_writer:${AGENT_WRITER_PASSWORD}@postgres:5432/agent` 主机名直接写服务名 postgres,compose 的内部网络自带 DNS。
+- `migrate: { condition: service_completed_successfully }` 实测 api 的 depends_on 解析出来是 `{'migrate': {'condition': 'service_completed_successfully'}, 'redis': {'condition': 'service_started'}}`。
+- `command: ["arq", "w6.app.jobs.WorkerSettings"]` 和 api 用同一个镜像,只是换了启动命令。
+- `stop_grace_period: 60s` 停容器时先发 SIGTERM,等 60 秒还没退出才强杀。
+- `- "80:80"` 整个文件只有 caddy 映射了端口,实测解析结果是 `['80:80', '443:443']`。
+- `- caddydata:/data` 证书存在这里,容器重建后不用重新申请。
+- `volumes:` 顶层的 volumes 声明上面用到的三个命名卷,由 Docker 管理存储位置。
+
+</div>
 
 `migrate` 是一个跑完就退出的一次性服务。它等 Postgres 健康后,按文件名顺序执行 `w6/sql/` 下的全部 SQL 文件。`api` 和 `worker` 等它成功退出后才启动。这样数据库结构永远在应用启动之前就绪。我们这几天写的 SQL 都带了 `IF NOT EXISTS`,重复执行是安全的;Day 40 建角色的那个文件要改成幂等的写法(先判断角色是否存在),否则第二次部署时 `CREATE ROLE` 会报错退出。正式项目里迁移会交给 Alembic 这类工具,它会记录哪些迁移执行过,但概念是一样的。
 
@@ -349,6 +407,26 @@ jobs:
           ssh -i key -o StrictHostKeyChecking=accept-new deploy@"$HOST" \
             "cd agent-60-lab && git pull --ff-only && IMAGE_TAG=${{ github.sha }} docker compose pull api worker && IMAGE_TAG=${{ github.sha }} docker compose up -d"
 ```
+
+<div class="line-notes">
+
+- `name: test-and-deploy` 未实跑(需要 GitHub 仓库和服务器),只用 PyYAML 解析过。
+- `on:` 实测用 PyYAML 解析,这个键读出来是布尔值 `True` 而不是字符串 `"on"`:YAML 1.1 会把 on/off/yes/no 当成布尔。GitHub Actions 自己的解析器认得它,工作流本身没问题;但如果你用 Python 脚本读这个文件,要用 `w[True]` 去取。
+- `branches: [main]` 只有推到 main 才触发。
+- `runs-on: ubuntu-latest` 跑在 GitHub 提供的 Ubuntu 虚拟机上。
+- `- uses: actions/checkout@v4` 把仓库代码拉到虚拟机里。
+- `- uses: astral-sh/setup-uv@v6` 安装 uv。
+- `- run: uv run pytest -q tests w6/evals/test_injection.py` 实测解析出 test job 的四步依次是 checkout、setup-uv、`uv sync --locked`、这条 pytest。
+- `LLM_API_KEY: ${{ secrets.LLM_API_KEY }}` secrets 加密存储,出现在日志里会被打码;下面的 `vars.` 是明文配置,只适合放模型名这类不敏感的值。
+- `needs: test` test job 失败就不部署。
+- `permissions:` 只给这个 job 需要的权限:实测解析出来是 `{'contents': 'read', 'packages': 'write'}`,读代码、往 ghcr 推镜像。
+- `password: ${{ secrets.GITHUB_TOKEN }}` GitHub 每次运行自动发的临时 token,不用自己建。
+- `tags: ghcr.io/` 打两个标签:提交哈希(回滚时能精确指定版本)和 latest。
+- `install -m 600 /dev/null key && echo "$SSH_KEY" > key` 先建一个权限为 600 的空文件再写入私钥:ssh 拒绝使用别人也能读的私钥文件。
+- `ssh -i key -o StrictHostKeyChecking=accept-new` 第一次连接时自动记下服务器的指纹,以后指纹变了就拒绝连接,防止中间人。
+- `"cd agent-60-lab && git pull --ff-only` `--ff-only`:服务器上的代码如果有本地改动或者分叉了就直接失败,不自动合并。
+
+</div>
 
 要让服务器用 CI 构建好的镜像,而不是在服务器上自己构建,`compose.yaml` 里的 `api` 和 `worker` 要加一行 `image: ghcr.io/<you>/agent-60-lab:${IMAGE_TAG:-latest}`。各个 action 的大版本号写的是我写这篇时的版本,用之前去它们的 GitHub 页面确认一下。
 

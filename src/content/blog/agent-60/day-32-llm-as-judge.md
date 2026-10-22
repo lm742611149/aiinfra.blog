@@ -11,7 +11,7 @@ lang: 'zh'
 
 ## 今天要解决的问题
 
-昨天的测试集里有一个字段一直没人检查:`facts`。比如 C009 那条用例,我们要求回复里讲清楚「按剩余整月退款」「当月和已使用的月份不退」「需要主管审批」。这三件事,Agent 可能换着各种说法讲,也可能漏讲一条,还可能讲错(比如说成「按剩余天数退」)。`if "按剩余整月" in reply` 显然不行。
+昨天的测试集里有一个字段一直没人检查:`facts`。比如 C023(企业版年付想退)那条用例,我们要求回复里讲清楚「按剩余整月退款」「当月和已使用的月份不退」「需要主管审批」。这三件事,Agent 可能换着各种说法讲,也可能漏讲一条,还可能讲错(比如说成「按剩余天数退」)。`if "按剩余整月" in reply` 显然不行。
 
 这时候就轮到金字塔的第二层:让另一个大模型来判。这个做法叫 LLM-as-judge。它很好用,也很容易用错。最常见的错法是:写一个「请给这条回复的质量打 1–10 分」的 prompt,跑出平均 7.8 分,然后就相信了。这个 7.8 分和你的产品质量之间是什么关系,没人知道。
 
@@ -120,6 +120,35 @@ def judge_facts(ticket: str, reply: str, facts: list[str], retries: int = 2) -> 
             last_err = str(e)
     return Verdict(critique=f"评分器输出无法解析: {last_err[:200]}", verdict="unknown")
 ```
+
+<div class="line-notes">
+
+- `"""LLM 评分器:要点覆盖(facts)。只判一件事,只给 pass/fail。"""` 一个评分器只负责一个标准。要查「有没有回答全部问题」,就再写一个 `judge_complete`,不要往这个 prompt 里塞。
+- `from pydantic import BaseModel, ValidationError` 模型返回的 JSON 用 pydantic 校验,不合格就重试。
+- `client = OpenAI(base_url=os.environ.get("JUDGE_BASE_URL", os.environ["LLM_BASE_URL"]),` `os.environ.get("JUDGE_BASE_URL", 默认值)`:设置了 `JUDGE_*` 就用评分器专用的模型,没设置就退回被测 Agent 用的那个。我实测时没设,所以评分器和 Agent 都是 `deepseek-flash`,也就是后面「偏差」一节提醒要避免的自我偏好情况。
+- `JUDGE_MODEL = os.environ.get("JUDGE_MODEL", os.environ["LLM_MODEL"])` 实测值是 `deepseek-flash`。
+- `JUDGE_VERSION = "facts-v3"` 版本号要随 prompt 一起改。align 的输出第一行会打印 `facts-v3 · deepseek-flash · split=dev`,三周后你还能说清楚那个分数是哪一版评分器给的。
+- `FACTS_PROMPT = """你是云簿 CloudLedger 客服质检员。` 整个 prompt 是一个 `str.format` 模板,约 1020 个字符,填入一条要点、一句工单、一句回复后,实测输入是 581 token。
+- `pass:每一条要点都在回复中被表达出来(换说法可以),` 「换说法可以」很重要。不写的话,评分器会要求回复逐字出现要点。
+- `unknown:回复为空、或者信息不足以判断` 实测传入空回复(下面会被换成「(空)」),评分器返回 `unknown`,理由是「回复为空,没有任何内容,无法判断是否表达了『按剩余整月退款』这一要点」。
+- `不要评价语气、格式、长度,` 明确划出不判的范围。
+- `判定:{{"critique": "三条都表达了:剩下的整月数、本月不退、主管审核。", "verdict": "pass"}}` 例子里的花括号写成双层。`str.format` 会把 `{{` 还原成 `{`,单个 `{` 则会被当成占位符。实测 `"{a}{{x}}{\"critique\"}".format(a=1)` 报的正是 `KeyError: '"critique"'`。
+- `<facts>{facts}</facts>` 三个真正的占位符。用 XML 风格的标签把各段内容框起来,模型分得清哪段是要点、哪段是回复,回复里出现「判定:」之类的字样也不会搞混。
+- `先写 critique(一两句,指出每条要点是否被表达),再给 verdict。` 实测模型输出的 JSON 也是 critique 在前、verdict 在后,比如 `{"critique": "要点「月付不支持中途退款」已在回复中表达为「月付，中途取消不退」……无矛盾说法。", "verdict": "pass"}`。
+- `class Verdict(BaseModel):` 评分结果的结构。
+- `verdict: Literal["pass", "fail", "unknown"]` 模型写成 `"PASS"` 或 `"通过"` 都会校验失败,进而触发重试。
+- `def judge_facts(ticket: str, reply: str, facts: list[str], retries: int = 2) -> Verdict:` 默认最多调 3 次:第一次加两次重试。
+- `if not facts:` 用例没写要点,就没什么可判的,直接 pass,也不花这次调用的钱。实测返回 `critique='没有要点需要检查' verdict='pass'`。
+- `prompt = FACTS_PROMPT.format(facts=json.dumps(facts, ensure_ascii=False),` 要点用 JSON 数组的格式填进去,实测是 `["按剩余整月退款", "当月不退", "需要主管审批"]`,每一条的边界很清楚。
+- `ticket=ticket, reply=reply or "(空)")` 空回复换成「(空)」,模型才看得出来是空的,而不是 prompt 被截断了。
+- `last_err = ""` 记下最后一次解析失败的原因,三次都失败时放进 critique 里。
+- `for _ in range(retries + 1):` `_` 表示循环变量用不到。
+- `model=JUDGE_MODEL, temperature=0,` 温度 0,同一条输入尽量得到同一个结论。注意是「尽量」:温度 0 也不保证每次输出逐字相同,所以对齐时看的是一批样本上的比例,不要看单次结果。
+- `return Verdict.model_validate_json(resp.choices[0].message.content)` 直接从 JSON 字符串构造并校验。实测正文的三种情况各判一次:「整月 + 本月不退 + 主管审核」→ pass,用时 0.7 秒;「按天数折算 + 已办理」→ fail,理由列出了三处矛盾,用时 1.1 秒;空回复 → unknown,用时 0.5 秒。
+- `except ValidationError as e:` 只捕获校验失败。网络错误不在这里处理,让它往外抛,评测脚本自己会记成 error。
+- `return Verdict(critique=f"评分器输出无法解析: {last_err[:200]}", verdict="unknown")` 三次都失败就算 unknown,不让一条坏输出拖垮整批评测。`[:200]` 截短,pydantic 的报错可能很长。
+
+</div>
 
 只判一件事,并且明说不判什么。 「不要评价语气、格式、长度」这一句很重要。模型天然喜欢顺手挑点毛病,不明说的话,它会因为「回复有点长」判 fail。
 
@@ -278,6 +307,30 @@ if __name__ == "__main__":
     main()
 ```
 
+<div class="line-notes">
+
+- `"""评分器对齐。用法:` 输入文件每行要有 id、ticket、reply、facts、你的判断 human,以及 split。我实测用了 7 条,其中 6 条 dev:4 条回复来自前面真实跑出来的 trace,另外 2 条是按正文建议「手动改坏」的,比如把「月付套餐不支持中途退款」改成「可以按天数退款」。
+- `from w5.judge import JUDGE_MODEL, JUDGE_VERSION, judge_facts` 直接复用评分器。对齐测的就是你要真正拿去用的那一个。
+- `def metrics(pairs: list[tuple[str, str]]) -> dict:` 输入是 `(人的判断, 评分器的判断)` 二元组的列表。
+- `tp = sum(h == "pass" and j == "pass" for h, j in pairs)` `h == "pass" and j == "pass"` 是布尔值,`sum` 把 True 当成 1 加起来,就是满足条件的条数。下面三行同理。拿正文混淆矩阵的数字代入:37 对 (pass, pass)、3 对 (pass, fail)、5 对 (fail, pass)、15 对 (fail, fail)。
+- `fn = sum(h == "pass" and j == "fail" for h, j in pairs)` 人判 pass、评分器判 fail:冤枉了好回复。代入后 fn = 3。
+- `fp = sum(h == "fail" and j == "pass" for h, j in pairs)` 人判 fail、评分器判 pass:放过了坏回复。代入后 fp = 5。
+- `tpr = tp / (tp + fn) if tp + fn else float("nan")` 37 / 40 = 0.925。分母为 0 时(没有人判 pass 的样本)返回 `nan`,不会抛 `ZeroDivisionError`。
+- `tnr = tn / (tn + fp) if tn + fp else float("nan")` 15 / 20 = 0.75。实测如果数据里一条 fail 都没有,只喂 3 对 (pass, pass),tnr 就是 `nan`。这正好说明 fail 样本太少时,你根本没法评估评分器抓 fail 的能力。
+- `po = (tp + tn) / n` 观察到的一致率,也就是准确率:52 / 60 = 0.867。
+- `pe = ((tp + fn) / n) * ((tp + fp) / n) + ((fp + tn) / n) * ((fn + tn) / n)` 两边各凭自己的比例瞎猜时,碰巧一致的概率:(40/60)×(42/60) + (20/60)×(18/60) = 0.567。
+- `kappa = (po - pe) / (1 - pe) if pe < 1 else float("nan")` (0.867 − 0.567) / 0.433 = 0.692。实测 `metrics` 的输出是 `{'tpr': 0.925, 'tnr': 0.75, 'acc': 0.8667, 'kappa': 0.6923}`,和正文的手算一致。全是 pass 的时候 pe = 1,kappa 返回 `nan`。
+- `rows = [r for r in rows if r["split"] == split]` 只跑指定的那一份。调 prompt 时跑 dev,定稿后跑一次 test。实测 7 条里过滤出 6 条 dev。
+- `with ThreadPoolExecutor(max_workers=4) as pool:` 评分器调用之间互不依赖,4 个线程并发。
+- `verdicts = list(pool.map(lambda r: judge_facts(r["ticket"], r["reply"], r["facts"]), rows))` `pool.map` 按输入顺序返回结果,下面才能用 `zip` 把每条数据和它的结论一一配对。`list(...)` 等所有调用都完成。
+- `if v.verdict == "unknown":` unknown 不算进混淆矩阵,单独计数。
+- `pairs.append((r["human"], v.verdict))` 把人和评分器的判断配成一对,交给 `metrics`。
+- `if r["human"] != v.verdict:` 只打印不一致的样本,而且带上评分器的理由,改 prompt 就靠读这些。实测 6 条全部一致,没有打印任何一条。我改坏的 a03(「月付可以按天数退款」),评分器的理由是:「『月付不支持中途退款』被说错成『月付套餐可以按天数退款』,与要点矛盾,虽然紧接着又说当期费用不退……但前面的说法已经构成矛盾表述」。
+- `print(f"\n{JUDGE_VERSION} · {JUDGE_MODEL} · split={split} · unknown={unknown}")` 实测输出 `facts-v3 · deepseek-flash · split=dev · unknown=0`。
+- `print(f"TPR {m['tpr']:.3f}  TNR {m['tnr']:.3f}` 实测 `TP 3  FN 0  FP 0  TN 3`,`TPR 1.000  TNR 1.000  准确率 1.000  kappa 1.000`。6 条太少,而且我改坏的地方都很明显,所以全对不说明什么。真要对齐还是得按正文准备 60 条,每份里 fail 约占三分之一。
+
+</div>
+
 它会把每一条评分器和你判断不一致的样本打印出来,连同评分器的理由。改 prompt 的灵感几乎全部来自读这些不一致的样本。有时候你读完会发现是自己标错了,那就改标注,这很正常,标注也会有错。
 
 ### 用 TPR 和 TNR 修正通过率
@@ -360,7 +413,7 @@ if __name__ == "__main__":
 
 **对齐一次就一劳永逸。** 改了评分 prompt、换了评分模型、或者 Agent 的输出风格大变,都要在 test 集上重新跑一次对齐。所以评分器要有版本号,报告里要记。
 
-**拿评分器判能写成代码的东西。** 「回复里有没有 735 这个数字」「有没有调用退款工具」,用代码判。评分器留给真正需要理解语义的东西。
+**拿评分器判能写成代码的东西。** 「回复里有没有 6578 这个数字」「有没有调用退款工具」,用代码判。评分器留给真正需要理解语义的东西。
 
 ## 学习资料
 
@@ -414,7 +467,7 @@ if __name__ == "__main__":
 
 ## 自测
 
-1. 下面这些检查,哪些应该用 LLM 评分器,哪些不该?(a) 回复里是否出现了退款金额 735 (b) 回复是否讲清楚了「当月不退」 (c) 回复是否回答了工单里的全部问题 (d) 回复是否泄露了其他客户的邮箱
+1. 下面这些检查,哪些应该用 LLM 评分器,哪些不该?(a) 回复里是否出现了退款金额 6578 (b) 回复是否讲清楚了「当月不退」 (c) 回复是否回答了工单里的全部问题 (d) 回复是否泄露了其他客户的邮箱
 
 <details><summary>答案</summary>
 

@@ -126,6 +126,7 @@ mkdir -p w4/lgdemo
 ```python
 # agent-60-lab/w4/lgdemo/llm.py
 """LangGraph 这几天共用的模型对象。走 OpenAI 兼容协议,换厂商只改 .env。"""
+import json
 import os
 
 from dotenv import load_dotenv
@@ -140,8 +141,24 @@ def get_llm(temperature: float = 0) -> ChatOpenAI:
         base_url=os.environ["LLM_BASE_URL"],
         api_key=os.environ["LLM_API_KEY"],
         temperature=temperature,
+        # Day 3 的 LLM_EXTRA_BODY:DeepSeek 要靠它关掉思考模式,否则下面的结构化输出会报 400
+        extra_body=json.loads(os.environ.get("LLM_EXTRA_BODY", "{}")),
     )
 ```
+
+<div class="line-notes">
+
+- `import json` 下面要把 `.env` 里 `LLM_EXTRA_BODY` 这段 JSON 字符串解析成字典。
+- `from langchain_openai import ChatOpenAI` LangChain 对 OpenAI 兼容协议的封装。LangGraph 节点里调模型、`bind_tools`、`with_structured_output` 都靠它,所以这几天不再用 Day 4 的 `common/llm.py`。
+- `load_dotenv()` 从当前目录往上找 `.env` 读进环境变量。在 `w4/lgdemo` 下运行时,它会一路找到 `agent-60-lab/.env`。
+- `def get_llm(temperature: float = 0) -> ChatOpenAI:` 做成函数而不是模块级变量,是为了不同节点可以要不同的温度。默认 0,分类、路由这类要稳定的场景用 0。
+- `model=os.environ["LLM_MODEL"],` 实测打印 `get_llm()` 的属性:`model_name='deepseek-flash'`、`temperature=0.0`。
+- `base_url=os.environ["LLM_BASE_URL"],` 换厂商只改 `.env`,代码一行不动,和 Day 3 的约定一样。
+- `extra_body=json.loads(os.environ.get("LLM_EXTRA_BODY", "{}")),` 实测解析出来是 `{'thinking': {'type': 'disabled'}}`,会原样放进每次请求体。**这一行不能省**:我第一次照没有这行的版本跑 `triage_graph.py`,三张工单全挂在 classify 节点,报 `400 Thinking mode does not support this tool_choice`。原因是 `with_structured_output(method="function_calling")` 会强制模型调用那个「伪装成工具的 schema」(tool_choice 指定了工具),DeepSeek 开着思考模式时不接受这种 tool_choice。`agent_graph.py` 不受影响,因为它让模型自己决定调不调工具;但缺了这行,它每次调用会多出十几个思考 token。用 Claude 等别的厂商时,`.env` 里写 `LLM_EXTRA_BODY={}` 就行。
+
+</div>
+
+`extra_body` 那一行是今天最容易漏的:用 DeepSeek 时它负责关掉思考模式,漏了的话,后面用 `with_structured_output` 的分类节点会直接报 400。
 
 然后是图本身:
 
@@ -224,6 +241,53 @@ if __name__ == "__main__":
         m.pretty_print()
     print("LLM 调用次数:", out["llm_calls"])
 ```
+
+<div class="line-notes">
+
+- `from typing import Annotated, Literal` `Annotated` 用来给 `messages` 字段挂 reducer,`Literal` 用来标注 `route` 可能返回哪几个节点名。
+- `from langchain_core.messages import AnyMessage, SystemMessage, ToolMessage` LangChain 的消息类型。`AnyMessage` 是所有消息类型的联合(Human/AI/Tool/System),State 里的消息列表就用它标注。
+- `from langchain_core.tools import tool` `@tool` 装饰器,从函数签名和 docstring 生成工具定义。
+- `from langgraph.graph import END, START, StateGraph` `START`、`END` 是两个特殊节点,实测它们的值就是字符串 `"__start__"` 和 `"__end__"`,所以下面 `route` 的返回类型里写的是 `"__end__"`。
+- `from langgraph.graph.message import add_messages` 消息列表的 reducer:新消息追加到末尾,id 相同的替换。
+- `from typing_extensions import TypedDict` 和 `typing.TypedDict` 用法一样。LangGraph 文档的示例都从 `typing_extensions` 导入,因为 Python 3.12 以下,pydantic 解析 TypedDict 时要求用这个版本;统一这样写,换 Python 版本也不出问题。
+- `from llm import get_llm` 同目录的 `llm.py`。这是裸导入,所以要 `cd w4/lgdemo` 再按文件路径运行。
+- `MAX_LLM_CALLS = 6` 业务层的步数上限,下面 `route` 用它。
+- `@tool` 装饰之后 `get_weather` 不再是普通函数,实测类型是 `StructuredTool`,`.name` 是 `'get_weather'`,`.description` 就是 docstring 那句话。
+- `def get_weather(city: str) -> str:` 签名决定参数 schema。实测 `bind_tools` 发给模型的定义是 `{"name": "get_weather", "description": "查询城市当前天气。city 用中文城市名,如「上海」。", "parameters": {"properties": {"city": {"type": "string"}}, "required": ["city"], "type": "object"}}`。
+- `fake = {"上海": "小雨 19°C"` 写死的假数据,保证你我跑出来的工具结果一样,方便对照。
+- `return fake.get(city, f"没有 {city} 的天气数据")` 查不到也返回一句模型能读懂的话,不抛异常。实测 `get_weather.invoke({"city": "深圳"})` 返回 `没有 深圳 的天气数据`。
+- `if not set(expression) <= set("0123456789+-*/(). "):` 集合的 `<=` 是「是否子集」:算式里出现的每个字符都必须在白名单里。实测 `"19 - 15"` 通过;`"__import__('os')"` 里有字母和引号,返回 `表达式里有不允许的字符`。
+- `return str(eval(expression))` 字符集已经限死,`eval` 在这里只能算四则运算。实测 `"19 - 15"` → `'4'`,`"1/3"` → `'0.3333333333333333'`。真项目里用 Day 8 那个基于 `ast` 的 `calculate` 更稳。
+- `TOOLS = [get_weather, calculate]` 工具列表,既用来 `bind_tools`,也用来建下面的名字索引。
+- `TOOLS_BY_NAME = {t.name: t for t in TOOLS}` 字典推导式,实测得到 `{'get_weather': ..., 'calculate': ...}`。`run_tools` 按模型给的工具名在这里找函数。
+- `class State(TypedDict):` 整张图共享的状态。每个节点读它,返回一个字典表示要改哪些字段。
+- `messages: Annotated[list[AnyMessage], add_messages]` 带 reducer 的字段:节点返回 `{"messages": [reply]}` 时是**追加**。实测一次完整运行后 `messages` 有 7 条:`Human, AI, Tool, Tool, AI, Tool, AI`。
+- `llm_calls: int` 没有 reducer,节点返回什么就**覆盖**成什么。
+- `llm_with_tools = get_llm().bind_tools(TOOLS)` 把两个工具的定义绑在模型上,之后每次 `invoke` 都会带上 `tools` 参数。实测返回的是一个 `_ChatModelBinding` 对象,用法和模型本身一样。放在模块级只建一次,不要放进节点函数里每次都建。
+- `def call_llm(state: State) -> dict:` 第一个节点:调模型。
+- `system = SystemMessage("你是一个助手。需要事实或计算时调用工具,不要心算。")` 系统提示词每次现拼,不存进 State。这样 State 里只有真实的对话,存档和恢复时干净。
+- `reply = llm_with_tools.invoke([system] + state["messages"])` 列表相加拼出本次请求。第一次调用时是 `[System, Human]`;实测模型回的 `reply` 是 `AIMessage`,`content=''`,`tool_calls` 里有两个调用,分别是 `{'name': 'get_weather', 'args': {'city': '上海'}, 'id': 'call_00_…', 'type': 'tool_call'}` 和北京那个。这次的用量是 `input_tokens 357, output_tokens 67`。
+- `return {"messages": [reply], "llm_calls": state.get("llm_calls", 0) + 1}` 只返回要更新的两个字段。`messages` 走 reducer 追加这条回复;`llm_calls` 从 0 变成 1。`state.get(..., 0)` 是防止调用方忘了传初始值。
+- `def run_tools(state: State) -> dict:` 第二个节点:执行上一条 AI 消息里的所有工具调用。
+- `for call in state["messages"][-1].tool_calls:` 最后一条一定是刚才那条 AI 消息。LangChain 已经把 OpenAI 格式的 `tool_calls` 转成了字典,`args` 是解析好的 dict,不用再 `json.loads`。实测第一轮这里循环两次(上海、北京)。
+- `output = TOOLS_BY_NAME[call["name"]].invoke(call["args"])` 工具对象用 `.invoke(参数字典)` 调用。第一次 `call["args"]` 是 `{'city': '上海'}`,`output` 是 `'小雨 19°C'`。
+- `results.append(ToolMessage(content=str(output), tool_call_id=call["id"]))` 每个结果都要带上对应调用的 id,模型才知道哪个结果对应哪个调用。实测两条 ToolMessage 的 `tool_call_id` 分别是 `call_00_…` 和 `call_01_…`。
+- `return {"messages": results}` 两条 ToolMessage 一起追加,`llm_calls` 不动。
+- `def route(state: State) -> Literal["tools", "__end__"]:` 条件边的判断函数,返回下一个节点的名字。
+- `if getattr(last, "tool_calls", None) and state["llm_calls"] < MAX_LLM_CALLS:` `getattr(..., None)` 是因为最后一条可能不是 AI 消息,没有这个属性。实测:最后一条带工具调用、`llm_calls=2` → `'tools'`;同样的消息但 `llm_calls=6` → `'__end__'`(撞上限就结束);最后一条是纯文字回答 → `'__end__'`。
+- `return END` 结束。`END` 就是字符串 `"__end__"`。
+- `builder = StateGraph(State)` 用 State 类型建一个图构造器。
+- `builder.add_node("llm", call_llm)` 注册节点:名字 + 函数。
+- `builder.add_edge(START, "llm")` 入口固定先进 `llm`。
+- `builder.add_conditional_edges("llm", route, ["tools", END])` `llm` 执行完调 `route` 决定去向。第三个参数列出所有可能的去向,画图用。
+- `builder.add_edge("tools", "llm")` 工具执行完一定回到模型,循环就是这条边形成的。
+- `graph = builder.compile()` 编译成可执行的图,检查节点和边是否连得通。
+- `print(graph.get_graph().draw_mermaid())` 打印 Mermaid 图定义。实测输出里的关键几行是 `__start__ --> llm;`、`llm -.-> __end__;`、`llm -.-> tools;`、`tools --> llm;`,虚线 `-.->` 表示条件边。
+- `out = graph.invoke({"messages": [("user", "上海和北京现在温差几度?")], "llm_calls": 0})` 初始状态里的 `("user", "…")` 元组会被 `add_messages` 自动转成 `HumanMessage`。这次实跑的完整路径:`llm`(并行查上海、北京)→ `tools` → `llm`(调 `calculate`,参数 `"19 - 15"`)→ `tools`(返回 `'4'`)→ `llm`(回答「当前温差是 **4°C**……」)→ 结束。
+- `m.pretty_print()` LangChain 消息自带的格式化打印,就是正文示例里那种带 `====` 分隔线的输出。
+- `print("LLM 调用次数:", out["llm_calls"])` 实测打印 `LLM 调用次数: 3`。三次调用的输入 token 依次是 357、454、506,每次都比上次多,因为消息越积越多。
+
+</div>
 
 ```bash
 cd w4/lgdemo
@@ -385,6 +449,36 @@ if __name__ == "__main__":
         print(f"{text[:16]:<18} → {t.category:<9} {t.urgency:<6} {out['owner']} | {out['note']}")
 ```
 
+<div class="line-notes">
+
+- `from pydantic import BaseModel, Field` 分类结果用 pydantic 模型描述,和 Day 6 的结构化输出是同一套。
+- `class Triage(BaseModel):` 要求模型返回的结构:类别、紧急程度、一句话摘要。
+- `category: Literal["billing", "technical", "account", "other"] = Field(description="工单类别")` `Literal` 在 schema 里变成 `enum`。实测发给模型的工具定义里,这个字段是 `{"description": "工单类别", "enum": ["billing", "technical", "account", "other"], "type": "string"}`。模型只能四选一,下游路由才不会拿到意料之外的值。
+- `urgency: Literal["low", "normal", "high"] = Field(description="紧急程度,影响付款或无法登录算 high")` description 里写了判定规则,模型会照着执行。这次实跑「被扣了两次款」被判成 `high`,因为它碰到了「影响付款」这一条;正文示例里是 `normal`,不同次运行可能不一样。
+- `summary: str = Field(description="一句话概括客户诉求,不超过 30 字")` 实测返回 `'10月8日被重复扣款两次,要求退还一笔'`。
+- `class TicketState(TypedDict, total=False):` `total=False` 让所有字段都变成可选。实测 `TicketState.__required_keys__` 是空集合,所以初始只传 `{"ticket": ...}` 也不会被类型检查拦下。
+- `triage: Triage` State 里直接放了 pydantic 对象。今天没有 checkpointer 所以没问题;明天加了 checkpointer 会看到反序列化警告,那时改成存字典。
+- `classifier = get_llm().with_structured_output(Triage, method="function_calling")` 把 `Triage` 转成一个名叫 `Triage` 的工具,并强制模型调用它,再把参数解析回 `Triage` 对象。**强制调用工具**这一点,就是 `llm.py` 里必须带 `extra_body` 关掉 DeepSeek 思考模式的原因,不关会报 400。
+- `def classify(state: TicketState) -> dict:` 整张图里唯一调模型的节点。
+- `result = classifier.invoke(` 输入直接传一个字符串,LangChain 会把它当成一条 user 消息。
+- `"billing=扣款/退款/发票/价格;technical=报错/功能异常;account=登录/权限/注销;其余 other。\n\n"` 类别定义写进提示词,比只靠 description 更稳。分类不稳定时,先改这里的定义。
+- `f"工单:{state['ticket']}"` f-string 里取字典值用单引号,因为外层已经是双引号。
+- `return {"triage": result}` 实测第一张工单返回 `Triage(category='billing', urgency='high', summary='10月8日被重复扣款两次,要求退还一笔')`,stream 的 updates 模式里这一步打印为 `{'classify': {'triage': Triage(...)}}`。
+- `def to_billing(state: TicketState) -> dict:` 三个分支节点都是普通函数,不调模型,只填 `owner` 和 `note`。
+- `def pick_branch(state: TicketState) -> Literal["billing", "technical", "human"]:` 条件边函数,把四个类别映射到三个分支。
+- `c = state["triage"].category` `triage` 是 pydantic 对象,用属性访问。
+- `return "human"` `account` 和 `other` 都走一线客服。实测「验证码一直过期」被分成 `account`,走的就是这里。
+- `def escalate_if_urgent(state: TicketState) -> dict:` 汇合节点,三个分支都会走到这里。
+- `return {"note": state["note"] + ";紧急,30 分钟内响应"}` `note` 没有 reducer,所以这里要自己把旧值拼上再整体覆盖。实测第一张工单的 note 从 `需要查发票和订阅,W4 后面会接 MCP 工具` 变成了末尾加上 `;紧急,30 分钟内响应`。
+- `return {}` 不紧急就返回空字典,表示什么都不改。实测传 `urgency="low"` 返回 `{}`。
+- `builder = StateGraph(TicketState)` 第二张图,结构是 classify → 三选一 → escalate → END。
+- `builder.add_conditional_edges("classify", pick_branch, ["billing", "technical", "human"])` `pick_branch` 返回的字符串必须是这里列出的节点名之一。
+- `for branch in ["billing", "technical", "human"]:` 用循环给三个分支各加一条到 `escalate` 的普通边,省得写三行。
+- `out = graph.invoke({"ticket": text})` 初始状态只有 `ticket`。用 `stream_mode="values"` 跑「验证码」那张,能看到状态一步步变长:先只有 `ticket` → 加上 `triage`(`account`/`high`)→ 加上 `owner: '一线客服'` 和 `note` → `note` 被追加「紧急」。
+- `print(f"{text[:16]:<18} → {t.category:<9} {t.urgency:<6} {out['owner']} | {out['note']}")` `text[:16]` 截前 16 个字符,`:<18` 左对齐补空格到 18 宽。中文字符在终端里占两格宽,所以输出看起来没对齐。这次三张工单的实跑结果:<br>`10 月 8 号被扣了两次款,麻 → billing high 账务组 | …;紧急,30 分钟内响应`<br>`导出年度报表一直提示 ERR_E → technical normal 技术支持 | 先查知识库里的报错码文章`<br>`验证码一直过期,登录不了,急! → account high 一线客服 | …;紧急,30 分钟内响应`
+
+</div>
+
 几个要点:
 
 **用结构化输出驱动路由。** 分类节点不让模型自由发挥,而是用 Day 6 学的结构化输出,要求它返回一个 `Triage` 对象,`category` 是四选一的 `Literal`。这样条件边函数 `pick_branch` 拿到的一定是合法值,不会出现模型回一句「这应该算是账务问题吧」导致路由失败的情况。
@@ -422,6 +516,14 @@ for chunk in graph.stream({"messages": [("user", "上海天气?")], "llm_calls":
     for node, update in chunk.items():
         print(f"[{node}]", update["messages"][-1].content or update["messages"][-1].tool_calls)
 ```
+
+<div class="line-notes">
+
+- `for chunk in graph.stream({"messages": [("user", "上海天气?")], "llm_calls": 0}, stream_mode="updates"):` `stream` 边跑边吐。`updates` 模式下每个节点跑完吐一次,`chunk` 是 `{节点名: 该节点返回的更新}`。实测三次 chunk 的键依次是 `['llm']`、`['tools']`、`['llm']`。
+- `for node, update in chunk.items():` 一个 chunk 一般只有一个节点;如果有并行分支同时完成,会有多个。
+- `print(f"[{node}]", update["messages"][-1].content or update["messages"][-1].tool_calls)` 有文字就打文字,没有就打工具调用。实测输出:<br>`[llm] [{'name': 'get_weather', 'args': {'city': '上海'}, 'id': 'call_00_…', 'type': 'tool_call'}]`<br>`[tools] 小雨 19°C`<br>`[llm] 上海现在是小雨,气温 19°C。出门记得带伞,路面可能有点湿滑。`
+
+</div>
 
 输出类似:
 

@@ -125,6 +125,25 @@ class Review(BaseModel):
     problems: list[str] = Field(default_factory=list, description="不通过时列出具体问题,每条一句话")
 ```
 
+<div class="line-notes">
+
+- `import operator` 下面要用 `operator.add` 当合并规则。
+- `Category = Literal["billing", "refund"` 分类只能是这 8 个字符串之一。结构化输出时,模型给出别的值会校验失败。
+- `class Ticket(TypedDict):` 工单的四个字段。实跑的 T000153 是 `{'id': 'T000153', 'customer_email': 'wugang@example.com', 'subject': '银行流水又同步失败了,提示E3001', 'body': '银行流水又同步失败了,提示E3001'}`,标题直接取了消息的前 30 个字。
+- `class SupportState(TypedDict, total=False):` `total=False` 表示每个键都可以没有。一个节点只返回自己改的那几个键,LangGraph 再把它们合并进状态。
+- `turns: Annotated[list[dict], operator.add]` 合并规则是 `operator.add`,也就是列表相加:节点返回 `{"turns": [新的一条]}`,会接在已有记录的后面,不会覆盖。T000153 聊了三轮以后,`turns` 的角色顺序是 `customer, agent, customer, agent, customer, agent`。
+- `summary: str` 早期对话的摘要。没有 `Annotated`,就是普通的覆盖。T000153 只有 6 条消息,没触发压缩,所以一直是 `''`。
+- `summarized_upto: int` 前多少条已经被摘要覆盖了。T000153 是 0。
+- `profile: str` 客户画像,`load_customer` 每轮都会重新取一次。
+- `tool_log: Annotated[list[dict], operator.add]` 也是累加的,而且不会每轮清空。T000153 第一轮调了 `list_subscriptions`、`search_past_tickets`、`query_customer_data`,第二轮又调了前两个,三轮下来一共 5 条。
+- `outcome: str` 这一轮的结局。T000153 三轮都是 `resolved`。
+- `cost_cny: Annotated[float, operator.add]` 也用 `operator.add`,对浮点数就是普通的加法。每个节点返回自己花的钱,自动累加。T000153 三轮下来是 ¥0.1343。
+- `class Triage(BaseModel):` 分诊节点的结构化输出。这里用 Pydantic 而不是 TypedDict,因为要做校验,还要把 `Field(description=...)` 生成成 JSON Schema 交给模型。
+- `search_query: str = Field(description="用来检索帮助中心的查询` 第三轮(「还在吗?刚才说到哪了」)实测,分诊给出的是 `'E3001 银行流水同步失败 重新授权'`。客户这句话本身没有一个关键词,是靠对话历史补全的。
+- `class Review(BaseModel):` 质检节点的输出。`problems` 用 `default_factory=list`,`passed=True` 时可以不给。
+
+</div>
+
 新增四个字段。`turns` 用 `operator.add` 累加:第一轮的 `load_customer` 把工单正文作为客户的第一条消息放进去;`finalize` 和 `handoff` 把发给客户的回复追加进去;客户追问时,外部用 `graph.invoke({"turns": [{"role": "customer", "content": "..."}]}, cfg)` 再追加一条。
 
 `load_customer` 现在每轮开头都会重置一批"本轮"字段:
@@ -149,6 +168,21 @@ class Review(BaseModel):
         return {"summary": summary, "summarized_upto": upto, "cost_cny": deps.spent() - before}
 ```
 
+<div class="line-notes">
+
+- `text, err = deps.call_tool("get_customer", {"email": state["ticket"]["customer_email"]},` 通过工具注册表查客户,查不到时 `err` 为真。
+- `customer = None if err else json.loads(text)` 工具返回的是 JSON 字符串,这里转回字典。吴刚是 `C0010`。
+- `profile = deps.profile_for(customer["id"]) if customer else ""` 查不到客户就没有画像。`profile_for` 在生产里是 `get_or_build_profile`,在测试里是一个 lambda。
+- `update = {"customer": customer, "profile": profile, "revisions": 0, "refund_request": None,` 这些是「本轮」字段,每一轮开头都重置。`turns`、`summary`、`tool_log`、`cost_cny` 不在这里,所以会跨轮保留。
+- `if not state.get("turns"):` 只有第一轮 `turns` 还是空的。从第二轮开始,外面传进来的 `{"turns": [{"role": "customer", ...}]}` 已经通过 `operator.add` 加进去了。
+- `update["turns"] = [{"role": "customer", "content": state["ticket"]["body"]}]` 把工单正文当成客户说的第一句话。T000153 的第一条就是 `银行流水又同步失败了,提示E3001`。
+- `def prepare_context(state: SupportState) -> dict:` 新增的节点,在 `load_customer` 和 `classify` 之间。
+- `before = deps.spent()` 先记下当前花了多少钱,结束时相减,得到这个节点自己花的钱。
+- `summary, upto = maybe_compress(deps.small_llm, state["turns"],` 没超预算时原样返回,不调模型,也不花钱。
+- `return {"summary": summary, "summarized_upto": upto, "cost_cny": deps.spent() - before}` 没压缩时 `cost_cny` 是 0,加到总账上也没有影响。
+
+</div>
+
 为什么要重置?因为 checkpoint 会把上一轮的所有字段带过来。上一轮质检的 `review`、上一轮查到的 `findings`、上一轮的 `refund_request`,如果不清掉,第二轮的 draft 节点会看到"上一版草稿被质检退回",act 节点的结论会混进旧数据。我第一次写的时候就漏了 `review`,结果客户第二轮问了个很简单的问题,Agent 回复里莫名其妙地在"修正"上一轮的错误。哪些字段跨轮保留(turns、summary、profile、tool_log、cost_cny),哪些每轮重置,要想清楚并写在一处。
 
 给模型看的工单文本也要带上历史:
@@ -171,6 +205,20 @@ def _ticket_text(state: SupportState) -> str:
     return "\n\n".join(parts)
 ```
 
+<div class="line-notes">
+
+- `turns = state.get("turns") or [{"role": "customer", "content": t["body"]}]` 兼容 Day 47 那种没有 `turns` 的老状态,单测直接调节点函数时也用得上。
+- `upto = state.get("summarized_upto", 0)` 没压缩过就是 0,下面 `turns[0:-1]` 就是除最后一条以外的全部历史。
+- `parts = [f"发件邮箱:{t['customer_email']}\n主题:{t['subject']}"]` 第一段永远是工单的基本信息。
+- `if state.get("profile"):` 有画像才加这一段。实测 T000153 第三轮的这一段是 `客户画像:**客户画像(供客服参考)**` 加上两行正文。模型在画像开头自己加了一个 markdown 标题,画像提示词没禁止这么做。
+- `if state.get("summary"):` 压缩过才有这一段。T000153 没压缩,这段没出现。
+- `history = turns[upto:-1]` 最后一条单独放到下面,这里只取它之前的部分。第三轮时 `turns` 有 5 条,`history` 是前 4 条。
+- `parts.append(f"对话记录:\n{render_turns(history)}")` 实测是 `客户:银行流水又同步失败了,提示E3001`、`客服:您好,E3001最常见原因是…`,一条一行。客服那几条带着渲染后的 `[1]` 和「参考文章」链接,因为存进 `turns` 的是发给客户的最终版本。
+- `parts.append(f"客户最新消息:{turns[-1]['content']}")` 第三轮这一行是 `客户最新消息:还在吗?刚才说到哪了`,放在最后,单独标出来。
+- `return "\n\n".join(parts)` 段与段之间空一行。
+
+</div>
+
 结构是:基本信息 → 客户画像 → 早期对话摘要 → 最近的对话记录 → 客户最新消息。最新消息单独一行、放在最后、明确标出来,这一点很重要。如果只是把所有轮次平铺,模型有时会去回答第一轮的问题而不是最新的追问。放在末尾也符合"Lost in the Middle"那篇论文的发现:长上下文里,开头和结尾的信息最容易被模型用上,中间的最容易被忽略。
 
 ### checkpoint 存进 Postgres
@@ -187,6 +235,9 @@ from psycopg.rows import dict_row
 
 from ..config import get_settings
 
+# setup() 建的四张表里,这三张存对话快照;checkpoint_migrations 记的是表结构版本,不能清
+CHECKPOINT_TABLES = ("checkpoint_writes", "checkpoint_blobs", "checkpoints")
+
 
 def make_checkpointer(url: str | None = None) -> PostgresSaver:
     # PostgresSaver 要求 autocommit + dict_row;prepare_threshold=0 避免和连接池/pgbouncer 的预编译语句冲突
@@ -195,7 +246,37 @@ def make_checkpointer(url: str | None = None) -> PostgresSaver:
     saver = PostgresSaver(conn)
     saver.setup()  # 第一次运行时建 checkpoint 相关的表,之后是空操作
     return saver
+
+
+def reset_checkpoints(url: str | None = None) -> int:
+    """清空所有工单的对话快照,返回清掉了几份。重新 seed 业务库之前必须先跑:
+    seed 会把工单号重新从 T000001 编起,不清的话新工单会接上同号旧工单的对话。"""
+    make_checkpointer(url)  # 表还没建过的话先建好,下面的 TRUNCATE 才不会报错
+    with Connection.connect(url or get_settings().database_url, autocommit=True) as conn:
+        n = conn.execute("SELECT count(*) FROM checkpoints").fetchone()[0]
+        conn.execute(f"TRUNCATE {', '.join(CHECKPOINT_TABLES)}")
+    return n
+
+
+if __name__ == "__main__":
+    print(f"cleared {reset_checkpoints()} checkpoints")
 ```
+
+<div class="line-notes">
+
+- `from langgraph.checkpoint.postgres import PostgresSaver` 来自 `langgraph-checkpoint-postgres` 这个包,Day 44 的依赖里已经装好了。
+- `CHECKPOINT_TABLES = ("checkpoint_writes", "checkpoint_blobs", "checkpoints")` 只清存快照的三张表。`checkpoint_migrations` 记录的是表结构版本,清掉的话下次 `setup()` 会重新跑建表迁移。
+- `conn = Connection.connect(url or get_settings().database_url, autocommit=True, prepare_threshold=0,` 单独开一条连接给 checkpointer 用,不和业务查询共用。
+- `saver = PostgresSaver(conn)` 把连接交给它,以后读写快照都走这条连接。
+- `saver.setup()` 实测第一次跑完以后,public schema 里多了 `checkpoint_blobs`、`checkpoint_migrations`、`checkpoint_writes`、`checkpoints` 四张表。再调一次什么都不会做。
+- `return saver` 传给 `build_graph(deps, checkpointer=...)`。之后每个节点执行完都会写一份快照。T000153 聊了三轮,`checkpoints` 表里这个 thread 一共 31 份,一轮 10 份左右,和正文的估计一致。
+- `def reset_checkpoints(url: str | None = None) -> int:` 重新造数之前调用。原因见正文:seed 会把工单号从 T000001 重新编起。
+- `make_checkpointer(url)  # 表还没建过的话先建好` 在一个全新的库上直接 TRUNCATE 会报「表不存在」,所以先确保表已经建好。
+- `n = conn.execute("SELECT count(*) FROM checkpoints").fetchone()[0]` 先数一下要清掉多少份,打印出来心里有数。这条连接没设 `dict_row`,返回的是元组,所以用 `[0]` 取值。
+- `conn.execute(f"TRUNCATE {', '.join(CHECKPOINT_TABLES)}")` 拼出来是 `TRUNCATE checkpoint_writes, checkpoint_blobs, checkpoints`。表名是代码里写死的常量,不是用户输入,用 f-string 拼没有注入风险。TRUNCATE 比 DELETE 快,也不会一行一行写日志。
+- `print(f"cleared {reset_checkpoints()} checkpoints")` 用 `uv run python -m supportpilot.memory.checkpoint` 运行。实测:造数后跑了一张工单,清掉 18 份;重新造数、再跑一张工单,又清掉 9 份。
+
+</div>
 
 `PostgresSaver` 要求连接是 autocommit 并且返回字典行,`prepare_threshold=0` 关掉 psycopg 的预编译语句,否则以后接 pgbouncer 之类的连接池会报错。`setup()` 第一次运行会建四张表:`checkpoints`、`checkpoint_blobs`、`checkpoint_writes`、`checkpoint_migrations`,建在 public schema 里,和我们的 `biz`、`kb` 分开。
 
@@ -206,6 +287,15 @@ SELECT thread_id, count(*) AS snapshots FROM checkpoints GROUP BY thread_id ORDE
 ```
 
 每张工单每跑一个节点存一份快照,一轮对话大概 8 到 10 份。快照里有完整的状态,所以也能"时间旅行":回到任意一个节点之后的状态重新跑。这对排查问题很有用,但也意味着这几张表会长得很快。上线后要定期清理已关闭工单的快照,或者只保留每张工单的最后一份。
+
+**重新造数之前,先清快照。** `seed_db.py` 会清空业务表,工单号又从 T000001 编起,但 checkpoint 表它不管。我实测踩过:造数后建了一张 T000153「银行流水又同步失败了」,重新造数,再建一张工单,编号还是 T000153,内容是「发票抬头写错了」。结果这张新工单直接接上了旧对话:`turns` 里是旧的那句「银行流水又同步失败了」加上两条客服回复,新工单的正文一个字都没进去,因为 `load_customer` 看到 `turns` 不是空的,就不再放入第一条消息。所以 `checkpoint.py` 里加了 `reset_checkpoints()`,每次重新造数之前先跑一遍:
+
+```bash
+uv run python -m supportpilot.memory.checkpoint   # cleared 18 checkpoints
+make seed
+```
+
+清完以后再建 T000153,`turns` 里只有「发票抬头写错了」和这一次的回复,是干净的。生产环境不会碰到这个问题,因为工单号不会被重用;只有本地反复造数时才会撞上。
 
 ## 第二种:对话太长时压缩
 
@@ -243,6 +333,25 @@ def maybe_compress(llm: LLMClient, turns: list[dict], summary: str, summarized_u
     res = llm.chat([{"role": "system", "content": SUMMARY_PROMPT}, {"role": "user", "content": text}], temperature=0)
     return res.content.strip(), summarized_upto + len(to_fold)
 ```
+
+<div class="line-notes">
+
+- `from ..llm import LLMClient` 这里只用来写类型注解,真正的客户端由调用方传进来,测试时可以塞 `FakeLLM`。
+- `SUMMARY_PROMPT = ` 明确列出「必须保留」的四类信息,摘要才不会丢掉账单号和承诺。
+- `def estimate_tokens(text: str) -> int:` 实测:`"中" * 100` 得 71;`"银行流水又同步失败了,提示E3001"` 得 10;`"hello world"` 得 3。
+- `cjk = sum(1 for ch in text if "一" <= ch <= "鿿")` 字符串可以直接比大小,比的是 Unicode 码点。`一`(U+4E00)到 `鿿`(U+9FFF)是常用汉字的范围。`sum(1 for …)` 就是数满足条件的有几个。
+- `return int(cjk * 0.7 + (len(text) - cjk) / 4) + 1` 100 个汉字:`int(70.0 + 0) + 1 = 71`。末尾的 `+1` 保证空字符串也至少算 1。
+- `def render_turns(turns: list[dict]) -> str:` 实测两条消息渲染成 `客户:你好` 和 `客服:您好,请问有什么可以帮您`,一条一行。
+- `return "\n".join(f"{who[t['role']]}:{t['content']}" for t in turns)` 存的是英文角色名,给模型看时换成中文。
+- `def maybe_compress(llm: LLMClient, turns: list[dict], summary: str, summarized_upto: int,` 返回新的 `(summary, summarized_upto)`,不改动传进来的 `turns`。原文永远完整保存在状态里,压缩只影响给模型看的那份上下文。
+- `pending = turns[summarized_upto:]` 还没被摘要覆盖的部分。
+- `if estimate_tokens(summary + render_turns(pending)) <= budget or len(pending) <= keep_last:` 两种情况都直接返回:没超预算,或者剩下的不到 4 条,也没什么可压的。实测 24 条一来一回、每句四五十个字的对话,估出来只有 628,不会压缩。预算 1200 大约相当于一千七八百个汉字。
+- `to_fold = pending[:-keep_last]` 我把同一组对话重复了 4 遍,一共 48 条,估算 1257,超过了预算。`to_fold` 是前 44 条,最后 4 条保留原文。
+- `text = (f"已有摘要:\n{summary}\n\n" if summary else "") + "新增对话:\n" + render_turns(to_fold)` 已经有摘要时,把旧摘要和新的这段对话一起交给模型重写,所以始终只有一段摘要。
+- `res = llm.chat([{"role": "system", "content": SUMMARY_PROMPT}` 实测摘要是:<br>`- 诉求:解释INV-2026-0301扣399、299差100;退未用席;发票改刚正财税(上海);加席先邮件。`<br>`- 查:INV-2026-0301 399;100=席1→2补差;张敏加1席。`<br>`- 承诺:退未用按天;100待批3–5原路退,卡到期转新卡;发票重提1日;邮件转产品;3日说明。`<br>账单号、金额和承诺都留下来了。这一次调用用了 1420 个输入 token,输出却有 4202 个。原因是 `LLMClient` 没关 DeepSeek 的思考模式,思考的 token 也要计费。
+- `return res.content.strip(), summarized_upto + len(to_fold)` 返回 `upto=44`,压缩后估算降到 167。下一轮客户再追问一句,`pending` 只剩 5 条,不到预算,摘要原样返回,不再调用模型。
+
+</div>
 
 工单对话一般两三轮,但总有客户来回十几轮。每一轮都会把全部历史重新发给模型好几次(分诊、调查、起草、质检各一次),历史越长,每轮越贵、越慢,模型也越容易被早期内容带偏。Anthropic 在《Effective context engineering for AI agents》里把这种现象叫上下文腐烂(context rot):上下文越长,模型准确回忆其中信息的能力越差。
 
@@ -282,7 +391,9 @@ def get_or_build_profile(conn, llm: LLMClient, customer_id: str) -> str:
                        (customer_id,)).fetchone()
     if row and row["source_ticket_count"] == n:
         return row["summary"]
-    facts = {"subscriptions": biz.list_subscriptions(conn, customer_id),
+    facts = {"customer": conn.execute("SELECT name, company, is_vip FROM biz.customers WHERE id = %s",
+                                      (customer_id,)).fetchone(),
+             "subscriptions": biz.list_subscriptions(conn, customer_id),
              "past_tickets": biz.search_past_tickets(conn, customer_id, limit=10)}
     res = llm.chat([{"role": "system", "content": PROFILE_PROMPT},
                     {"role": "user", "content": json.dumps(facts, ensure_ascii=False, default=str)}], temperature=0)
@@ -295,6 +406,22 @@ def get_or_build_profile(conn, llm: LLMClient, customer_id: str) -> str:
     return summary
 ```
 
+<div class="line-notes">
+
+- `from ..tools import business as biz` 复用 Day 46 的业务查询函数,不重新写一遍 SQL。
+- `PROFILE_PROMPT = ` 只要事实,不要评价。
+- `n = conn.execute("SELECT count(*) AS n FROM biz.tickets WHERE customer_id = %s AND status = 'resolved'",` 吴刚(C0010)种子数据里有 3 张已解决的工单(4 月、7 月、9 月,都是「银行流水又不同步了」)。
+- `row = conn.execute("SELECT summary, source_ticket_count FROM biz.customer_profiles` 上次生成画像时是基于几张工单。
+- `if row and row["source_ticket_count"] == n:` 数字没变就直接用存好的画像。实测第一次生成用了 2.2 秒、1 次模型调用;第二次 0.001 秒,调用次数还是 1。
+- `facts = {"customer": conn.execute("SELECT name, company, is_vip FROM biz.customers WHERE id = %s",` 客户档案也要交给模型。我第一版只传了订阅和工单,模型写的是「未标注 VIP」,而吴刚的 `is_vip` 是 `True`。加上这一行以后,实测画像是:`吴刚(刚正财税)为VIP,Pro年费1席位,订阅有效至2027-01-10并自动续费。历史3次工单均为银行流水不同步,系银行授权90天到期;已指导重授权,客户要求到期前提醒。`
+- `"past_tickets": biz.search_past_tickets(conn, customer_id, limit=10)}` 最多取 10 张历史工单,防止老客户的历史太长。
+- `{"role": "user", "content": json.dumps(facts, ensure_ascii=False, default=str)}` `default=str`:日期、Decimal 这些 JSON 不认识的类型,一律转成字符串。`ensure_ascii=False` 让中文原样输出,不变成 `\uXXXX`,能省不少 token。
+- `summary = res.content.strip()[:300]` 硬截断到 300 个字符。提示词要求 100 字以内,这里是防模型写长了的兜底。
+- `"INSERT INTO biz.customer_profiles (customer_id, summary, source_ticket_count) VALUES (%s, %s, %s) "` 配合下一行的 `ON CONFLICT … DO UPDATE` 就是 upsert:没有就插入,有就更新。`EXCLUDED` 指的是这次想插入的那一行。
+- `(customer_id, summary, n))` 记下这次是基于几张工单生成的。实测有个副作用:T000153 第一轮结束时,`finish_ticket` 把它标成了 resolved,第二轮已解决数从 3 变成 4,画像重新生成了一次。新画像写的是「历史 4 次工单」,把正在处理的这一张也算进去了。新画像开头还多了一个 `**客户画像(供客服参考)**` 标题,同一个提示词,两次输出的格式不一样。
+
+</div>
+
 客户画像是一段不超过 100 字的话,比如(这是按吴刚的数据,模型大致会写出这样的东西):
 
 ```text
@@ -305,6 +432,8 @@ def get_or_build_profile(conn, llm: LLMClient, customer_id: str) -> str:
 有了这段话,吴刚第四次来问,Agent 的回复就不会再从"请检查网络"开始,而是会说"您的银行授权又到 90 天了,还是重新授权就能恢复。到期提醒这个需求我们已经记录"。
 
 几个设计决定:
+
+**事实里要带上客户档案。** 提示词让模型写「是否 VIP」,那就得把 `is_vip` 交给它。我第一版只传了订阅和历史工单,吴刚明明是 VIP,模型老老实实写了「未标注 VIP」。提示词里要求写的每一项,输入里都得有对应的数据,否则模型要么写「未知」,要么自己猜。
 
 **什么时候重建?** 只在这个客户已解决的工单数变了的时候。平时直接读表,零成本。另一种做法是每张工单结束时更新,但那样每张工单都要多一次模型调用,而且大部分工单不会让画像有实质变化。
 
@@ -363,6 +492,25 @@ class Deps:
         return total
 ```
 
+<div class="line-notes">
+
+- `from functools import partial` `partial(f, conn)` 会生成一个新函数,第一个参数已经固定成 `conn`,调用时只需要传剩下的参数。
+- `from ..memory.profile import get_or_build_profile` Day 48 新增的依赖。
+- `class Deps:` 节点函数从这里拿到它们需要的一切,自己不 import 数据库或客户端。
+- `llm: LLMClient                 # 起草用的主力模型` 和 `small_llm` 现在是同一个对象,因为 `.env` 里 `LLM_SMALL_MODEL` 留空。
+- `retriever: Any                 # 有 search(query, k) -> list[Hit] 就行` 类型写 `Any`,测试里塞一个只有 `search` 方法的假对象也能用。这就是鸭子类型:看它能不能做这件事,不看它是什么类。
+- `call_tool: Callable[..., tuple[str, bool]]` `Callable[..., X]`:参数随意,返回 `X`。
+- `profile_for: Callable[[str], str] = lambda customer_id: ""   # Day 48:客户画像` 默认是一个返回空串的 lambda,Day 47 的测试不用改就能继续通过。有默认值的字段必须放在没有默认值的字段后面,所以它排在最后。
+- `@classmethod` 第一个参数是类本身(`cls`),`Deps.from_conn(conn)` 返回一个组装好的实例。
+- `small = LLMClient(s, model=s.llm_small_model) if s.llm_small_model else llm` 没配小模型就复用同一个对象,下面 `spent()` 靠 `is not` 判断时就不会重复算钱。
+- `call_tool=partial(call_tool, conn),` 原函数是 `call_tool(conn, name, args, ...)`,固定 `conn` 以后,节点只需要写 `deps.call_tool(name, args, ...)`。
+- `profile_for=partial(get_or_build_profile, conn, small))` 固定前两个参数,剩下的 `customer_id` 由 `load_customer` 传。生成画像用的是小模型。
+- `def spent(self) -> float:` 节点在开头和结尾各调一次,两次相减就是这个节点花的钱。
+- `total = self.llm.ledger.cost_cny(self.settings)` 按配置里的单价换算成元。
+- `if self.small_llm is not self.llm:` `is` 比较的是不是同一个对象,不是值相不相等。是同一个对象时只算一次。
+
+</div>
+
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1k8L3zxEDz&autoplay=0&high_quality=1" title="基于【LangGraph】构建长期记忆Agent,吴恩达联手LangChain创始人!附课件代码 DeepLearning.AI" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
 <figcaption>吴恩达大模型 · 基于 LangGraph 构建长期记忆 Agent(DeepLearning.AI 课程中文字幕版,7 集)· 讲语义、情景、程序三类记忆和 LangGraph Store,看完能理解我们为什么只用了其中最简单的一种。</figcaption>
@@ -418,6 +566,21 @@ def build_graph(deps: Deps, checkpointer=None):
     g.add_edge("handoff", END)
     return g.compile(checkpointer=checkpointer)
 ```
+
+<div class="line-notes">
+
+- `def after_classify(state: SupportState) -> str:` 条件边的路由函数,返回下一个节点的名字。
+- `return "handoff" if state["triage"]["needs_human"] else "retrieve"` T000153 三轮的 `needs_human` 都是 False,都走了 `retrieve`。
+- `if state["triage"]["needs_account_data"] and state.get("customer"):` 要查账户数据,并且找到了客户,才进 `act` 调工具。第三轮实测 `needs_account_data=False`,检索完直接起草。
+- `def after_check(deps: Deps):` 外层函数接收 `deps`,返回里面的 `route`。路由函数只能接收 state 一个参数,`max_revisions` 这种配置就靠闭包带进去。
+- `rr = state.get("refund_request")` 有一笔待审批的退款就先去 `approval`,否则直接 `finalize`。
+- `if state.get("revisions", 0) <= deps.settings.max_revisions:` 质检没过,还有重写次数就回到 `draft`,用完了就转人工。T000153 第一轮被质检打回过一次:终端里能看到两版草稿连在一起输出,第二版才通过。
+- `g.add_edge("load_customer", "prepare_context")` Day 48 唯一新增的两条边之一。
+- `g.add_edge("prepare_context", "classify")` 压缩放在分诊之前,后面所有节点看到的都是压缩过的上下文。实测 `get_state_history` 一轮的快照顺序(从新到旧)是 `finalize → check → draft → retrieve → classify → prepare_context → load_customer → __start__`。
+- `g.add_conditional_edges("check", after_check(deps), ["approval", "finalize", "draft", "handoff"])` 第三个参数列出所有可能的去处,LangGraph 画图和做检查时会用到。
+- `return g.compile(checkpointer=checkpointer)` 传 `None` 就不保存状态,Day 47 的单测还是这样用。
+
+</div>
 
 只多了一个节点和一条边:`load_customer → prepare_context → classify`。`finalize` 和 `handoff` 的返回值里加上 `"turns": [{"role": "agent", "content": reply}]`,把回复追加进对话记录。
 
@@ -490,6 +653,28 @@ if __name__ == "__main__":
     main()
 ```
 
+<div class="line-notes">
+
+- `from langgraph.types import Command` 恢复被 `interrupt` 暂停的图时要用它。
+- `def run(graph, payload, cfg) -> None:` 跑一轮:流式打印、处理审批、打印结果。
+- `for mode, chunk in graph.stream(payload, cfg, stream_mode=["updates", "custom"]):` 同时订阅两种流时,每次得到的是 `(模式名, 内容)` 这样的二元组。`custom` 是节点里 `_emit` 推送出来的事件。
+- `if mode == "custom" and chunk["type"] == "token":` 起草节点逐字推送的 token,`end=""` 不换行,`flush=True` 立即刷到屏幕。实测有个小毛病:质检打回重写时,第二版草稿紧接着第一版输出,中间没有换行,两版连成了一大段。
+- `elif mode == "custom" and chunk["type"] == "tool":` 实测第一轮打印了三行:`🔧 list_subscriptions({"customer_id": "C0010"})`、`🔧 search_past_tickets(...)`、`🔧 query_customer_data({"sql": "SELECT id, subject, status, created_at, resolved_at FROM tickets ORDER BY created_at"})`。
+- `while graph.get_state(cfg).next:` `next` 不为空,说明图停在某个节点前面,通常是审批节点的 `interrupt`。T000153 没有退款,`next` 是 `()`,不进循环。
+- `graph.invoke(Command(resume={"approved": ok, "approver": "cli"}), cfg)` `resume` 的值会成为节点里 `interrupt(...)` 的返回值。
+- `v = graph.get_state(cfg).values` 取出这一轮跑完以后的完整状态。
+- `print(f"[记忆] 共 {len(v.get('turns', []))} 轮,已摘要到第 {v.get('summarized_upto', 0)} 轮;"` 实测第一轮打印 `共 2 轮,已摘要到第 0 轮`,第二轮 `共 4 轮`。这里的「轮」其实是消息条数,一问一答算 2 条。
+- `ap.add_argument("email", nargs="?")` `nargs="?"` 表示这个位置参数可以不给。用 `--ticket` 接着聊时就不用给。
+- `graph = build_graph(Deps.from_conn(conn), checkpointer=make_checkpointer())` 换成了 Postgres 存档,进程退出以后状态还在。
+- `if not graph.get_state({"configurable": {"thread_id": tid}}).values:` 没存过的 thread,`values` 是空字典。实测 `--ticket T999999` 输出 `工单 T999999 没有保存的对话` 后退出。
+- `tid = biz.create_ticket(conn, args.email, args.message[:30], args.message)` 先在业务库建一张工单,拿到编号。我的临时库里种子工单有 152 张,这张是 T000153,和正文的例子一样。
+- `run(graph, {"ticket": {"id": tid,` 第一轮只传 `ticket`,`turns` 由 `load_customer` 填。
+- `msg = input("客户> ").strip()` 我用管道喂了一句「重新授权了还是不行」,第二轮回复开头是「重新授权后仍报 E3001,说明不能只用授权到期来解释」,接上了前文。
+- `except (KeyboardInterrupt, EOFError):` Ctrl+C 和输入流结束(管道读完了、Ctrl+D)都走这里,提示下次怎么接着聊。
+- `run(graph, {"turns": [{"role": "customer", "content": msg}]}, cfg)` 追问只传新的一条,靠 `operator.add` 接到历史后面。我重新启动进程,用 `--ticket T000153` 问「还在吗?刚才说到哪了」,回复是「我们在的,帮您梳理一下进度」,后面把前两轮的四个要点按顺序列了出来。三轮一共花了 ¥0.1343。
+
+</div>
+
 ```bash
 uv run python scripts/chat_ticket.py wugang@example.com "银行流水又同步失败了,提示E3001"
 # Agent 回复……
@@ -549,6 +734,25 @@ def test_compress_only_when_over_budget():
 def test_estimate_tokens_rough():
     assert 60 <= estimate_tokens("中" * 100) <= 80
 ```
+
+<div class="line-notes">
+
+- `from fakes import FakeLLM, FakeTools, make_deps` Day 47 写的假模型和假工具,不连库、不花钱。`conftest.py` 已经把 `tests/` 加进了 `sys.path`,所以能直接 import。
+- `from langgraph.checkpoint.memory import InMemorySaver` 测试用内存存档,验证的是「同一个 thread 能接上」这个逻辑,和存到哪里无关。
+- `DRAFT = "您好,E3001 一般是银行授权过期,请重新授权 [KB-refund-002]。"` 假检索 `FakeRetriever` 返回的正好是 `KB-refund-002`,草稿引用它才能通过引用检查。
+- `deps.profile_for = lambda cid: "专业版年付 VIP,银行同步 E3001 已出现 3 次"` 直接替换依赖,不用数据库。
+- `first = graph.invoke({"ticket": TICKET}, cfg)` 第一轮:`load_customer` 放进客户的第一句话,`finalize` 追加客服的回复。
+- `assert [t["role"] for t in first["turns"]] == ["customer", "agent"]` 一问一答两条。
+- `second = graph.invoke({"turns": [{"role": "customer", "content": "重新授权了还是不行"}]}, cfg)` 同一个 `thread_id`,只传新的一条。
+- `assert second["profile"].startswith("专业版")` 第二轮重新取画像,确认画像注入了。
+- `short = [{"role": "customer", "content": "你好"}] * 6` 列表乘法:同一个字典的引用重复 6 次。这里只读不改,所以没问题。
+- `assert maybe_compress(llm, short, "", 0) == ("", 0)` 6 条「你好」估算是 20 个 token,远低于预算,原样返回。
+- `long = [{"role": "customer", "content": "我的账单有问题" * 80}] * 8` 每条 560 个汉字,8 条估算 3151,一定超预算。
+- `summary, upto = maybe_compress(llm, long, "", 0, budget=500, keep_last=4)` 前 4 条并进摘要,`upto=4`。
+- `assert llm.ledger.calls == 1` 只调了一次模型。
+- `assert 60 <= estimate_tokens("中" * 100) <= 80` 实际是 71。实测这个文件 3 个测试和项目其余 31 个一起跑,`34 passed in 4.07s`。
+
+</div>
 
 第一个测试验证同一个 thread 上两次 invoke 后,对话记录是"客户、客服、客户、客服"四轮,画像也被带上了。第二个测试验证压缩只在超预算时发生,并且正好把前 4 轮并入摘要、后 4 轮保留。第三个测试确认粗估的 token 数在合理范围。这三个测试都不需要数据库和 API,我本机跑过,通过。
 

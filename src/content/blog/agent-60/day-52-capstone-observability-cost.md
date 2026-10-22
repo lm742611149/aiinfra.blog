@@ -142,6 +142,26 @@ class LLMClient:
         return got
 ```
 
+<div class="line-notes">
+
+- `import time` 下面用 `time.perf_counter()` 量每次调用的耗时,写进账本的 `latency_ms`。
+- `from contextvars import ContextVar` 上下文变量:看上去像全局变量,但每个线程、每个 asyncio 任务都有自己的一份值。
+- `from langfuse.openai import OpenAI` 全文唯一要改的导入。Langfuse 的替身类继承了原版 OpenAI 客户端,每次 `chat.completions.create` 都会顺手上报一个 generation。实测装的是 langfuse 5.0.4,没配 `LANGFUSE_PUBLIC_KEY` 时只打一行 `Langfuse client initialized without public_key. Client will be disabled.`,调用照常返回、不上报,所以本地没有 Langfuse 也能跑。
+- `from .obs.ledger import record_call` 每次调用记一笔细账,下面 `_usage` 里调用。
+- `current_ticket: ContextVar[str] = ContextVar("current_ticket", default="-")` 当前在处理哪张工单,没人设置时是 `"-"`。实测在 `ticket_trace` 外面直接调模型,账本里这一行的 `ticket_id` 和 `node` 都是 `-`。
+- `current_node: ContextVar[str] = ContextVar("current_node", default="-")` 当前在哪个节点。由 `obs/tracing.py` 的 `traced` 在节点开始时设置、结束时还原。
+- `def _create(self, **kwargs):` 所有模型请求都从这里出去,`name` 和 `metadata` 只需要加在这一处。
+- `kwargs.setdefault("name", current_node.get())` `setdefault`:调用方没传 `name` 才填。实测 classify 节点里发出的请求,`name` 就是 `"classify"`。
+- `kwargs.setdefault("metadata", {"ticket_id": current_ticket.get()})` 在 Langfuse 里按工单号搜 generation 用的。
+- `return self.client.chat.completions.create(**kwargs)` `name`/`metadata` 是 Langfuse 替身才认识的参数,它会先把这两个拿走再发给 DeepSeek。要是还用原版 OpenAI SDK,这两个参数会让请求直接报错。
+- `def _usage(self, u: Any, model: str | None = None, t0: float | None = None) -> "Usage":` 多了两个可选参数,没传也能用,旧的调用点不会坏。
+- `self.ledger.add(got)` 原来的累计不动。节点里用 `deps.spent()` 算的 `cost_cny` 还是按 `.env` 里的单一价格估。
+- `if u is not None:` 流式调用万一没拿到 usage(有的厂商不支持 `include_usage`),就不记账,免得写一行全是 0 的假数据。
+- `record_call(ticket_id=current_ticket.get(), node=current_node.get(),` 这里能读到工单号和节点名,靠的就是 contextvars:调用链上任何一层都不用把它们当参数传下来。
+- `latency_ms=int((time.perf_counter() - t0) * 1000) if t0 else 0)` 秒换成毫秒取整。实测一张退款工单里,classify 用了 1031 ms,draft 用了 11950 ms。流式调用量的是从发请求到最后一块数据收完的总时长。
+
+</div>
+
 `chat()` 和 `stream()` 各自在请求前加一行 `t0 = time.perf_counter()`,入账那行改成 `self._usage(resp.usage, kwargs["model"], t0)`(`stream()` 里是 `self._usage(last_usage, model or self.model, t0)`)。`structured()` 内部调的是 `chat()`,不用改。`name` 和 `metadata` 这两个参数是 Langfuse 替身额外认识的,原版 OpenAI SDK 不收,所以只有换了导入才能这么写。Day 47 的 `Usage.cost_cny()` 还留着,节点里算 `cost_cny` 的逻辑也不动,它按单一价格估算,今天的账本负责按真实价目精确记。
 
 然后是工单级的 trace 和节点级的 span,放在 `obs/tracing.py`:
@@ -183,6 +203,25 @@ def traced(name: str, fn: Callable[[dict], dict]) -> Callable[[dict], dict]:
     return wrapper
 ```
 
+<div class="line-notes">
+
+- `from contextlib import contextmanager` 把一个带 `yield` 的生成器函数变成可以写在 `with` 后面的上下文管理器。`yield` 之前的代码是进入,之后(这里是 `finally`)是退出。
+- `from functools import wraps` 包装函数时保留原函数的名字和 docstring,LangGraph 报错时显示的才是 `classify` 而不是 `wrapper`。
+- `from langfuse import get_client, propagate_attributes` langfuse 5.0.4 里这两个都在,实测能直接导入。
+- `def ticket_trace(ticket_id: str, customer_email: str, channel: str = "web"):` 包住一整张工单的处理过程。
+- `token = current_ticket.set(ticket_id)` `set` 返回一个 token,用来把变量恢复成设置之前的值。
+- `with get_client().start_as_current_observation(as_type="span", name="handle_ticket"):` 开一个名为 `handle_ticket` 的根 span,里面的 span 和 generation 自动挂在它下面。
+- `with propagate_attributes(session_id=customer_email,  # 同一客户的多张工单归到一个 session` 把 session、user、tags 传给里面所有的观测点。Langfuse 里按客户邮箱点开 session,能看到他的全部工单。
+- `yield` `with ticket_trace(...):` 里面的代码就在这里执行。
+- `current_ticket.reset(token)` 放在 `finally` 里,里面就算抛异常也会还原。实测驱动脚本在 `with` 里打印 `current_ticket.get()` 是 `T810000`,出了 `with` 又变回 `-`。
+- `def traced(name: str, fn: Callable[[dict], dict]) -> Callable[[dict], dict]:` 装饰器工厂,传入节点名和节点函数,返回包好的新函数。
+- `token = current_node.set(name)` 节点开始时记下「现在是 draft 在花钱」。
+- `with get_client().start_as_current_observation(as_type="span", name=name):` 每个节点一个 span,挂在 `handle_ticket` 下面,trace 树就是这么长出来的。
+- `return fn(state)` 原样调用节点函数、原样返回结果,LangGraph 察觉不到它被包了一层。
+- `current_node.reset(token)` 节点结束后还原。实测账本里每一行的 `node` 都是对的:同一张退款工单依次是 `load_customer`、`classify`、`act` ×4、`draft`、`check`、`draft`、`check`(第一版草稿被质检退回了一次)。
+
+</div>
+
 Day 47 的节点是在 `make_nodes(deps)` 里用闭包定义的,所以不用一个个加装饰器,在 `build_graph` 注册节点的地方统一包一层就行:
 
 ```python
@@ -193,6 +232,14 @@ from ..obs.tracing import traced
 for name, fn in n.items():
     g.add_node(name, traced(name, fn))  # 原来是 g.add_node(name, fn)
 ```
+
+<div class="line-notes">
+
+- `from ..obs.tracing import traced` 两个点表示上一级包,`agent/` 的上一级是 `supportpilot/`。
+- `for name, fn in n.items():` `n` 是 `make_nodes(deps)` 返回的 `{节点名: 函数}` 字典,Day 48 之后一共 10 个节点。
+- `g.add_node(name, traced(name, fn))  # 原来是 g.add_node(name, fn)` 在注册节点的地方统一包一层,不用一个个去改节点函数。实测改完后 Day 47–50 的 27 个单元测试照样全过:没配 Langfuse 时 `traced` 只多做了 contextvars 的设置和还原。
+
+</div>
 
 调用方用 `ticket_trace` 把整次运行包起来。命令行脚本(`scripts/run_tickets.py`、评测脚本)里是这样:
 
@@ -227,6 +274,21 @@ def _events(graph, payload, ticket_id: str):
     with ticket_trace(ticket_id, email):
         ...  # Day 49 原来的循环体整体缩进进来,一行不改
 ```
+
+<div class="line-notes">
+
+- `import contextvars` 下面要用 `copy_context()` 和 `Context.run()`。
+- `from starlette.concurrency import run_in_threadpool` 把一个同步函数丢进线程池执行,`await` 等它的返回值。
+- `_DONE = object()` 哨兵对象:一个独一无二的空对象,用 `is` 判断。生成器真的产出 `None` 也不会被误认成结束。
+- `ctx = contextvars.copy_context()  # 整个生成器共用这一个上下文` 只复制一次,后面每一步都在这同一个 `ctx` 里执行。
+- `it = iter(gen)` 拿到迭代器,下面一步步手动 `next`。
+- `while (item := await run_in_threadpool(ctx.run, next, it, _DONE)) is not _DONE:` 从里往外读:`ctx.run(next, it, _DONE)` 在 `ctx` 这个上下文里执行 `next(it, _DONE)`,生成器结束时返回 `_DONE` 而不是抛 `StopIteration`;`run_in_threadpool` 把这件事放进线程池;`:=` 海象运算符把结果同时赋给 `item` 并拿来比较。<br>我用一个三步的小生成器实测了这个坑:第一步 `cur.set("T810000")`,后两步读 `cur`。Day 49 的 `iterate_in_threadpool` 得到 `['step1 cur=T810000', 'step2 cur=-', 'step3 cur=-']`,第二步就丢了;换成这里的写法,得到 `['step1 cur=T810000', 'step2 cur=T810000', 'step3 cur=T810000']`。
+- `yield item` 异步生成器,`EventSourceResponse` 每拿到一个 `item` 就推给浏览器一条 SSE 事件。
+- `def _events(graph, payload, ticket_id: str):` Day 49 的事件生成器,只在外面多包一层 trace。
+- `email = _ticket_email(ticket_id)  # 查 biz.tickets 拿客户邮箱,一行 SQL,这里省略` 这个函数正文没给,需要自己补:`SELECT customer_email FROM biz.tickets WHERE id = %s`。
+- `with ticket_trace(ticket_id, email):` 生成器里的 `with` 会一直保持打开,直到生成器跑完。所以前面必须保证每一步都在同一个 `ctx` 里,否则 `with` 进入时设置的 `current_ticket`,下一步就读不到了。
+
+</div>
 
 一个 `Context` 同一时刻只能被一个线程进入,这里每一步是顺序执行的,不会冲突。
 
@@ -301,6 +363,26 @@ def cost_yuan(model: str, usage, ts: datetime | None = None) -> float:
     return factor * (hit * price.hit + miss * price.miss + out * price.out) / 1_000_000
 ```
 
+<div class="line-notes">
+
+- `CST = timezone(timedelta(hours=8))` 北京时间 UTC+8。DeepSeek 的高峰时段是按北京时间算的,服务器在别的时区也不会算错。
+- `@dataclass(frozen=True)` `frozen=True` 生成的对象不可修改,价格表不会在运行中被谁误改。
+- `hit: float   # 输入,缓存命中` 三个价格单位都是「元 / 百万 token」。
+- `"deepseek-flash": Price(hit=0.04, miss=2.0, out=8.0),` 命中价是未命中价的 1/50,缓存是成本优化的大头。
+- `def is_peak(ts: datetime | None = None) -> bool:` 不传时间就用现在,传了就用传入的,方便测试。
+- `t = (ts or datetime.now(CST)).astimezone(CST)` `astimezone` 把任意时区的时间换算成北京时间。
+- `if t.weekday() >= 5:  # 周末;法定节假日没处理,账会略微偏高,可以接受` `weekday()` 周一是 0,周六是 5、周日是 6。实测 `2026-10-24 10:00`(周六)返回 `False`。
+- `return 9 <= t.hour < 12 or 14 <= t.hour < 18` 链式比较,等价于 `9 <= t.hour and t.hour < 12`。实测周四(10-22)`07:59` 是 `False`,`10:30` 是 `True`,`12:30` 午休是 `False`。我实跑那 6 张工单是 07:59–08:02,全按空闲价记账。
+- `def split_prompt_tokens(usage) -> tuple[int, int]:` 把输入 token 拆成命中和未命中两部分,不同厂商的字段名不一样,统一在这里处理。
+- `hit = getattr(usage, "prompt_cache_hit_tokens", None)` DeepSeek 直接给 `prompt_cache_hit_tokens`。实测 classify 那次调用:`prompt_tokens=791`,命中 256,拆出来是 `(256, 535)`。命中数总是 128 的倍数,DeepSeek 按 128 token 一块做缓存。
+- `hit = (getattr(details, "cached_tokens", 0) or 0) if details else 0` OpenAI 系把命中数放在 `prompt_tokens_details.cached_tokens` 里。实测 `prompt_tokens=100, cached_tokens=64` 拆出来是 `(64, 36)`。`or 0` 兜住字段存在但值是 `None` 的情况。
+- `price = PEAK_PRICES.get(model)` 用 `.get` 而不是 `[]`:模型名不在表里时返回 `None`,不抛 `KeyError`。
+- `return 0.0  # 未知模型不瞎算,报表里会显示为 0,提醒你补价格` 实测 `cost_yuan("gpt-x", ...)` 返回 `0.0`。
+- `factor = 1.0 if is_peak(ts) else 0.5` 空闲时段五折。
+- `return factor * (hit * price.hit + miss * price.miss + out * price.out) / 1_000_000` 代入 classify 那次:`(256×0.04 + 535×2 + 142×8) / 1,000,000 = 0.00221624` 元,空闲时段乘 0.5,得 `0.00110812`,和账本里那一行的 0.00111 对得上。`1_000_000` 里的下划线只是方便读数字,Python 会忽略。
+
+</div>
+
 账本用 SQLite 就够了,一张表:
 
 ```python
@@ -308,10 +390,12 @@ def cost_yuan(model: str, usage, ts: datetime | None = None) -> float:
 import sqlite3
 import threading
 from datetime import datetime
+from pathlib import Path
 
 from .pricing import CST, cost_yuan, split_prompt_tokens
 
-_DB = "data/ledger.sqlite3"
+# 从本文件往上数三层就是项目根(obs → supportpilot → src → 根),在哪个目录启动都写到同一个文件
+_DB = Path(__file__).resolve().parents[3] / "data" / "ledger.sqlite3"
 _lock = threading.Lock()
 
 _SCHEMA = """
@@ -331,6 +415,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
 
 
 def _conn() -> sqlite3.Connection:
+    _DB.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(_DB, check_same_thread=False)
     conn.execute(_SCHEMA)
     return conn
@@ -352,6 +437,25 @@ def record_call(*, ticket_id: str, node: str, model: str, usage, latency_ms: int
         )
 ```
 
+<div class="line-notes">
+
+- `import threading` FastAPI 会在多个线程里同时处理工单,写 SQLite 要加锁。
+- `_DB = Path(__file__).resolve().parents[3] / "data" / "ledger.sqlite3"` `parents[0]` 是 `obs/`,`[1]` 是 `supportpilot/`,`[2]` 是 `src/`,`[3]` 就是项目根。最早写的是相对路径 `"data/ledger.sqlite3"`,结果在别的目录启动会报 `unable to open database file`。改成这样以后,我在 `/tmp` 下运行写账,文件照样写到了 `<项目根>/data/ledger.sqlite3`。
+- `_lock = threading.Lock()` 模块级的一把锁,所有线程共用。
+- `CREATE TABLE IF NOT EXISTS llm_calls (` `IF NOT EXISTS` 让每次连接都可以放心执行建表语句,第一次建表,之后什么都不做。
+- `hit_tokens INTEGER NOT NULL,` 只存命中数,未命中数用 `prompt_tokens - hit_tokens` 算得出来。
+- `cost_yuan REAL NOT NULL,` 记账那一刻就按当时的价格算好存下来。以后价格变了,旧账也不会被重算。
+- `_DB.parent.mkdir(exist_ok=True)` 第一次运行时 `data/` 可能还不存在,先建上。实测把 `data/` 删掉再写账,目录和库文件都自动建出来了。
+- `conn = sqlite3.connect(_DB, check_same_thread=False)` SQLite 连接默认只允许在创建它的线程里用,`check_same_thread=False` 关掉这个检查,并发安全由上面的锁来保证。
+- `def record_call(*, ticket_id: str, node: str, model: str, usage, latency_ms: int) -> None:` `*` 后面全部要按名字传,五个参数不会传错位置。
+- `now = datetime.now(CST)` 同一个 `now` 既写进 `ts`,也用来判断高峰还是空闲,两者不会对不上。
+- `hit, _miss = split_prompt_tokens(usage)` 变量名以下划线开头,表示「拿到了但不用」,ruff 不会报未使用变量。
+- `now.isoformat(), ticket_id, node, model,` 实测写进去的 `ts` 形如 `2026-10-22T07:59:49.123456+08:00`。
+- `with _lock, _conn() as conn:` 一个 `with` 同时进入两个上下文:先拿锁,再开连接。sqlite3 连接的 `with` 结束时自动 commit,但不会关闭连接。
+- `"INSERT INTO llm_calls (ts, ticket_id, node, model, prompt_tokens, hit_tokens,"` 实测 3 张工单跑两遍,一共写了 30 行。比如第一遍退款工单的 classify:`T810000|classify|deepseek-flash|791|256|142|0.00111|1031`。
+
+</div>
+
 每次调用都开一个连接看上去浪费,但对一个 demo 级服务完全够用,SQLite 写入是毫秒级的。如果你已经在用 Postgres 存会话,把这张表搬过去也行,SQL 几乎不用改。
 
 报表脚本回答三个问题:每张工单花多少(平均、P50、P95),钱花在哪个节点,缓存命中率多少。
@@ -362,6 +466,9 @@ def record_call(*, ticket_id: str, node: str, model: str, usage, latency_ms: int
 import argparse
 import sqlite3
 import statistics
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]  # scripts/ 的上一层就是项目根
 
 
 def pct(values: list[float], p: float) -> float:
@@ -375,7 +482,7 @@ def pct(values: list[float], p: float) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", default="1970-01-01")
-    ap.add_argument("--db", default="data/ledger.sqlite3")
+    ap.add_argument("--db", default=str(ROOT / "data" / "ledger.sqlite3"))
     args = ap.parse_args()
     conn = sqlite3.connect(args.db)
 
@@ -398,14 +505,33 @@ def main() -> None:
         " FROM llm_calls WHERE ts >= ? GROUP BY node, model ORDER BY SUM(cost_yuan) DESC",
         (args.since,),
     )
-    print(f"{'node':<12}{'model':<18}{'calls':>6}{'cost':>10}{'avg_ms':>8}{'hit%':>7}")
+    print(f"{'node':<15}{'model':<18}{'calls':>6}{'cost':>10}{'avg_ms':>8}{'hit%':>7}")
     for node, model, n, cost, ms, hit in rows:
-        print(f"{node:<12}{model:<18}{n:>6}{cost:>10.4f}{ms:>8.0f}{hit * 100:>6.1f}%")
+        print(f"{node:<15}{model:<18}{n:>6}{cost:>10.4f}{ms:>8.0f}{hit * 100:>6.1f}%")
 
 
 if __name__ == "__main__":
     main()
 ```
+
+<div class="line-notes">
+
+- `ROOT = Path(__file__).resolve().parents[1]  # scripts/ 的上一层就是项目根` 和 `ledger.py` 一样按文件位置推项目根,在哪个目录运行都行。
+- `def pct(values: list[float], p: float) -> float:` 自己写一个分位数,不为这点事引入 numpy。
+- `values = sorted(values)` 排序得到的是新列表,不会改动调用方传进来的那个。
+- `k = max(0, min(len(values) - 1, round(p / 100 * (len(values) - 1))))` 下标按 `p% × (n-1)` 取最近的整数,再夹在 `[0, n-1]` 之间。实测 6 张工单的单张成本排好序是 `[0.013, 0.0135, 0.0175, 0.0206, 0.0479, 0.0936]`:P50 的下标是 `round(2.5)`,Python 的 `round` 遇到 .5 取最近的偶数,得 2,结果 0.0175;P95 的下标是 `round(4.75) = 5`,结果 0.0936。
+- `ap.add_argument("--since", default="1970-01-01")` 默认从 1970 年算起,等于全部。
+- `ap.add_argument("--db", default=str(ROOT / "data" / "ledger.sqlite3"))` 默认路径从项目根算,和 `ledger.py` 写的是同一个文件。实测在根目录 `/` 下运行 `python <项目根>/scripts/cost_report.py`,照样读到那 6 张工单。
+- `r[0] for r in conn.execute(` 每行只有一列,取 `r[0]`。
+- `"SELECT SUM(cost_yuan) FROM llm_calls WHERE ts >= ? GROUP BY ticket_id", (args.since,)` 按工单汇总花费。`ts` 是 ISO 字符串,和 `"2026-10-12"` 做字符串比较,刚好等于按时间比较。实测 6 张工单的单张成本是 0.0936、0.0206、0.0135、0.0479、0.0175、0.013 元。
+- `print(f"工单数 {len(per_ticket)}")` 实测输出 `工单数 6`。
+- `f"单工单成本(元) 平均 {statistics.mean(per_ticket):.4f}"` 实测 `平均 0.0344  P50 0.0175  P95 0.0936`。P95 正好是第一遍的退款工单:调了 4 次工具,草稿还被质检退回重写了一次,一张花了 0.0936 元。
+- `"SELECT node, model, COUNT(*), SUM(cost_yuan), AVG(latency_ms),"` 按「节点 + 模型」分组。同一个节点可能用不同的模型,比如 check 按类别路由。
+- `" SUM(hit_tokens) * 1.0 / MAX(SUM(prompt_tokens), 1)"` `* 1.0` 强制做浮点除法(SQLite 里整数除以整数会取整);两个参数的 `MAX(..., 1)` 防止除以 0。
+- `print(f"{'node':<15}{'model':<18}{'calls':>6}{'cost':>10}{'avg_ms':>8}{'hit%':>7}")` `:<15` 左对齐占 15 格,`:>6` 右对齐占 6 格。节点列原来是 12 格,实跑时 13 个字符的 `load_customer` 和后面的模型名粘成了 `load_customerdeepseek-flash`,所以改成了 15。
+- `for node, model, n, cost, ms, hit in rows:` 实测按花费从高到低:`draft deepseek-v4-pro 7 次 0.0928 元 平均 10757 ms 命中 38.7%`,`check deepseek-v4-pro 5 次 0.0739 元 12.2%`,`act deepseek-v4-pro 8 次 0.0287 元 80.8%`,`check deepseek-flash 2 次 0.0053 元`,`classify deepseek-flash 6 次 0.0040 元 56.4%`,`load_customer deepseek-flash 2 次 0.0015 元 0.0%`。<br>几个看点:起草和质检占了大头;act 多轮调用的前缀一样,命中率最高;用 `--since 2026-10-22T08:01:24` 只看第二遍,classify 的命中率从 56.4% 涨到 80.5%,同样的请求跑第二遍,前缀就进了缓存。
+
+</div>
 
 ## 先用算式估一下,心里有数
 
@@ -442,6 +568,14 @@ system = f"""你是云簿 CloudLedger 的客服助手。现在是 {datetime.now(
 {FEW_SHOTS}
 """
 ```
+
+<div class="line-notes">
+
+- `system = f"""你是云簿 CloudLedger 的客服助手。现在是 {datetime.now():%Y-%m-%d %H:%M}。` f-string 里的 `:%Y-%m-%d %H:%M` 是 datetime 的格式说明,每分钟都不一样。它排在第一行,缓存从第一个 token 开始比对,第二十几个 token 就对不上了,后面全按未命中计费。
+- `当前客户:{customer['name']}(套餐 {customer['plan']})。` 客户名也是每张工单都不同,同样毁掉前缀。
+- `{POLICY_TEXT}` 真正长、真正值得缓存的政策和示例被压在变量后面,永远命中不了。改法是把它们挪到最前面,时间和客户信息放进 user 消息。
+
+</div>
 
 时间戳和客户名放在了最前面,于是后面 3,000 token 的政策和示例永远命中不了。规则就一条:固定内容在前、变量在后。
 
@@ -495,6 +629,14 @@ def check_client(deps: Deps, state: dict):
     """质检默认走小模型,高风险类别升级到起草用的大模型。"""
     return deps.llm if state["triage"]["category"] in HIGH_STAKES else deps.small_llm
 ```
+
+<div class="line-notes">
+
+- `HIGH_STAKES = {"refund", "billing", "invoice"}` 集合字面量,`in` 判断是 O(1)。涉及钱的三类工单,质检用大模型。
+- `def check_client(deps: Deps, state: dict):` 只决定质检用哪个模型,起草本来就固定用 `deps.llm`。
+- `return deps.llm if state["triage"]["category"] in HIGH_STAKES else deps.small_llm` 实测 `.env` 设成 `LLM_MODEL=deepseek-v4-pro`、`LLM_SMALL_MODEL=deepseek-flash` 跑 3 张工单:退款和发票工单的 check 走了 `deepseek-v4-pro`,导入报错(technical)的 check 走了 `deepseek-flash`。<br>账本里差别很明显:v4-pro 的 check 平均 10965 ms、5 次花 0.0739 元;flash 的 check 平均 3142 ms、2 次只花 0.0053 元。
+
+</div>
 
 `check` 节点里把 `deps.small_llm.structured(...)` 换成 `check_client(deps, state).structured(...)` 就完成了。起草节点本来就用 `deps.llm`,不用动。
 
