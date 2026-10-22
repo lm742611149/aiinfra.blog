@@ -661,6 +661,7 @@ rerank 把「买错了能把钱要回来吗」排成了 kb-003《如何申请退
 
 依赖:uv add pdfplumber
 OCR(可选):uv add rapidocr onnxruntime   第一次运行会下载模型
+      Intel 芯片的 Mac 装不上新版 onnxruntime,改用:uv add rapidocr "onnxruntime<1.23"
 """
 import sys
 from pathlib import Path
@@ -847,6 +848,113 @@ CloudLedger 套餐价格表:套餐=企业版;月付(元)=199;年付(元)=1908;�
 
 我的习惯是:先用最简单的工具跑一遍,抽 20 页人工检查解析结果,尤其是表格和扫描页;哪类页面解析得差,再针对性地换工具。解析结果要和评估集联动,比如评估集里专门加几条「答案在表格里」的问题,解析方式改了就重跑一次检索评估。
 
+## 代码库检索:代码不能按字数切
+
+前面切的都是自然语言。如果你的 Agent 要回答「退款逻辑在哪个函数里」「改了 `chat()` 会影响谁」,知识库就变成了一个代码仓库。国内不少 JD 写「代码知识库」「研发助手」,指的就是这件事;Day 55 的代码审查 Agent 和 Day 89 的 coding agent 也离不开它。
+
+代码按 500 字切块是灾难。一个函数被拦腰切成两半,前半块有函数名没有返回逻辑,后半块有逻辑却不知道属于谁。代码天然有结构,所以切块要按语法树来:一个函数一块,一个类一块(类太大再按方法切),每块前面带上文件路径。Python 自带 `ast` 模块就能做;多语言项目一般用 tree-sitter,它能解析几十种语言,是这类工具的标配。
+
+光有块还不够。问「改了 `chat()` 会影响谁」,向量检索找到的是长得像 `chat` 的代码,而真正要的是**调用关系**。这里值得看一下 aider 的做法。aider 是一个开源的命令行 coding agent,它每次请求都会附带一张 repo map:列出仓库里的文件,以及每个文件里最重要的符号和它们的定义行。aider 用 tree-sitter 抽出每个文件定义了什么、引用了什么,把文件当节点、依赖当边建一张图,用图排序算法挑出被引用最多的那些符号。这张图默认只占 1k token 的预算(`--map-tokens` 参数),放不下就只留排名靠前的。模型看着这张地图,自己决定要打开哪几个文件细看。这些细节我是 2026 年 10 月对照 [aider 文档](https://aider.chat/docs/repomap.html) 和它 2023 年那篇 [repo map 博客](https://aider.chat/2023/10/22/repomap.html) 核对的。
+
+下面是一个只用标准库的简化版:按函数和类切块,然后数每个名字在仓库里被引用了多少次,当作排名分数。真正的 aider 比这精细得多,但这几十行足够让你看到思路,以及简化在哪里会出问题。
+
+```python
+# agent-60-lab/w3/code_chunks.py  代码按函数/类切块,再生成一张按被引用次数排序的 repo map
+import ast
+import sys
+from collections import Counter
+from pathlib import Path
+
+
+def chunk_file(path: Path) -> list[dict[str, str]]:
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    chunks = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            code = ast.get_source_segment(source, node) or ""
+            first_line = code.splitlines()[0]
+            chunks.append({
+                "id": f"{path}:{node.lineno}",
+                "symbol": node.name,
+                "signature": first_line.rstrip(":"),
+                "text": f"# 文件 {path}\n{code}",
+            })
+    return chunks
+
+
+def referenced_names(path: Path) -> Counter[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names: Counter[str] = Counter()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names[node.id] += 1
+        elif isinstance(node, ast.Attribute):
+            names[node.attr] += 1
+    return names
+
+
+def repo_map(root: Path, top: int = 8) -> str:
+    files = sorted(p for p in root.rglob("*.py") if ".venv" not in p.parts)
+    all_chunks = [c for f in files for c in chunk_file(f)]
+    refs: Counter[str] = Counter()
+    for f in files:
+        refs.update(referenced_names(f))
+    ranked = sorted(all_chunks, key=lambda c: refs[c["symbol"]], reverse=True)[:top]
+    lines = [f"{len(files)} 个文件,{len(all_chunks)} 个函数/类,被引用最多的 {top} 个:"]
+    for c in ranked:
+        lines.append(f"{c['id']:<34} 引用 {refs[c['symbol']]:>2} 次  {c['signature']}")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    print(repo_map(Path(sys.argv[1] if len(sys.argv) > 1 else ".")))
+```
+
+<div class="line-notes">
+
+- `tree = ast.parse(source)` 把源码解析成语法树。注意要用 Python 3.12 跑(`uv run`),系统自带的 3.10 解析不了 Day 6 里 `def extract[T: BaseModel](` 这种新泛型语法,会直接 `SyntaxError`。
+- `for node in tree.body:` 只看文件最外层的定义,类里的方法跟着类一起成为一块。类很大时应该再往下拆到方法。
+- `if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):` 函数、async 函数、类各成一块。模块顶层的常量和 import 这里没收,真实项目里通常单独做一块「文件头」。
+- `code = ast.get_source_segment(source, node) or ""` 按节点在源码里的起止位置把原文完整切出来,不会把函数切断。
+- `first_line = code.splitlines()[0]` 取第一行当签名。参数换行写的函数只能拿到 `def get_weather(` 半截,下面的输出里就有这种行。
+- `"id": f"{path}:{node.lineno}",` 块的 id 用「文件:行号」,检索结果直接就是一个能跳转的位置。在 `w2/wf_common.py` 上跑,`llm_json` 这一块的 id 是 `w2/wf_common.py:46`。
+- `"text": f"# 文件 {path}\n{code}",` 和 Day 16 给每块加标题前缀一样,代码块前面加文件路径,embedding 和 BM25 都能用上这条信息。
+- `def referenced_names(path: Path) -> Counter[str]:` 数一个文件里每个名字出现了几次。这是最粗糙的「引用」定义,问题马上就会看到。
+- `if isinstance(node, ast.Name):` 直接写名字的引用,比如 `llm(...)`。
+- `elif isinstance(node, ast.Attribute):` 点号后面的名字,比如 `client.chat.completions` 里的 `chat`。这一行就是下面排名出错的根源。
+- `files = sorted(p for p in root.rglob("*.py") if ".venv" not in p.parts)` 递归找所有 `.py`,跳过虚拟环境,否则会把几千个第三方库文件也算进来。
+- `ranked = sorted(all_chunks, key=lambda c: refs[c["symbol"]], reverse=True)[:top]` 按被引用次数排序取前 8。aider 在这一步用的是图排序,不是简单计数。
+- `lines.append(f"{c['id']:<34} 引用 {refs[c['symbol']]:>2} 次  {c['signature']}")` 一行一个符号:位置、次数、签名。这就是喂给模型的那张地图。
+
+</div>
+
+在我自己的练习仓上跑 `uv run python w3/code_chunks.py w2`(只看 W2 目录),输出是:
+
+```text
+23 个文件,32 个函数/类,被引用最多的 8 个:
+w2/day09_demo.py:17                引用  7 次  def get_weather(
+w2/weather.py:17                   引用  7 次  def get_weather(city: str, unit: str = "celsius") -> dict
+w2/wf_common.py:41                 引用  6 次  def llm(prompt: str, system: str = "", model: str | None = None) -> str
+w2/robust_agent.py:41              引用  5 次  class AgentResult
+w2/calc.py:14                      引用  4 次  def calculate(expression: str) -> dict
+w2/day09_demo.py:26                引用  4 次  def calculate(
+w2/wf_common.py:25                 引用  4 次  def _params(
+w2/wf_common.py:46                 引用  4 次  def llm_json(prompt: str, system: str = "", model: str | None = None) -> dict[str, Any]
+```
+
+看起来挺像样,`llm`、`get_weather`、`calculate` 确实是 W2 的核心。可是对整个仓库跑(`.`),第一名变成了 `w3/llm.py:17 引用 38 次 def chat(...)`。仓库里根本没有 38 处调用这个 `chat`,是所有 `client.chat.completions.create` 里的 `chat` 都被算到了它头上。再往下,`w3/rag_numpy.py` 的 `answer` 和 `w3/rag_pg.py` 的 `answer` 各显示 17 次,两个同名函数分不清谁是谁;`main`、`run` 也挤进了前 8,只因为名字常见。
+
+这就是按名字计数的天花板:它不知道一个名字指向的是哪个定义。要做对,得知道「这一行的 `chat` 到底解析到哪个函数」,这需要真正的符号解析。aider 用 tree-sitter 的定义/引用查询加图排序,比计数好很多;更严格的做法是接语言服务器(LSP)或 SCIP 这类代码索引,拿到精确的跳转定义和查找引用结果。这也是为什么很多 coding agent 干脆不建向量库,直接给模型 `grep`、读文件、查引用这些工具,让它像人一样一层层往下翻。代码检索里,**工具往往比 embedding 更重要**,Day 89 读 coding agent 源码时你会看到这一点。
+
+### 另一个方向:递归语言模型(RLM)
+
+讲到这里你可能会想:既然模型能自己 grep、自己决定看哪些文件,那长文档是不是也可以不切块、不建索引,直接让模型自己去翻?2025 年底 MIT 的 Alex Zhang、Tim Kraska 和 Omar Khattab 发了一篇 [Recursive Language Models](https://arxiv.org/abs/2512.24601)(arXiv 2512.24601,2026 年 5 月更新到 v3),走的就是这个思路。超长输入不塞进 prompt,而是当成一个变量放在代码执行环境里,模型写代码去查看、切分它,对切出来的片段**递归地调用自己**处理,最后汇总。
+
+论文报告的结果是:能处理超出模型上下文窗口两个数量级的输入;在四个长上下文任务上,GPT-5 加 RLM 的中位得分比上下文压缩高 26%,比带子调用的 CodeAct 高 130%,比 Claude Code 高 13%,成本相当;他们后训练的 8B 小模型 RLM-Qwen3-8B 比原版 Qwen3-8B 平均高 28.3%。作者开源了实现([alexzhang13/rlm](https://github.com/alexzhang13/rlm))。这些数字是论文自己报的,我没有复现。
+
+它和今天的 RAG 是两种对立的做法。RAG 是事先切好、建好索引,查询时一次性取回 top-k;RLM 是不预处理,查询时让模型现场决定怎么读。RLM 对「需要通读全文才能回答」的问题(比如总结一份 300 页合同里所有的违约条款)有优势,但每次查询都要跑很多次模型调用,延迟和成本比一次检索高得多。客服问答这种高频、短答案的场景,RAG 仍然是对的选择。面试里被问到「长上下文和 RAG 怎么选」,能把 RLM 当第三个选项讲出来,会显得你一直在跟进。
+
 ## 动手练习
 
 1. 跑 `bm25_index.py`,把输出和上面我贴的对一下。然后去掉自定义词典那几行,再跑一次,看「企业版年付中途取消能退多少」的分词和检索结果有什么变化。
@@ -879,6 +987,10 @@ CloudLedger 套餐价格表:套餐=企业版;月付(元)=199;年付(元)=1908;�
 | 文字层 | PDF 里可以直接抽取的文字;扫描件没有文字层 |
 | OCR | 光学字符识别,从图片里识别文字 |
 | 版面分析(layout analysis) | 识别页面上的标题、段落、栏、表格、图片区域和阅读顺序 |
+| AST 切块 | 按语法树把代码切成函数、类等完整单元,而不是按字数切 |
+| tree-sitter | 支持几十种语言的增量语法解析器,代码检索工具常用它抽定义和引用 |
+| repo map | aider 的做法:把仓库里最重要的符号和签名压成一张小地图随请求发给模型 |
+| RLM(递归语言模型) | 把超长输入放进代码环境,让模型写代码切分并递归调用自己处理的推理方式 |
 
 ## 常见误区
 
@@ -895,6 +1007,8 @@ CloudLedger 套餐价格表:套餐=企业版;月付(元)=199;年付(元)=1908;�
 **把 PDF 直接抽成纯文本就入库。** 表格变成散乱的数字,页眉页脚重复几十遍,扫描页是空的。入库前至少人工抽查一部分解析结果。
 
 **大表格按行切块却不带表头。** 检索到一行「专业版 49 468 5」,模型不知道哪个数是什么。每一块都要带表名和表头。
+
+**代码库也按字数切块。** 函数会被拦腰切断,检索到的半块代码既不完整也不知道属于谁。按 AST 切,每块带文件路径;要回答调用关系类问题,还得有查引用的工具。
 
 **每加一个技巧都凭感觉判断好坏。** 6 个问题的对比只是演示。真正的判断要靠评估集上的数字,这是明天的事。
 
@@ -993,6 +1107,14 @@ bi-encoder 把问题和文档分别编码成向量,文档向量可以提前算�
 <details><summary>答案</summary>
 
 手段:加 rerank(cross-encoder)做精排,这是最直接的;改进切块,让每块主题更集中、自带上下文(标题前缀、contextual retrieval);混合检索里调整各路权重或候选池大小;对特定类型的查询(错误码、编号)做规则路由,直接走关键词检索。验证:建带标注的检索评估集,对比改动前后的 MRR、hit@1、recall@k,同时看延迟和成本的变化,并做分类型分析(比如错误码类问题和口语类问题分别统计),避免整体分数掩盖局部退化。
+
+</details>
+
+**7.(面试题)要做一个能回答「改了这个函数会影响哪些地方」的研发助手,你会怎么做检索?**
+
+<details><summary>答案</summary>
+
+不按字数切,按 AST(多语言用 tree-sitter)切成函数和类,每块带文件路径和签名,做向量加 BM25 检索解决「代码在哪」。调用关系不能靠相似度,要有精确的引用信息:用 tree-sitter 抽定义和引用建依赖图,或者接 LSP/SCIP 索引,包装成「查定义」「查引用」工具给 Agent 调用。再像 aider 那样生成一张按引用排序的 repo map 放进上下文,让模型先看全局再决定读哪些文件。要提到简单按名字计数会把同名函数和属性访问混在一起(比如 `client.chat` 被算成调用了 `chat()`)。
 
 </details>
 
