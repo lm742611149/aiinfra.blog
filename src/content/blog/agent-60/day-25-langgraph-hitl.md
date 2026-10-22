@@ -21,7 +21,7 @@ lang: 'zh'
 4. 用 `get_state` / `get_state_history` 查看状态和历史,做一次「时间旅行」回到审批前重来。
 5. 用三种 `stream_mode` 拿到流式输出,知道 LangGraph 1.2 新出的 `stream_events` 是干什么的。
 
-预计用时 4–5 小时。前置:Day 23 的 `cloudledger.db`、Day 24 的 `llm.py` 和 State/节点/边概念。
+预计用时 5–7 小时(「先用玩具图把每个零件单独跑一遍」那节占 1–2 小时,觉得后面代码跳得快就别跳过它)。前置:Day 23 的 `cloudledger.db`、Day 24 的 `llm.py` 和 State/节点/边概念。
 
 ## 没有 checkpoint 会怎样
 
@@ -99,6 +99,611 @@ def human_approval(state):
 
 这意味着:**interrupt 之前的代码会执行两次**。如果你在 interrupt 前面写了「发一条企业微信通知给主管」,主管会收到两条;如果写了「往库里插一条审批记录」,就会插两条。所以 interrupt 之前只放没有副作用的代码,有副作用的操作要么放到前一个节点,要么放到 interrupt 之后,要么做成幂等的。
 
+## 先用玩具图把每个零件单独跑一遍
+
+这节是给觉得后面代码跳太快的人准备的。下面「实现退款审批」那个文件有两百多行,checkpointer、thread_id、interrupt、Command、get_state、时间旅行全搅在一起,还要调模型、读业务库,第一次看很容易不知道哪一行在管哪件事。尚硅谷那套课光这部分就录了五六十集,我们这里换个办法:拆成 9 个小脚本,每个只演示一个零件,节点全是纯函数,不调模型、不花钱、一秒跑完。跑完这些再看退款审批会轻松很多。
+
+准备工作只有两步。Day 24 已经 `uv add langgraph` 过了,第 3 步要用 SQLite,先把 checkpointer 包装上(后面「实现退款审批」那一步也要装它,现在装了到时候就不用再装):
+
+```bash
+cd agent-60-lab
+uv add langgraph-checkpoint-sqlite
+mkdir -p w4/lg_steps
+```
+
+脚本都放 `w4/lg_steps/`,在 `agent-60-lab` 根目录用 `uv run python w4/lg_steps/25_01_thread.py` 这样按路径跑。下面的输出是我用 langgraph 1.2.16、langgraph-checkpoint-sqlite 3.1.2 实跑的,Zed 里的 basedpyright(standard 档)对这 9 个文件是 0 条红线。
+
+### 第 1 步:thread_id 决定「接着跑」还是「从头来」
+
+最小的一张图:一个节点,把 `count` 加 1。编译时塞一个 `InMemorySaver`,然后用两个不同的 thread_id 调三次。
+
+```python
+# agent-60-lab/w4/lg_steps/25_01_thread.py
+from typing import TypedDict
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import START, StateGraph
+
+
+class State(TypedDict, total=False):
+    count: int
+
+
+def bump(state: State) -> State:
+    return {"count": state.get("count", 0) + 1}
+
+
+builder = StateGraph(State)
+builder.add_node("bump", bump)
+builder.add_edge(START, "bump")
+graph = builder.compile(checkpointer=InMemorySaver())
+
+a: RunnableConfig = {"configurable": {"thread_id": "A"}}
+b: RunnableConfig = {"configurable": {"thread_id": "B"}}
+print("A 第 1 次:", graph.invoke({}, a))
+print("A 第 2 次:", graph.invoke({}, a))
+print("B 第 1 次:", graph.invoke({}, b))
+```
+
+<div class="line-notes">
+
+- `class State(TypedDict, total=False):` `total=False` 表示字段可以不填,所以第一次 `invoke({}, a)` 传空字典也合法。
+- `return {"count": state.get("count", 0) + 1}` 第一次进来状态里还没有 count,`get` 拿到默认值 0,返回 1;A 的第二次进来时状态里已经是 1 了,返回 2。
+- `graph = builder.compile(checkpointer=InMemorySaver())` 有了 checkpointer,每次 invoke 结束都会把状态按 thread_id 存下来。去掉这个参数再跑,三行都会是 `{'count': 1}`。
+- `a: RunnableConfig = {"configurable": {"thread_id": "A"}}` 标成 `RunnableConfig` 是为了让类型检查认识这个字典;不标也能跑,只是 Zed 里会飘红。
+- `print("A 第 2 次:", graph.invoke({}, a))` 同一个 thread A,LangGraph 先读出上次存的 `{'count': 1}`,再把这次的输入 `{}` 合进去,所以节点看到的 count 是 1,结果是 2。
+- `print("B 第 1 次:", graph.invoke({}, b))` 换成 thread B,库里没有它的记录,从空状态开始,结果又是 1。
+
+</div>
+
+输出:
+
+```text
+A 第 1 次: {'count': 1}
+A 第 2 次: {'count': 2}
+B 第 1 次: {'count': 1}
+```
+
+就这么简单:**同一个 thread_id 是同一次「会话」,状态会累积;换一个 id 就是一张白纸**。退款审批里用 `refund-T1041` 当 thread_id,就是为了让「起草」和「第二天批准」落在同一张纸上。对应尚硅谷第 56–60 集(可恢复执行的含义、内存持久化)。
+
+### 第 2 步:每一步都有一张快照
+
+checkpointer 存的不只是最后的状态,而是每个节点跑完之后的样子。两个节点 `load → draft`,跑完后把历史全打出来。
+
+```python
+# agent-60-lab/w4/lg_steps/25_02_snapshots.py
+from typing import TypedDict
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import START, StateGraph
+
+
+class State(TypedDict):
+    log: str
+
+
+def load(state: State) -> State:
+    return {"log": state["log"] + " → load"}
+
+
+def draft(state: State) -> State:
+    return {"log": state["log"] + " → draft"}
+
+
+builder = StateGraph(State)
+builder.add_node("load", load)
+builder.add_node("draft", draft)
+builder.add_edge(START, "load")
+builder.add_edge("load", "draft")
+graph = builder.compile(checkpointer=InMemorySaver())
+
+config: RunnableConfig = {"configurable": {"thread_id": "T1"}}
+graph.invoke({"log": "start"}, config)
+
+now = graph.get_state(config)
+print("最新:", now.values, "next =", now.next)
+for snap in graph.get_state_history(config):
+    print((snap.metadata or {}).get("step"), snap.next, snap.values)
+```
+
+<div class="line-notes">
+
+- `return {"log": state["log"] + " → load"}` 每个节点在 log 后面追加自己的名字,这样从快照里一眼就能看出跑到了哪一步。
+- `graph.invoke({"log": "start"}, config)` 一次 invoke 跑完整张图,中间自动存了好几张快照,这里不需要接返回值。
+- `now = graph.get_state(config)` 拿 thread T1 的最新快照,是一个 `StateSnapshot` 对象。
+- `print("最新:", now.values, "next =", now.next)` `values` 是当时的状态 `{'log': 'start → load → draft'}`;`next` 是「下一步要跑的节点」,图已经跑完,所以是空元组 `()`。
+- `for snap in graph.get_state_history(config):` 历史是倒序的,最新的在最前面,一共 4 张。
+- `print((snap.metadata or {}).get("step"), snap.next, snap.values)` `step` 从 -1 开始:-1 是还没收到输入的空状态,0 是收到输入、准备跑 load,1 是 load 跑完、准备跑 draft,2 是全部跑完。`metadata` 类型上可能是 None,所以先 `or {}` 再 `.get`。
+
+</div>
+
+输出:
+
+```text
+最新: {'log': 'start → load → draft'} next = ()
+2 () {'log': 'start → load → draft'}
+1 ('draft',) {'log': 'start → load'}
+0 ('load',) {'log': 'start'}
+-1 ('__start__',) {}
+```
+
+记住 `next` 这个字段,它是后面所有东西的钥匙:图停在审批点时,`next` 就是 `('approval',)`;做审批后台的「待处理列表」,查的就是 `next` 不为空的 thread。对应尚硅谷第 68–70 集(查看历史检查点、查询单个检查点)。
+
+### 第 3 步:换成 SQLite,进程退出也不丢
+
+`InMemorySaver` 存在内存里,脚本一结束就没了。换成 `SqliteSaver`,同一个脚本连跑两次:
+
+```python
+# agent-60-lab/w4/lg_steps/25_03_sqlite.py
+import sqlite3
+from typing import TypedDict
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import START, StateGraph
+
+
+class State(TypedDict, total=False):
+    count: int
+
+
+def bump(state: State) -> State:
+    return {"count": state.get("count", 0) + 1}
+
+
+builder = StateGraph(State)
+builder.add_node("bump", bump)
+builder.add_edge(START, "bump")
+
+conn = sqlite3.connect("steps.db", check_same_thread=False)
+graph = builder.compile(checkpointer=SqliteSaver(conn))
+config: RunnableConfig = {"configurable": {"thread_id": "counter"}}
+print("这次运行后 count =", graph.invoke({}, config)["count"])
+```
+
+<div class="line-notes">
+
+- `conn = sqlite3.connect("steps.db", check_same_thread=False)` 在你运行命令的目录(这里是 `agent-60-lab` 根目录)生成 `steps.db`。`check_same_thread=False` 的原因和退款审批那节说的一样:LangGraph 可能在别的线程写 checkpoint。
+- `graph = builder.compile(checkpointer=SqliteSaver(conn))` 和第 1 步比只换了这一个参数,图的写法一个字没动。
+- `config: RunnableConfig = {"configurable": {"thread_id": "counter"}}` thread_id 写死成 `counter`,两次运行是两个独立的进程,但用的是同一个 id。
+- `print("这次运行后 count =", graph.invoke({}, config)["count"])` 第一次运行库是空的,得到 1;第二个进程启动后从 `steps.db` 读回 `{'count': 1}`,得到 2。想重来就 `rm steps.db`(建议顺手把 `steps.db` 加进 `.gitignore`)。
+
+</div>
+
+```bash
+uv run python w4/lg_steps/25_03_sqlite.py
+uv run python w4/lg_steps/25_03_sqlite.py
+```
+
+输出:
+
+```text
+这次运行后 count = 1
+这次运行后 count = 2
+```
+
+这就是「主管第二天才批」能成立的前提:状态在磁盘上,和进程活不活没关系。生产里把 `SqliteSaver` 换成 `PostgresSaver`,道理一样。对应尚硅谷第 65–67 集(数据库检查点、表结构、持久化模式)和 71–74 集(失败后恢复运行);第 61–64 集是装 PostgreSQL,Day 17 装过了可以跳。
+
+### 第 4 步:interrupt 暂停,Command 恢复,节点会从头再跑一遍
+
+这一步最重要。一个只有 `approval` 节点的图,节点里在 interrupt 前后各打一行字。
+
+```python
+# agent-60-lab/w4/lg_steps/25_04_interrupt.py
+from typing import NotRequired, TypedDict
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import START, StateGraph
+from langgraph.types import Command, interrupt
+
+
+class State(TypedDict):
+    amount: int
+    decision: NotRequired[str]
+
+
+def approval(state: State) -> dict:
+    print("  [approval 节点开始执行]")
+    decision = interrupt(f"批准退款 {state['amount']} 元吗?")
+    print("  [interrupt 之后] 拿到决定:", decision)
+    return {"decision": decision}
+
+
+builder = StateGraph(State)
+builder.add_node("approval", approval)
+builder.add_edge(START, "approval")
+graph = builder.compile(checkpointer=InMemorySaver())
+config: RunnableConfig = {"configurable": {"thread_id": "R1"}}
+
+print("第一次 invoke:")
+r1 = graph.invoke({"amount": 2392}, config)
+print("返回:", r1)
+print("next =", graph.get_state(config).next)
+
+print("恢复:")
+r2 = graph.invoke(Command(resume="同意"), config)
+print("返回:", r2)
+```
+
+<div class="line-notes">
+
+- `decision: NotRequired[str]` 一开始调用时只有 amount,decision 要等人给,所以标成可以没有。
+- `print("  [approval 节点开始执行]")` 这一行在 interrupt 之前,看输出:它一共打印了**两次**。
+- `decision = interrupt(f"批准退款 {state['amount']} 元吗?")` 第一次执行到这里,图暂停,字符串 `批准退款 2392 元吗?` 被带出去给调用方;恢复那次执行到这里不再暂停,直接返回 `"同意"`。
+- `print("  [interrupt 之后] 拿到决定:", decision)` 这一行只在恢复时打印了一次。
+- `r1 = graph.invoke({"amount": 2392}, config)` invoke 没报错、正常返回了,结果里多了一个 `__interrupt__` 键,装着刚才那句问话,这就是「暂停」在调用方眼里的样子。
+- `print("next =", graph.get_state(config).next)` 停在 `('approval',)`:approval 没跑完,下次从它开始。
+- `r2 = graph.invoke(Command(resume="同意"), config)` 输入不再是状态字典,而是一个 `Command`,`resume` 的值会变成 interrupt() 的返回值。同一个 config,所以接的是 R1 这条线。
+
+</div>
+
+输出(`id` 每次运行都不一样):
+
+```text
+第一次 invoke:
+  [approval 节点开始执行]
+返回: {'amount': 2392, '__interrupt__': [Interrupt(value='批准退款 2392 元吗?', id='cab5c0de898be06ed8ed63bda7e9c075', response_schema=None)]}
+next = ('approval',)
+恢复:
+  [approval 节点开始执行]
+  [interrupt 之后] 拿到决定: 同意
+返回: {'amount': 2392, 'decision': '同意'}
+```
+
+两次「开始执行」就是前面那条警告的现场版:恢复时节点从第一行重新跑,不是从 interrupt 那一行接着跑。所以发通知、写库这种有副作用的事,不要放在同一个节点的 interrupt 前面。动手练习第 3 题会让你在真的退款图里再验证一次。对应尚硅谷第 84–86 集(两种中断机制、主动中断、HITL 案例)和第 90 集(使用规范)。
+
+### 第 5 步:两个人同时审批,resume 传字典
+
+退款金额大的时候可能要财务和主管都点头。两个节点从 START 同时出发,各自 interrupt 一次:
+
+```python
+# agent-60-lab/w4/lg_steps/25_05_multi.py
+import operator
+from typing import Annotated, TypedDict
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import START, StateGraph
+from langgraph.types import Command, interrupt
+
+
+class State(TypedDict):
+    votes: Annotated[list[str], operator.add]
+
+
+def finance(state: State) -> State:
+    return {"votes": ["财务:" + interrupt("财务是否同意?")]}
+
+
+def manager(state: State) -> State:
+    return {"votes": ["主管:" + interrupt("主管是否同意?")]}
+
+
+builder = StateGraph(State)
+builder.add_node("finance", finance)
+builder.add_node("manager", manager)
+builder.add_edge(START, "finance")
+builder.add_edge(START, "manager")
+graph = builder.compile(checkpointer=InMemorySaver())
+config: RunnableConfig = {"configurable": {"thread_id": "R2"}}
+
+r = graph.invoke({"votes": []}, config)
+for it in r["__interrupt__"]:
+    print(it.id[:8], it.value)
+
+answers = {it.id: ("同意" if "财务" in it.value else "驳回") for it in r["__interrupt__"]}
+print(graph.invoke(Command(resume=answers), config))
+```
+
+<div class="line-notes">
+
+- `votes: Annotated[list[str], operator.add]` 两个节点在同一步里都要往 votes 写,必须配 reducer 把两份拼起来。我把 `operator.add` 去掉试了一下,恢复时直接抛 `InvalidUpdateError: At key 'votes': Can receive only one value per step`。
+- `return {"votes": ["财务:" + interrupt("财务是否同意?")]}` interrupt 返回的是人给的值,拼上前缀放进列表。
+- `builder.add_edge(START, "manager")` START 连出两条边,finance 和 manager 在同一个超步里并行跑,于是同时产生两个中断。
+- `for it in r["__interrupt__"]:` 这次 `__interrupt__` 里有两个 `Interrupt`,每个都有自己的 `id` 和 `value`。
+- `answers = {it.id: ("同意" if "财务" in it.value else "驳回") for it in r["__interrupt__"]}` 按 id 一一给出答复:财务那个回「同意」,主管那个回「驳回」。
+- `print(graph.invoke(Command(resume=answers), config))` resume 传字典,LangGraph 按 id 把答复分别送回两个节点,最终 votes 是 `['财务:同意', '主管:驳回']`。
+
+</div>
+
+输出(id 只打了前 8 位,每次不同):
+
+```text
+81ad7c23 财务是否同意?
+20de8067 主管是否同意?
+{'votes': ['财务:同意', '主管:驳回']}
+```
+
+只有一个中断时 `resume` 直接给值就行;同时有多个时就要用「中断 id → 答复」的字典,不然它不知道哪个答复给谁。对应尚硅谷第 87 集(并行执行多个中断)和第 92–93 集(并行中断时的检查点)。
+
+### 第 6 步:不改节点代码,在某个节点前停下
+
+interrupt 要写进节点函数里。还有一种不碰节点的办法:编译时说「跑到 execute 之前停一下」,叫静态断点。
+
+```python
+# agent-60-lab/w4/lg_steps/25_06_breakpoint.py
+from typing import TypedDict
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import START, StateGraph
+
+
+class State(TypedDict):
+    log: str
+
+
+def draft(state: State) -> State:
+    return {"log": state["log"] + " → draft"}
+
+
+def execute(state: State) -> State:
+    return {"log": state["log"] + " → execute"}
+
+
+builder = StateGraph(State)
+builder.add_node("draft", draft)
+builder.add_node("execute", execute)
+builder.add_edge(START, "draft")
+builder.add_edge("draft", "execute")
+graph = builder.compile(checkpointer=InMemorySaver(), interrupt_before=["execute"])
+config: RunnableConfig = {"configurable": {"thread_id": "B1"}}
+
+print(graph.invoke({"log": "start"}, config))
+print("next =", graph.get_state(config).next)
+print(graph.invoke(None, config))
+```
+
+<div class="line-notes">
+
+- `graph = builder.compile(checkpointer=InMemorySaver(), interrupt_before=["execute"])` 在 execute 执行之前停。也有 `interrupt_after`,在某节点执行完之后停。断点同样要靠 checkpointer 存状态。
+- `print(graph.invoke({"log": "start"}, config))` 只跑了 draft,返回 `{'log': 'start → draft'}`,没有 `__interrupt__` 键,停得很安静。
+- `print("next =", graph.get_state(config).next)` 看 next 才知道它停在了 `('execute',)` 前面。
+- `print(graph.invoke(None, config))` 输入传 `None` 表示「别给新输入,从停的地方接着跑」,于是 execute 跑完,log 多了 ` → execute`。
+
+</div>
+
+输出:
+
+```text
+{'log': 'start → draft'}
+next = ('execute',)
+{'log': 'start → draft → execute'}
+```
+
+静态断点适合调试:想看某一步之前的状态长什么样,不用改业务代码。正式的审批流程还是用 interrupt,因为它能把「要问人什么」一起带出去,恢复时还能把人的答复带回来;静态断点只会停,不会问。对应尚硅谷第 94–97 集。
+
+### 第 7 步:时间旅行,从历史某一步分叉
+
+先正常跑完 `draft → execute`(起草 2392 元、执行),然后回到 execute 之前那一刻,把金额改成 1196 再跑一次。
+
+```python
+# agent-60-lab/w4/lg_steps/25_07_fork.py
+from typing import TypedDict
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import START, StateGraph
+
+
+class State(TypedDict):
+    amount: int
+    result: str
+
+
+def draft(state: State) -> dict:
+    return {"amount": 2392}
+
+
+def execute(state: State) -> dict:
+    return {"result": f"已退 {state['amount']} 元"}
+
+
+builder = StateGraph(State)
+builder.add_node("draft", draft)
+builder.add_node("execute", execute)
+builder.add_edge(START, "draft")
+builder.add_edge("draft", "execute")
+graph = builder.compile(checkpointer=InMemorySaver())
+config: RunnableConfig = {"configurable": {"thread_id": "F1"}}
+
+print("原始:", graph.invoke({"amount": 0, "result": ""}, config))
+
+before = next(s for s in graph.get_state_history(config) if s.next == ("execute",))
+forked = graph.update_state(before.config, {"amount": 1196})
+print("分叉:", graph.invoke(None, forked))
+
+print("最新:", graph.get_state(config).values)
+print("历史一共", len(list(graph.get_state_history(config))), "个快照")
+```
+
+<div class="line-notes">
+
+- `print("原始:", graph.invoke({"amount": 0, "result": ""}, config))` 正常跑完一遍,draft 把金额定为 2392,execute 写出 `已退 2392 元`。
+- `before = next(s for s in graph.get_state_history(config) if s.next == ("execute",))` 在历史里找「下一步是 execute」的那张快照,也就是 draft 刚跑完、还没执行退款的那一刻。
+- `forked = graph.update_state(before.config, {"amount": 1196})` 基于那张旧快照改状态。它不会改动旧快照,而是在它后面新长出一张快照,返回新快照的 config(里面带着新的 checkpoint_id)。
+- `print("分叉:", graph.invoke(None, forked))` 从新快照往下跑,execute 看到的金额是 1196。
+- `print("最新:", graph.get_state(config).values)` 只按 thread_id 查,拿到的是分叉后的结果,说明「最新」指的是最后写进去的那条线。
+- `print("历史一共", len(list(graph.get_state_history(config))), "个快照")` 原来 4 张,update_state 加 1 张,分叉后 execute 跑完再加 1 张,一共 6 张。原来那条 `已退 2392 元` 的记录还在里面,没有被覆盖。
+
+</div>
+
+输出:
+
+```text
+原始: {'amount': 2392, 'result': '已退 2392 元'}
+分叉: {'amount': 1196, 'result': '已退 1196 元'}
+最新: {'amount': 1196, 'result': '已退 1196 元'}
+历史一共 6 个快照
+```
+
+这就是 refund_approval.py 里 `rewind` 命令的原理,也是调试 Agent 时最省 token 的手段:第 7 步出错,回到第 6 步改一下状态重跑,不用从头调一遍模型。对应尚硅谷第 74–77 集(检查点重新运行、fork)。
+
+### 第 8 步:三种 stream_mode 各吐什么
+
+流式要看到逐 token 输出得有模型。这里用 langchain-core 自带的假模型 `GenericFakeChatModel`,它会把一句写死的话按空格切开一段段吐出来,不联网、不花钱。
+
+```python
+# agent-60-lab/w4/lg_steps/25_08_stream.py
+from itertools import cycle
+from typing import Annotated, Any, TypedDict, cast
+
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage
+from langgraph.graph import START, StateGraph
+from langgraph.graph.message import add_messages
+
+fake = GenericFakeChatModel(messages=cycle([AIMessage(content="已查到 INV-2026-0123 重复扣款")]))
+
+
+class State(TypedDict):
+    messages: Annotated[list[AnyMessage], add_messages]
+
+
+def load(state: State) -> dict:
+    return {"messages": [AIMessage(content="读到工单 T1041")]}
+
+
+def llm(state: State) -> dict:
+    return {"messages": [fake.invoke(state["messages"])]}
+
+
+builder = StateGraph(State)
+builder.add_node("load", load)
+builder.add_node("llm", llm)
+builder.add_edge(START, "load")
+builder.add_edge("load", "llm")
+graph = builder.compile()
+inputs: State = {"messages": [HumanMessage(content="帮我查一下重复扣款")]}
+
+print("== updates")
+for chunk in graph.stream(inputs, stream_mode="updates"):
+    print({node: upd["messages"][-1].content for node, upd in chunk.items()})
+
+print("== values")
+for state in graph.stream(inputs, stream_mode="values"):
+    print(len(state["messages"]), state["messages"][-1].content)
+
+print("== messages")
+for item in graph.stream(inputs, stream_mode="messages"):
+    token, meta = cast(tuple[BaseMessage, dict[str, Any]], item)
+    print(repr(token.content), meta["langgraph_node"])
+```
+
+<div class="line-notes">
+
+- `fake = GenericFakeChatModel(messages=cycle([AIMessage(content="已查到 INV-2026-0123 重复扣款")]))` 假模型每被调用一次就从 `messages` 里取下一条回复。用 `cycle` 是因为下面要跑三遍图,用普通的 `iter` 第二遍就取空了,会抛 `StopIteration`(我第一次就是这么错的)。
+- `return {"messages": [AIMessage(content="读到工单 T1041")]}` load 节点不调模型,直接塞一条现成的消息。
+- `return {"messages": [fake.invoke(state["messages"])]}` llm 节点里用的是 `invoke` 不是 `stream`,但 messages 模式照样能拿到逐段输出,LangGraph 会自己挂上回调去截模型的流。
+- `for chunk in graph.stream(inputs, stream_mode="updates"):` updates 每个节点跑完吐一次,内容是「节点名 → 它返回的更新」,一共 2 次。
+- `for state in graph.stream(inputs, stream_mode="values"):` values 每一步吐完整状态,包括最开始的输入,所以消息数是 1、2、3。
+- `token, meta = cast(tuple[BaseMessage, dict[str, Any]], item)` messages 模式每项是「消息片段, 元数据」的元组。stream 的返回类型写得很宽,不 cast 的话 `token.content` 和 `meta["langgraph_node"]` 会各有一条红线,运行没问题。
+- `print(repr(token.content), meta["langgraph_node"])` llm 节点吐了 5 段(假模型按空格切的,真模型是按 token 切);load 节点那条现成消息也出现了,而且是整条出来的。所以做打字机效果时要按 `langgraph_node` 过滤,只显示模型节点的输出。
+
+</div>
+
+输出:
+
+```text
+== updates
+{'load': '读到工单 T1041'}
+{'llm': '已查到 INV-2026-0123 重复扣款'}
+== values
+1 帮我查一下重复扣款
+2 读到工单 T1041
+3 已查到 INV-2026-0123 重复扣款
+== messages
+'读到工单 T1041' load
+'已查到' llm
+' ' llm
+'INV-2026-0123' llm
+' ' llm
+'重复扣款' llm
+```
+
+真模型的效果在下面「流式输出」那节有实测(Day 24 的天气 Agent,messages 模式吐了 75 段)。对应尚硅谷第 107–113 集。
+
+### 第 9 步:子图当节点用,它的状态在哪看
+
+最后一个零件。把一个带 interrupt 的小图编译好,直接 `add_node` 进主图,看暂停时父图和子图的状态各在哪。
+
+```python
+# agent-60-lab/w4/lg_steps/25_09_subgraph.py
+from typing import TypedDict
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import START, StateGraph
+from langgraph.types import Command, StateSnapshot, interrupt
+
+
+class State(TypedDict):
+    ticket: str
+    decision: str
+
+
+def ask(state: State) -> dict:
+    return {"decision": interrupt(f"{state['ticket']} 批不批?")}
+
+
+def classify(state: State) -> dict:
+    return {"ticket": state["ticket"] + "(退款类)"}
+
+
+sub = StateGraph(State)
+sub.add_node("ask", ask)
+sub.add_edge(START, "ask")
+refund_flow = sub.compile()
+
+main = StateGraph(State)
+main.add_node("classify", classify)
+main.add_node("refund_flow", refund_flow)
+main.add_edge(START, "classify")
+main.add_edge("classify", "refund_flow")
+graph = main.compile(checkpointer=InMemorySaver())
+config: RunnableConfig = {"configurable": {"thread_id": "S1"}}
+
+graph.invoke({"ticket": "T1041", "decision": ""}, config)
+parent = graph.get_state(config)
+print("父图 next =", parent.next)
+print("不带 subgraphs:", parent.tasks[0].state)
+child = graph.get_state(config, subgraphs=True).tasks[0].state
+if isinstance(child, StateSnapshot):
+    print("带 subgraphs:", child.values, "子图 next =", child.next)
+
+print(graph.invoke(Command(resume="批"), config))
+```
+
+<div class="line-notes">
+
+- `refund_flow = sub.compile()` 子图编译时不传 checkpointer,会自动用父图的。
+- `main.add_node("refund_flow", refund_flow)` 编译好的图本身就能当节点,和普通函数一样加进去。父子图的 State 是同一个类型,同名字段直接共享。
+- `graph.invoke({"ticket": "T1041", "decision": ""}, config)` classify 先把工单号改成 `T1041(退款类)`,然后进子图,在 ask 节点里 interrupt 停住。
+- `print("父图 next =", parent.next)` 父图只知道「卡在 refund_flow 这个节点」,不知道里面停在哪。
+- `print("不带 subgraphs:", parent.tasks[0].state)` 默认只给一个指向子图的 config,`checkpoint_ns` 是子图快照的命名空间,格式是「节点名:任务 id」。
+- `child = graph.get_state(config, subgraphs=True).tasks[0].state` 加上 `subgraphs=True`,才会把子图的完整快照展开放进来。
+- `if isinstance(child, StateSnapshot):` 这个字段类型上可能是 config 也可能是快照,判断一下类型检查才放心。
+- `print("带 subgraphs:", child.values, "子图 next =", child.next)` 子图内部停在 `('ask',)`,状态里已经有 classify 改过的工单号。
+- `print(graph.invoke(Command(resume="批"), config))` 恢复照样对父图调,用父图的 config,LangGraph 自己找到子图里那个中断。
+
+</div>
+
+输出(checkpoint_ns 后面那串每次不同):
+
+```text
+父图 next = ('refund_flow',)
+不带 subgraphs: {'configurable': {'thread_id': 'S1', 'checkpoint_ns': 'refund_flow:38fa1528-edd4-e067-546d-cdf9eede53e6'}}
+带 subgraphs: {'ticket': 'T1041(退款类)', 'decision': ''} 子图 next = ('ask',)
+{'ticket': 'T1041(退款类)', 'decision': '批'}
+```
+
+做审批后台时如果审批节点在子图里,列表页要查 `subgraphs=True` 才知道具体停在哪一步。子图的持久化策略还有几种细分(每次调用都是全新的、还是记住上次的状态),尚硅谷第 117–124 集讲得很细,做多轮会话时再回去看;这一步对应第 114–116 集。
+
+到这里,退款审批要用的零件你都单独摸过一遍了:thread_id(第 1 步)、get_state 和 next(第 2 步)、SqliteSaver(第 3 步)、interrupt 加 Command 以及「节点重跑」(第 4 步)、时间旅行(第 7 步)。下面把它们装到一起,再加上模型和业务库。
+
 ## 实现退款审批
 
 把前面的东西组合起来。流程是五个节点:`load` 从业务库读工单和该客户最近的发票;`draft` 让模型起草退款方案(结构化输出);`approval` 中断等人;`execute` 写库;`reject` 驳回。
@@ -130,7 +735,7 @@ def human_approval(state):
 <figcaption>只有 draft 调用模型。approval 是人,不是模型:这张图里最关键的决策交给了人。</figcaption>
 </figure>
 
-先装 SQLite checkpointer:
+先装 SQLite checkpointer(上一节第 3 步装过就跳过):
 
 ```bash
 cd agent-60-lab
