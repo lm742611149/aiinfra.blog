@@ -35,3 +35,18 @@
 - Day 501 建议把「英文版简历」拆一天;Day 502 拆「自测工具+4 实验」「17 道题」。实测 Chrome 用苹方打印的 PDF 抽文本变康熙部首(⼯程师),STHeiti 正常。
 - Day 182 六条原则 1.3 万字,建议拆「原则 1–3」「原则 4–6」。Day 181–183 假设 ToolRegistry 支持 Annotated/Literal、ChatResult 有 reasoning_tokens。
 - Day 252/254 偏长(252「同代码不同结果」、254「存储与成本」可挪)。Day 252–254 假设 Day 240 part04/retrieve.py 的 retrieve(q,k)->(chunk,score)、Day 231 pg_sync.py、Day 222 data/kb/、Day 250 part04/kg_triples.py。Postgres 库 w252kg(收尾清理)。
+- Day 145 长,「什么时候提示词救不了你」(退款计算放代码/round 坑/月底歧义)可拆一天。Day 145 改了 Day 144 的 chat_logged()(加 **kw 和 sec 延迟字段)。DeepSeek 不支持 json_schema(400),Day 148 要用支持的厂商。
+- Day 220 偏重,建议拆「存储、token 和钱」「维度与怎么挑模型」。Day 221 建了玩具版 part04/mini_kb.py/toy_index.py/toy_query.py,索引在 part04/toy_index/,Day 222+ 是正式版。
+- Day 113 三阶段偏重,建议拆「预训练和续写」「SFT+RLHF」。Day 114/115 实跑输出里模型把虚构书安到真实作者头上,写手把人名换成「人名甲」、ISBN 打码(对实跑输出的改动,收尾确认)。Day 112 的 stable_check.py 演示代码没放 main guard(待修)。
+- Day 324 最重,「真实系统」+练习 4(待审批表+乐观锁)可拆一天。Day 325 建 part05/ambient/(sources.py、store.py:init/connect/add_event/now、ingest.py、ambient.db),Day 326 在 store.py 上建;玩具子图在 part05/lg_sub/。uv 有时默认装 Python 3.14,规范要求 3.12(收尾检查各篇写法一致)。
+
+## 恢复记录
+- 10-23 额度重置后已重派:10 组中断的补完 + 10 组下一段(148、222、116、326、80、649、365、187、507、578 起)。之后若再中断:看 agent-zero 目录里各流最后一天,接着派。
+- Day 609 建议拆「两种注册写法+假 modelContext」「真浏览器+双向安全」;Day 607 可把「视觉抽字段」挪出。
+- Day 8 建议拆「装 Python 3.12 并用 PATH 验证」「解释器、REPL、脚本、两类报错」。Day 8 用 python.org 3.12.10 安装器(最后一个带 Mac 安装包的 3.12);~/bin 在 PATH(Day 7)、~/bin/hello-py(Day 8);Day 9 接 ~/terminal-practice/day08/ 的 syntax_err.py/indent_err.py;Day 10–11 要提读者已有 python.org 3.12.10。
+- Day 47 建 part01/ticket_types.py(Status、TicketDict、parse_status、parse_ticket、line);Day 44 数据 part01/data/notebook.json(T-1004 金额 89.5);Day 50 改 dataclass 时把 status 收紧成 Status。
+- Day 467 建议拆「并发成本 bug(partial 闭包)」「接口+SSE+实跑+测试」。Day 467 改接口:profile_for(llm, ...) 首参加 llm(Day 466 测试两个 lambda 要改)、LLMClient/Deps/FakeLLM 加 fresh()、_events 跳过 None 更新;用 FastAPI 自带 fastapi.sse(0.135+,装 0.159.1);Settings 有 console_url。test_tools 会删开发库待审批退款(待修)。Postgres 库 sp_zero_w465(清理)。
+- Day 222 建议把「检查脚本+三个坑」拆一天;Day 224「块编号漂移」可挪 Day 231。正式 KB=旧课 20 篇在 data/kb/;part04/make_kb.py(生成前删旧文件)、kb_check.py(read_meta)、chunking.py(Chunk/parse_article/split_long/chunk_article/load_chunks)。Day 221 玩具版年付 1200 元≠正式 468 元(Day 222 已说明)。
+- Day 257 偏满(检查脚本+照抄检测可挪 258/259);Day 255「关键词判生成多粗」可挪 260。接口:part04/metrics.py(dedup_docs/recall_at_k/precision_at_k/hit_at_k/reciprocal_rank/mrr)、eval_set.py(load_eval_set/check_eval_set)、data/eval/rag_eval.jsonl(30 条,26 条可算检索分)、part04/prompts.py(SYSTEM/build_messages,Day 227 rag_numpy.py 首次出现)。retrieve(q,k,mode) 四模式。库 w255eval(清理)。
+- Day 679 偏满(优惠券/税/贷记单可挪 677 或独立);Day 680「事件时间存 UTC」可挪 681。BillSleuth:money.py(money/prorate/fmt,Decimal)、state_at 从第一条事件叠加(Day 681 引擎)、13 个根因在 scratch/guess_root_cause.py、.gitignore 用 *.db、包内脚本根目录 -m 跑。SQLite TEXT 列 SUM 得浮点、外键检查事务中途打开无效。
+- Day 117 偏重,「在 DeepSeek 上看缓存命中」+练习 2/4 可拆或挪 Day 124。Day 116 建 attn_qk.py(match)、attn_softmax.py(softmax)、causal_mask.py、attn_cost.py。Day 118 说「第六部分评测是今天体检的正式版」(推测,收尾核对)。deepseek-flash=V4.1-Flash 规模官方未公布,文中用开源 V4-Flash 284B/13B。

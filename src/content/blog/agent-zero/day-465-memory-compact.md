@@ -1,6 +1,6 @@
 ---
 title: 'Day 465 · 记忆(二):对话太长时压缩'
-description: '给 SupportPilot 加第二种记忆:对话摘要。先用真接口校准一个粗估 token 的函数,再写 maybe_compress,超过预算时把早期轮次压成一段摘要、最近几条保留原文;接进图里成为 prepare_context 节点。用假 LLM 写 8 个测试,用真模型对比压缩前后一轮的花费,还踩了「切点把一问一答拆开」和「忘了 summarized_upto」两个坑。'
+description: '给 SupportPilot 加第二种记忆:对话摘要。先用真接口校准一个粗估 token 的函数,再写 maybe_compress,超过预算时把早期轮次压成一段摘要、最近几条保留原文;接进图里成为 prepare_context 节点。用假 LLM 写 7 个测试,用真模型对比压缩前后一轮的花费,还踩了「切点把一问一答拆开」和「忘了 summarized_upto」两个坑。'
 pubDate: 2026-10-22
 regime: none
 tags: ['memory', 'context-engineering', 'langgraph', 'supportpilot', 'agent-zero']
@@ -22,7 +22,7 @@ draft: true
 
 1. 说清楚对话为什么会越聊越贵,写一个 `estimate_tokens` 粗估函数,并用真接口返回的 `prompt_tokens` 校准它,误差控制在一成左右。
 2. 写出 `maybe_compress`:「摘要 + 还没摘要的对话」超过预算,就把早期部分并进摘要,最近几条保留原文;切点永远落在客户消息上,不把一问一答拆开。
-3. 把它接进图里成为 `prepare_context` 节点,用假 LLM 写 8 个测试全部通过,再用真模型对比同一轮压缩前后的输入 token 和花费。
+3. 把它接进图里成为 `prepare_context` 节点,用假 LLM 写 7 个测试全部通过,再用真模型对比同一轮压缩前后的输入 token 和花费。
 4. 讲清楚压缩会丢什么,亲手看一次「被压掉的细节,Agent 答不上来」。
 
 预计用时 2.5 小时。前置:[Day 107](/blog/agent-zero/day-107-tokens-1/)(token 是什么)、[Day 131](/blog/agent-zero/day-131-conversation-cost/)(对话越聊越贵)、[Day 262](/blog/agent-zero/day-262-context-budget/)–[263](/blog/agent-zero/day-263-compaction/)(上下文预算和压缩)、[Day 464](/blog/agent-zero/day-464-memory-session/)。

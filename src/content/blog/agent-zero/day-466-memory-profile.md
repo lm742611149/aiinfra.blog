@@ -468,10 +468,11 @@ tests/test_profile.py::test_profile_goes_into_context PASSED             [ 25%]
 tests/test_profile.py::test_no_customer_no_profile PASSED                [ 50%]
 tests/test_profile.py::test_rebuild_only_when_history_changes PASSED     [ 75%]
 tests/test_profile.py::test_forget_customer_removes_memory PASSED        [100%]
-============================== 4 passed in 4.47s ===============================
+
+============================== 4 passed in 5.38s ===============================
 ```
 
-全部测试 `uv run pytest -q`:`48 passed in 8.47s`。
+全部测试 `uv run pytest -q`,加上练习 1 的两个,实测 `50 passed in 8.75s`。
 
 ## 第四步:为什么要排除当前工单
 
@@ -715,7 +716,7 @@ uv run python scratch/d466/forget_demo.py
 
 **隐私和删除。** 记忆分散在 checkpoint、画像表、tracing、备份好几处。设计时就要知道每种记忆存在哪、按什么键能找到,第六步的 `forget_customer` 和 `orphan_threads` 就是为这个写的。
 
-**成本。** 画像约 58 个 token,每次调模型都带着;压缩一次一两分钱;画像重建一次一毛多分之一。单看都不多,但 Day 485 做成本账本时要能单独看到这几项,否则说不清钱花在哪。
+**成本。** 画像约 58 个 token,每次调模型都带着;压缩一次一两分钱;画像重建一次 0.0014 元左右。单看都不多,但 Day 485 做成本账本时要能单独看到这几项,否则说不清钱花在哪。
 
 **画像会过期。** 我们只在已解决工单数变了时重建,客户换了套餐、加了席位,画像不会知道。练习 2 实测并给出改法。
 
@@ -777,7 +778,7 @@ def test_no_profile_no_section():
 uv run pytest tests/test_profile_more.py -q
 ```
 
-实测 `2 passed`。
+实测 `2 passed in 2.75s`。
 
 </details>
 

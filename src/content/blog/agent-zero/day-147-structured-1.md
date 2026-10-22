@@ -454,9 +454,9 @@ def main() -> None:
                     seen[f"抽错了: {data}"] = seen.get(f"抽错了: {data}", 0) + 1
                 else:
                     ok += 1
+        n = ROUNDS * len(MESSY)
         for problem, count in seen.items():
             print(f"  [{name}] {problem} ×{count}")
-        n = ROUNDS * len(MESSY)
         print(f"{name}: 能用 {ok}/{n}  不是 JSON {bad_json}  字段不合格 {bad_fields}  值抽错 {wrong_value}  ¥{client.ledger.cost - before:.4f}")
     print("合计:", client.ledger)
 
