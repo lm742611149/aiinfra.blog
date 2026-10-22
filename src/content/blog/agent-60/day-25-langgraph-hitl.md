@@ -1101,11 +1101,290 @@ Agent 服务对外提供两个接口。一个是「处理工单」:收到工单�
 ## 动手练习
 
 1. 跑通 `refund_approval.py` 的完整流程:start → status → 关掉终端重开 → approve,确认业务库里出现 approved 记录。
+
+<details><summary>参考答案</summary>
+
+命令都在 `w4/lgdemo` 下跑。每一条 `uv run` 都是一个新进程,跑完就退出,所以「关掉终端重开」其实每两条命令之间都发生了:进程里的内存全没了,能接上全靠 `checkpoints.db`。
+
+```bash
+cd agent-60-lab/w4/lgdemo
+uv run python refund_approval.py start T1041
+uv run python refund_approval.py status T1041
+# 这里真的关掉终端,重新打开,再 cd 回来
+uv run python refund_approval.py approve T1041 "核实无误"
+sqlite3 ../cloudledger/cloudledger.db 'select * from refund_requests'
+```
+
+输出(实跑,一行一个命令):
+
+```text
+已暂停,等待审批: {'question': '是否批准这笔退款?', 'invoice_id': 'INV-2026-0123', 'amount_yuan': 2392.0, 'reason': '与 INV-2026-0026 为同日同额重复扣款，INV-2026-0123 为较晚生成的一张，退还该笔重复款项'}
+下一步要执行的节点: ('approval',)
+当前方案: {'invoice_id': 'INV-2026-0123', 'amount_yuan': 2392.0, 'reason': '与 INV-2026-0026 为同日同额重复扣款，INV-2026-0123 为较晚生成的一张，退还该笔重复款项'}
+已批准:INV-2026-0123 退 2392.00 元。审批备注:核实无误
+1|INV-2026-0123|239200|与 INV-2026-0026 为同日同额重复扣款，INV-2026-0123 为较晚生成的一张，退还该笔重复款项|approved|2026-10-22T11:42:34|2026-10-22T11:42:34|supervisor
+```
+
+对账:`status` 显示停在 `('approval',)`,方案是退 INV-2026-0123 的 2392 元;`approve` 之后业务库 `refund_requests` 里多了一行,`amount_cents` 是 239200(2392 元 × 100),状态 `approved`。三处数字对得上就算过。没装 `sqlite3` 命令的话,用 Day 23 学的 Python 查法也一样。
+
+</details>
 2. 重新 seed 业务库,换一个 thread 跑一遍,这次 reject,然后用 `rewind` 回到审批点改成 approve。用 `history` 看分叉。
+
+<details><summary>参考答案</summary>
+
+这次换 T1014(客户 C029,工单里点名了 INV-2026-0116)。先重新 seed,把第 1 题写进去的退款记录清掉:
+
+```bash
+cd agent-60-lab/w4/cloudledger && uv run python seed.py && cd ../lgdemo
+uv run python refund_approval.py start T1014
+uv run python refund_approval.py reject T1014 "先别退,等财务核对"
+uv run python refund_approval.py history T1014
+uv run python refund_approval.py rewind T1014
+uv run python refund_approval.py approve T1014 "财务已核对,可以退"
+uv run python refund_approval.py history T1014
+```
+
+输出(实跑,checkpoint id 每次运行都不一样):
+
+```text
+已暂停,等待审批: {'question': '是否批准这笔退款?', 'invoice_id': 'INV-2026-0116', 'amount_yuan': 198.0, 'reason': '与INV-2026-0117金额相同(198元)构成重复扣款,INV-2026-0116为较晚生成的一张,退还该笔重复扣款'}
+已驳回,转人工跟进。原因:先别退,等财务核对
+--- reject 之后的 history ---
+1f1cdcaa-7914-6442-8004-a1d7f1d04a48 next = ()
+1f1cdcaa-7912-6106-8003-bf50764df349 next = ('reject',)
+1f1cdcaa-6855-65a2-8002-4d2f11492911 next = ('approval',)
+1f1cdcaa-5b2e-67ac-8001-55b389450e03 next = ('draft',)
+1f1cdcaa-5b2a-64fe-8000-9baff4a16360 next = ('load',)
+1f1cdcaa-5b27-6844-bfff-3d30e927ec53 next = ('__start__',)
+已回到审批点,重新等待审批: {'question': '是否批准这笔退款?', 'invoice_id': 'INV-2026-0116', ...}
+已批准:INV-2026-0116 退 198.00 元。审批备注:财务已核对,可以退
+--- approve 之后的 history ---
+1f1cdcaa-a850-6846-8005-aa926e8d3121 next = ()
+1f1cdcaa-a84a-6d10-8004-b5d8317bea0a next = ('execute',)
+1f1cdcaa-9860-67ec-8003-44e3ed16b6a1 next = ('approval',)
+1f1cdcaa-7914-6442-8004-a1d7f1d04a48 next = ()
+1f1cdcaa-7912-6106-8003-bf50764df349 next = ('reject',)
+1f1cdcaa-6855-65a2-8002-4d2f11492911 next = ('approval',)
+1f1cdcaa-5b2e-67ac-8001-55b389450e03 next = ('draft',)
+1f1cdcaa-5b2a-64fe-8000-9baff4a16360 next = ('load',)
+1f1cdcaa-5b27-6844-bfff-3d30e927ec53 next = ('__start__',)
+```
+
+怎么从 history 里看出分叉:旧的 6 条全在,最新的 3 条加在最上面。我另外打印了每个快照的 `parent_config`,`…44e3ed16b6a1`(新的停在 approval)的父节点是 `…4d2f11492911`,也就是驳回之前那个审批点。所以这是一棵树:从审批点长出两根枝,一根走了 reject,一根走了 execute。`history` 默认按时间倒序列出,看起来像一条线,其实最上面三条和下面的 reject 那根是并列的。
+
+业务库里只有一条 `INV-2026-0116 | 19800 | approved`。驳回那条路什么都没写进去,因为 `reject_refund` 本来就不写库。
+
+这一题还顺带暴露了一个问题:模型说 0116 和 0117「金额相同构成重复扣款」,可我查了库,0117 是 9 月 7 日开的、0116 是 10 月 9 日开的,C029 是每月 198 元的月付客户,这两张是两个月的正常账单,根本不是重复扣款。主管如果不看就点批准,就多退了 198 元。更值得注意的是,`load_ticket` 其实把开票日期也给了模型(`2026-09-07` 和 `2026-10-09` 写得清清楚楚),它还是只看金额就下了结论。这正是退款必须人工审批的原因;想让模型少犯这种错,可以在起草提示词里写明「重复扣款必须是同一天开票」,再拿这张工单当回归用例。
+
+</details>
 3. 做一个「副作用重复」实验:在 `human_approval` 里 `interrupt` 之前加一行 `print("已通知主管")`,完整跑一次 start + approve,数一数这行字打印了几次,用今天学的原理解释。然后把通知挪到 `draft` 节点末尾,再验证一次。
+
+<details><summary>参考答案</summary>
+
+第一步,在 `human_approval` 的 `interrupt` 之前加一行打印(其余不动):
+
+```python
+def human_approval(state: RefundState) -> dict:
+    p = state["proposal"]
+    print("已通知主管")  # 练习 3:故意把副作用放在 interrupt 之前
+    decision = interrupt(
+```
+
+<div class="line-notes">
+
+- `print("已通知主管")` 假装这里是发企业微信或邮件通知主管。真实系统里这是一次网络调用,发两次主管就收到两条。
+- `decision = interrupt(` 第一次执行到这里会暂停;恢复时 LangGraph 会把整个节点**从第一行重新执行**,这一次 `interrupt()` 直接返回审批结果,不再暂停。
+
+</div>
+
+重新 seed 后完整跑一遍(实跑):
+
+```text
+$ uv run python refund_approval.py start T1041
+已通知主管
+已暂停,等待审批: {...}
+$ uv run python refund_approval.py approve T1041 "ok"
+已通知主管
+已批准:INV-2026-0123 退 2392.00 元。审批备注:ok
+```
+
+打印了 **2 次**,start 一次,approve 一次。原因就是正文说的:checkpoint 只在节点**跑完**时存档,`human_approval` 在 interrupt 处停下时还没跑完,所以恢复后只能从这个节点开头重来,`interrupt` 之前的代码就又执行了一遍。
+
+第二步,把这行打印删掉,挪到 `draft_proposal` 的 `return` 前面:
+
+```python
+    print("已通知主管")  # 练习 3:挪到 draft 末尾,这个节点跑完就存档,恢复时不会重跑
+    return {"proposal": proposal.model_dump()}
+```
+
+<div class="line-notes">
+
+- `print("已通知主管")` `draft` 节点在暂停之前就已经完整跑完、存了档。恢复时从 `approval` 开始,不会再碰 `draft`。
+
+</div>
+
+再跑一遍(实跑):
+
+```text
+$ uv run python refund_approval.py start T1041
+已通知主管
+已暂停,等待审批: {...}
+$ uv run python refund_approval.py approve T1041 "ok"
+已批准:INV-2026-0123 退 2392.00 元。审批备注:ok
+```
+
+只打印了 1 次。规则记一句:**有副作用的代码,要么放在 interrupt 之前已经跑完的节点里,要么放在 interrupt 之后**。放在 interrupt 后面的代码只会在恢复时执行一次。实在要放在同一个节点的 interrupt 前面,就得自己做幂等(比如先查「这单通知过没有」),Day 37 会细讲。做完记得把打印删掉。
+
+</details>
 4. 把 Day 24 的 `agent_graph` 接上 `InMemorySaver`,用同一个 thread_id 连续 invoke 两次(第一次问「上海天气」,第二次问「那北京呢」),确认第二次模型记得上一轮的上下文。这就是多轮会话的实现方式。
+
+<details><summary>参考答案</summary>
+
+```python
+# agent-60-lab/w4/lgdemo/agent_memory.py
+"""练习 4:给 Day 24 的 agent_graph 接上 checkpointer,同一个 thread_id 连问两轮。"""
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+
+from agent_graph import builder
+
+graph = builder.compile(checkpointer=InMemorySaver())
+config: RunnableConfig = {"configurable": {"thread_id": "chat-1"}}
+
+for question in ["上海天气怎么样?", "那北京呢?"]:
+    out = graph.invoke({"messages": [("user", question)], "llm_calls": 0}, config)
+    print(f"问:{question}")
+    print(f"答:{out['messages'][-1].content}")
+    print(f"  这时线程里一共 {len(out['messages'])} 条消息\n")
+
+other: RunnableConfig = {"configurable": {"thread_id": "chat-2"}}
+out = graph.invoke({"messages": [("user", "那北京呢?")], "llm_calls": 0}, other)
+print("换一个 thread_id 再问「那北京呢?」:", out["messages"][-1].content)
+```
+
+<div class="line-notes">
+
+- `from langgraph.checkpoint.memory import InMemorySaver` 存在内存里的 checkpointer,进程退出就没了,做多轮对话演示够用。
+- `from agent_graph import builder` 拿 Day 24 的**图纸**(builder)而不是编译好的 graph,因为要在编译时挂上 checkpointer。
+- `graph = builder.compile(checkpointer=InMemorySaver())` 同一张图纸,编译时多传一个参数,图就有了记忆。节点代码一行都不用改。
+- `config: RunnableConfig = {"configurable": {"thread_id": "chat-1"}}` thread_id 相当于「会话 id」。标成 `RunnableConfig` 是为了让 basedpyright 不报类型红线。
+- `out = graph.invoke({"messages": [("user", question)], "llm_calls": 0}, config)` 每一轮只传**这一轮的新消息**。旧消息在 checkpoint 里,`add_messages` 会把新问题追加到后面。`llm_calls` 每轮重置成 0,不然上限 6 次是整个会话共用的,聊几轮就到顶了。
+- `print(f"  这时线程里一共 {len(out['messages'])} 条消息\n")` 实测第一轮后 4 条(问题、调工具、工具结果、回答),第二轮后 8 条,说明历史确实被带上了。
+- `other: RunnableConfig = {"configurable": {"thread_id": "chat-2"}}` 对照组:换一个 thread_id,等于新开一个会话。
+
+</div>
+
+输出(实跑):
+
+```text
+问:上海天气怎么样?
+答:上海现在是小雨，气温 19°C。出门记得带伞，穿件薄外套比较合适。
+  这时线程里一共 4 条消息
+
+问:那北京呢?
+答:北京现在是晴，气温 15°C。天气不错，但比上海凉一些，早晚出门建议加件外套。
+  这时线程里一共 8 条消息
+
+换一个 thread_id 再问「那北京呢?」: 北京现在**晴，15°C**。
+
+如果你问的其实是别的事情（比如北京的人口、交通、某个计算等），告诉我具体内容，我再帮你查或算。
+```
+
+第二轮「那北京呢?」只有四个字,模型却知道问的是天气,还拿上海做了对比(「比上海凉一些」),这就是记得上一轮的证据。换了 thread_id 之后它不知道上下文,只能猜你问天气,还补了一句「如果你问的是别的……」。
+
+</details>
 5. 用 `stream_mode="messages"` 给 `agent_graph` 加上打字机效果输出。
+
+<details><summary>参考答案</summary>
+
+正文已经有一个最小写法。这里补成完整的脚本,顺便把工具调用也显示成进度行,再量一下第一个字等了多久:
+
+```python
+# agent-60-lab/w4/lgdemo/agent_typewriter.py
+"""练习 5:给 agent_graph 加打字机效果,顺便在调工具时打一行进度。"""
+import time
+from typing import Any, cast
+
+from langchain_core.messages import AIMessageChunk, BaseMessage, ToolMessage
+
+from agent_graph import graph
+
+inputs = {"messages": [("user", "上海和北京现在温差几度?")], "llm_calls": 0}
+start = time.perf_counter()
+first_token_at = None
+
+for item in graph.stream(inputs, stream_mode="messages"):
+    token, meta = cast(tuple[BaseMessage, dict[str, Any]], item)
+    if isinstance(token, ToolMessage):
+        print(f"\n  [工具返回] {token.content}")
+    elif isinstance(token, AIMessageChunk) and meta["langgraph_node"] == "llm":
+        for call in token.tool_call_chunks:  # 工具调用也是一小段一小段来的,名字只在第一段里
+            if call.get("name"):
+                print(f"\n  [调用工具] {call['name']}", end="")
+        if token.content:
+            if first_token_at is None:
+                first_token_at = time.perf_counter() - start
+            print(token.content, end="", flush=True)
+
+print(f"\n\n第一个字出现在 {first_token_at:.2f} 秒,全部结束 {time.perf_counter() - start:.2f} 秒")
+```
+
+<div class="line-notes">
+
+- `from typing import Any, cast` `cast` 只是告诉类型检查器「这东西是这个类型」,运行时什么都不做。不加的话 `token.content` 那几行在 Zed 里会飘红。
+- `from langchain_core.messages import AIMessageChunk, BaseMessage, ToolMessage` messages 模式吐出来的东西有两种:模型的输出是一小段一小段的 `AIMessageChunk`,工具结果是完整的 `ToolMessage`。
+- `for item in graph.stream(inputs, stream_mode="messages"):` 每一项是 `(消息片段, 元数据)`。
+- `token, meta = cast(tuple[BaseMessage, dict[str, Any]], item)` 拆成两个变量。`meta["langgraph_node"]` 告诉你这一段是哪个节点产生的。
+- `if isinstance(token, ToolMessage):` 工具结果整条打印成一行进度。
+- `for call in token.tool_call_chunks:` 工具调用也是分段流过来的:第一段带工具名,后面几段是一点一点的参数 JSON。只在有名字的那段打印。实测这里依次出现 `get_weather`、`get_weather`、`calculate`。
+- `if token.content:` 有文字才打印。调工具的那几轮 `content` 是空串,会被跳过。
+- `first_token_at = time.perf_counter() - start` 记下第一个文字片段到达的时间。
+- `print(token.content, end="", flush=True)` `end=""` 不换行,`flush=True` 立刻刷到屏幕,打字机效果就靠这两个参数。
+
+</div>
+
+输出(实跑,最后一行在终端里是一段一段冒出来的):
+
+```text
+  [调用工具] get_weather
+  [调用工具] get_weather
+  [工具返回] 小雨 19°C
+
+  [工具返回] 晴 15°C
+
+  [调用工具] calculate
+  [工具返回] 4
+现在上海小雨 19°C，北京晴 15°C，两地温差 4°C（上海更暖）。
+
+第一个字出现在 2.29 秒,全部结束 2.46 秒
+```
+
+第一个字要等 2.29 秒,因为前面两轮都在调工具,真正的回答要等第三次调模型才开始。这也是为什么做客服界面时,光有打字机效果不够,还要像这里一样把「正在查天气」这类进度显示出来,用户才不会以为卡住了。
+
+</details>
 6. 加分题:把 `SqliteSaver` 换成 `InMemorySaver`,重复第 1 题的「关掉终端重开」,观察失败现象,写一句话解释。
+
+<details><summary>参考答案</summary>
+
+改两行:import 换成 `from langgraph.checkpoint.memory import InMemorySaver`,`main()` 里编译那行换成 `graph = builder.compile(checkpointer=InMemorySaver())`。然后重新 seed,按第 1 题的顺序跑(实跑):
+
+```text
+$ uv run python refund_approval.py start T1041
+已暂停,等待审批: {'question': '是否批准这笔退款?', 'invoice_id': 'INV-2026-0123', 'amount_yuan': 2392.0, ...}
+$ uv run python refund_approval.py status T1041
+下一步要执行的节点: ()
+当前方案: None
+$ uv run python refund_approval.py approve T1041 "ok"
+...
+KeyError: 'ticket_id'
+During task with name 'load' and id '63b8b974-e221-848f-1a4e-22361b3358df'
+```
+
+`start` 照样停在审批点,但进程一退出,内存里的 checkpoint 就跟着没了。第二个进程里 `status` 查不到任何东西,`next` 是空的;`approve` 更糟:这个 thread 在新进程里是空的,`Command(resume=...)` 没有可以恢复的中断,图就从 START 重新开始跑,第一个节点 `load` 去读 `state["ticket_id"]`,而这次输入里根本没有它,于是 `KeyError`。业务库里 `refund_requests` 还是 0 条。
+
+一句话解释:**InMemorySaver 的状态活在进程内存里,进程一退出就没了,等人审批这种跨进程、跨天的流程必须用 SQLite/Postgres 这种落盘的 checkpointer**。做完把那两行改回来。
+
+</details>
 
 **验收标准**:第 1、2 题业务库里的记录和 history 输出都对得上;第 3 题能说清楚「打印两次」的原因和修法;第 4 题第二轮回答里正确引用了第一轮的信息;能不看代码说出 checkpointer、thread_id、interrupt、Command(resume) 四者的关系。
 

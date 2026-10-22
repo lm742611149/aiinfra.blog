@@ -1261,10 +1261,420 @@ for chunk in graph.stream({"messages": [("user", "上海天气?")], "llm_calls":
 ## 动手练习
 
 1. 跑通 `agent_graph.py`,把打印的 Mermaid 贴到 [mermaid.live](https://mermaid.live) 看图。
+
+<details><summary>参考答案</summary>
+
+这题没有新代码,就是把正文的 `agent_graph.py` 跑起来:
+
+```bash
+cd agent-60-lab/w4/lgdemo
+uv run python agent_graph.py
+```
+
+输出分两段。前半段是 Mermaid 文本(我实跑的,langgraph 1.2.16):
+
+```text
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	llm(llm)
+	tools(tools)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> llm;
+	llm -.-> __end__;
+	llm -.-> tools;
+	tools --> llm;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+```
+
+从 `---` 那行一直复制到 `classDef last` 那行,贴进 [mermaid.live](https://mermaid.live) 左边的编辑框,右边就出图了。看图时对着读:`__start__ --> llm` 是实线,说明一进来一定先调模型;`llm -.-> tools` 和 `llm -.-> __end__` 是两条虚线,虚线就是条件边,跑的时候只会走其中一条;`tools --> llm` 是实线,工具跑完一定回模型,循环就是这条线。
+
+后半段是对话过程。实跑这一次模型一共调了 3 次:第 1 次同时要了上海和北京的天气(一条 AI 消息里两个 `get_weather`),第 2 次调 `calculate` 算 `19 - 15`,第 3 次给出最终回答「两地温差 4°C」,最后打印 `LLM 调用次数: 3`。模型有时会心算温差、只调 2 次,这也算对,只要最终数字对。
+
+</details>
 2. 把 `add_messages` 那一行改成 `messages: list[AnyMessage]`(去掉 reducer),再跑一次,观察会发生什么,解释原因。改回来。
+
+<details><summary>参考答案</summary>
+
+改法:把 `agent_graph.py` 里 State 的那一行换成下面这样,其他一个字都别动。
+
+```python
+    messages: list[AnyMessage]  # 练习 2:去掉 reducer
+```
+
+直接跑 `agent_graph.py` 会看到一大串报错。为了看清楚报错之前状态里发生了什么,我写了一个观察脚本,每跑完一个节点打印一次状态里的消息类型:
+
+```python
+# agent-60-lab/w4/lgdemo/ex24_2_probe.py
+"""练习 2 的观察脚本:每跑完一个节点,打印一次状态里有哪些消息。"""
+from agent_graph import graph
+
+inputs = {"messages": [("user", "上海和北京现在温差几度?")], "llm_calls": 0}
+try:
+    for state in graph.stream(inputs, stream_mode="values"):
+        kinds = [type(m).__name__ if not isinstance(m, tuple) else "tuple" for m in state["messages"]]
+        print(f"llm_calls={state['llm_calls']}  messages={kinds}")
+except Exception as e:
+    print("出错:", type(e).__name__, str(e)[:120])
+```
+
+<div class="line-notes">
+
+- `from agent_graph import graph` 直接用 `agent_graph.py` 里编译好的图。你改了哪个版本的 State,这里拿到的就是哪个版本。
+- `inputs = {` 和正文一样的问题,`llm_calls` 从 0 开始。
+- `for state in graph.stream(inputs, stream_mode="values"):` `values` 模式每一步都吐出**完整状态**,最适合看「状态里现在到底有什么」。
+- `kinds = [` 只打印每条消息的类型名,内容太长看不清。输入里的 `("user", "...")` 是元组,单独标成 `tuple`。
+- `print(f"llm_calls=` 去掉 reducer 后实测打印了三行:`['tuple']` → `['AIMessage']` → `['ToolMessage', 'ToolMessage']`,然后报错。
+- `except Exception as e:` 把报错接住,只打印前 120 个字,不然满屏堆栈。
+
+</div>
+
+去掉 reducer 时的输出(实跑):
+
+```text
+llm_calls=0  messages=['tuple']
+llm_calls=1  messages=['AIMessage']
+llm_calls=1  messages=['ToolMessage', 'ToolMessage']
+出错: OpenAIInvalidRequestError Error code: 400 - {'error': {'message': "Messages with role 'tool' must be a response to a preceding message with 'tool_
+```
+
+改回 `add_messages` 后的输出(实跑):
+
+```text
+llm_calls=0  messages=['HumanMessage']
+llm_calls=1  messages=['HumanMessage', 'AIMessage']
+llm_calls=1  messages=['HumanMessage', 'AIMessage', 'ToolMessage', 'ToolMessage']
+llm_calls=2  messages=['HumanMessage', 'AIMessage', 'ToolMessage', 'ToolMessage', 'AIMessage']
+llm_calls=2  messages=['HumanMessage', 'AIMessage', 'ToolMessage', 'ToolMessage', 'AIMessage', 'ToolMessage']
+llm_calls=3  messages=['HumanMessage', 'AIMessage', 'ToolMessage', 'ToolMessage', 'AIMessage', 'ToolMessage', 'AIMessage']
+```
+
+对比两段就能看出发生了什么。没有 reducer 时,`llm` 节点返回 `{"messages": [reply]}`,整个列表被换成只有这一条 AI 消息,用户的问题没了;接着 `tools` 节点返回两条工具结果,又把列表整个换掉,AI 消息也没了。第二次调模型时发出去的是「系统提示 + 两条 tool 消息」,前面没有发起工具调用的 assistant 消息,DeepSeek 直接回 400:`tool` 角色的消息必须跟在带 `tool_calls` 的消息后面。
+
+还有个小细节:有 reducer 时第一行是 `HumanMessage`,没有时是 `tuple`。`add_messages` 除了追加,还会把 `("user", "...")` 这种简写转成正式的消息对象。
+
+一句话说清 reducer 的作用:**它决定节点返回的新值怎么和旧值合并;没写就是直接覆盖**。这次因为有工具调用,覆盖之后消息顺序不合法,接口报错了,算是运气好。纯聊天的图没有这个约束,覆盖之后不会报任何错,模型只是悄悄忘掉前面说过的话,那才难查。验完记得改回来。
+
+</details>
 3. 用 `langgraph.prebuilt` 里的 `ToolNode(TOOLS)` 和 `tools_condition` 替换手写的 `run_tools` 和 `route`,确认行为一致。注意 `tools_condition` 返回的节点名是 `"tools"`,所以工具节点要叫这个名字。
+
+<details><summary>参考答案</summary>
+
+新建一个文件,复用 `agent_graph.py` 里的 State、工具列表和 `call_llm`,只把工具节点和路由换成官方现成的:
+
+```python
+# agent-60-lab/w4/lgdemo/agent_graph_prebuilt.py
+"""练习 3:用 LangGraph 自带的 ToolNode 和 tools_condition 换掉手写的 run_tools 和 route。"""
+from langgraph.graph import START, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
+
+from agent_graph import TOOLS, State, call_llm
+
+builder = StateGraph(State)
+builder.add_node("llm", call_llm)
+builder.add_node("tools", ToolNode(TOOLS))  # 名字必须叫 "tools",tools_condition 只认这个
+builder.add_edge(START, "llm")
+builder.add_conditional_edges("llm", tools_condition)  # 有工具调用 → "tools",否则 → END
+builder.add_edge("tools", "llm")
+graph = builder.compile()
+
+if __name__ == "__main__":
+    out = graph.invoke({"messages": [("user", "上海和北京现在温差几度?")], "llm_calls": 0})
+    for m in out["messages"]:
+        calls = [(c["name"], c["args"]) for c in getattr(m, "tool_calls", [])]
+        print(f"{type(m).__name__:<12} {calls or m.content}")
+    print("LLM 调用次数:", out["llm_calls"])
+```
+
+<div class="line-notes">
+
+- `from langgraph.prebuilt import ToolNode, tools_condition` `prebuilt` 是 LangGraph 自带的现成零件。本机装的 langgraph-prebuilt 是 1.1.1,装 langgraph 时会一起装上。
+- `from agent_graph import TOOLS, State, call_llm` 不重复造轮子:State 和调模型的节点直接拿 Day 24 的。import 时 `agent_graph.py` 末尾的 `if __name__ == "__main__":` 不会执行,所以不会顺带跑一遍对话。
+- `builder.add_node("tools", ToolNode(TOOLS))` `ToolNode` 干的事和我们手写的 `run_tools` 一样:读最后一条 AI 消息里的 `tool_calls`,逐个执行,包成 `ToolMessage`。两点不同:多个工具调用它会放进线程池**并发**执行(源码里用的是 `executor.map`);工具抛异常时它默认把错误信息变成一条 ToolMessage 还给模型,而不是让整张图崩掉。
+- `builder.add_conditional_edges("llm", tools_condition)` `tools_condition` 看最后一条消息有没有工具调用,有就返回 `"tools"`,没有就返回 END。它把返回值写死成 `"tools"`,所以上一行的节点名必须叫 `tools`,叫别的名字 compile 时会报找不到节点。
+- `for m in out["messages"]:` 把每条消息压成一行打印:有工具调用就打印 (工具名, 参数),没有就打印正文。
+- `print("LLM 调用次数:", out["llm_calls"])` 实测还是 3,`call_llm` 没换,计数照旧。
+
+</div>
+
+输出(实跑):
+
+```text
+HumanMessage 上海和北京现在温差几度?
+AIMessage    [('get_weather', {'city': '上海'}), ('get_weather', {'city': '北京'})]
+ToolMessage  小雨 19°C
+ToolMessage  晴 15°C
+AIMessage    [('calculate', {'expression': '19 - 15'})]
+ToolMessage  4
+AIMessage    现在上海 19°C（小雨），北京 15°C（晴），两地温差 **4°C**，上海更暖一些。
+LLM 调用次数: 3
+```
+
+消息顺序、工具调用、最终答案都和手写版一致,行为一致。
+
+但有一处不一样要注意:我们手写的 `route` 里有 `llm_calls < MAX_LLM_CALLS` 这道步数上限,`tools_condition` 没有。换成现成零件后,步数上限就只剩 `recursion_limit` 了。真实项目里我会保留手写的 `route`(三行代码,换来一个能优雅结束的上限),工具节点用 `ToolNode`(省掉错误处理和并发)。现成零件不是全换或全不换,哪个省事用哪个。
+
+</details>
 4. 跑通 `triage_graph.py`。然后写一个小脚本,从 Day 23 的 `cloudledger.db` 里读出全部 41 张工单,逐张跑分类,统计四个类别各多少张,把你认为分错的挑出来,修改 `classify` 里的类别定义,再跑一遍对比。
+
+<details><summary>参考答案</summary>
+
+分两步做。第一步,把库里 41 张工单全跑一遍,看看分布:
+
+```python
+# agent-60-lab/w4/lgdemo/triage_all.py
+"""练习 4:把 cloudledger.db 里的 41 张工单全部过一遍 triage_graph,按类别和主题统计。"""
+import sqlite3
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+import importlib
+
+MODULE = next((a for a in sys.argv[1:] if not a.startswith("-")), "triage_graph")
+graph = importlib.import_module(MODULE).graph
+
+DB = Path(__file__).resolve().parent.parent / "cloudledger" / "cloudledger.db"
+
+with sqlite3.connect(DB) as conn:
+    rows = conn.execute("SELECT id, subject, body FROM tickets ORDER BY id").fetchall()
+
+inputs = [{"ticket": f"{subject}\n{body}"} for _, subject, body in rows]
+outs = graph.batch(inputs, config={"max_concurrency": 8})  # 8 张一起跑,41 张十几秒
+
+by_cat = Counter(o["triage"].category for o in outs)
+print("类别统计:", dict(by_cat))
+
+by_subject: dict[str, Counter] = defaultdict(Counter)
+for (tid, subject, _), o in zip(rows, outs):
+    by_subject[subject][o["triage"].category] += 1
+print(f"\n{'主题':<14}{'张数':>4}  分到的类别")
+for subject, cats in sorted(by_subject.items(), key=lambda kv: -sum(kv[1].values())):
+    print(f"{subject:<14}{sum(cats.values()):>4}  {dict(cats)}")
+
+if "-v" in sys.argv:  # 加 -v 把每张单子的结果都打出来,方便挑错
+    for (tid, subject, body), o in zip(rows, outs):
+        print(tid, subject, "→", o["triage"].category, o["triage"].urgency, "|", body[:30])
+```
+
+<div class="line-notes">
+
+- `import importlib` 后面要比较好几个版本的分类定义,所以用 `importlib` 按名字导入模块,版本名从命令行传。
+- `MODULE = next(` 取命令行里第一个不以 `-` 开头的参数当模块名,没给就用 `triage_graph`。比如 `uv run python triage_all.py triage_graph_v3 -v`。
+- `graph = importlib.import_module(MODULE).graph` 等价于 `from triage_graph import graph`,只是模块名是变量。
+- `DB = Path(__file__).resolve().parent.parent / "cloudledger" / "cloudledger.db"` 从 `w4/lgdemo/` 往上一层到 `w4/`,再进 `cloudledger/`。这个库是 Day 23 的 `seed.py` 生成的,实测 41 张工单。
+- `rows = conn.execute(` 只取 id、主题、正文三列,按 id 排序。
+- `inputs = [{"ticket": f"{subject}\n{body}"}` 主题和正文拼在一起交给分类节点,和真实客服系统里看到的一样。
+- `outs = graph.batch(inputs, config={"max_concurrency": 8})` `batch` 一次跑一批输入,`max_concurrency` 控制同时最多 8 个。41 张实测十几秒跑完,一张张 `invoke` 要一分多钟。
+- `by_cat = Counter(` `Counter` 是计数用的字典,类似 JS 里自己写 `counts[k] = (counts[k] ?? 0) + 1`。
+- `by_subject: dict[str, Counter] = defaultdict(Counter)` 按工单主题再分一层:同一个主题的工单分到了哪些类别。库里的工单是按 8 个主题模板造的,同主题的正文几乎一样,如果同主题被分到两个类别,说明模型不稳定。
+- `if "-v" in sys.argv:` 加 `-v` 把 41 张逐张打出来,方便挑错。
+
+</div>
+
+输出(实跑,不带 `-v`):
+
+```text
+类别统计: {'technical': 6, 'billing': 26, 'account': 9}
+
+主题              张数  分到的类别
+登录不了             9  {'account': 9}
+重复扣款             8  {'billing': 8}
+导出报表报错           6  {'technical': 6}
+申请退款             5  {'billing': 5}
+发票抬头修改           5  {'billing': 5}
+升级套餐             4  {'billing': 4}
+取消订阅             3  {'billing': 3}
+席位数量不对           1  {'billing': 1}
+```
+
+老实说,我找不到分错的。我把类别定义那一行整个删掉再跑两次,结果一张都没变。库里这 41 张是按模板造的,每一类都很典型,模型闭着眼都能分对。这本身就是一个结论:**测试集太简单,改提示词改不出差别**,Day 5 遇到过同样的情况。
+
+所以第二步,自己写 8 张「两边都沾」的难工单,每张跑 3 次:
+
+```python
+# agent-60-lab/w4/lgdemo/triage_edge.py
+"""练习 4 的第二步:库里的 41 张都太好分,自己写 8 张「两边都沾」的难工单,每张跑 3 次看稳不稳。"""
+import importlib
+import sys
+from collections import Counter
+
+MODULE = sys.argv[1] if len(sys.argv) > 1 else "triage_graph"
+graph = importlib.import_module(MODULE).graph
+
+# (工单, 我认为正确的类别)。规则:只要客户要的是钱上的处理,就算 billing
+EDGE = [
+    ("员工离职了,他的账号怎么删?删了以后席位费会少收吗", "billing"),
+    ("想把公司账户注销掉,剩下的年费能退吗", "billing"),
+    ("导出发票 PDF 的时候一直转圈,导不出来", "technical"),
+    ("升级企业版的钱扣了,但功能还是基础版的", "billing"),
+    ("开发票的邮件一直收不到,查了垃圾箱也没有", "billing"),
+    ("你们的 API 文档在哪里看", "other"),
+    ("管理员权限被别人改掉了,现在我进不了设置页", "account"),
+    ("登录页一直报 500 错误,同事也一样", "technical"),
+]
+RUNS = 3
+
+inputs = [{"ticket": t} for t, _ in EDGE for _ in range(RUNS)]
+outs = graph.batch(inputs, config={"max_concurrency": 8})
+
+right = 0
+for i, (ticket, want) in enumerate(EDGE):
+    got = Counter(o["triage"].category for o in outs[i * RUNS:(i + 1) * RUNS])
+    right += got[want]
+    mark = "✓" if got[want] == RUNS else "✗"
+    print(f"{mark} {ticket[:22]:<24} 期望 {want:<9} 实际 {dict(got)}")
+print(f"{MODULE}: {right}/{len(EDGE) * RUNS} 次分对")
+```
+
+<div class="line-notes">
+
+- `MODULE = sys.argv[1] if len(sys.argv) > 1 else "triage_graph"` 同样按名字选要测的版本。
+- `EDGE = [` 每条是 (工单, 我认为正确的类别)。正确答案是我按一条规则定的:客户最终要的是钱上的处理,就算 billing。这条规则是业务决定,不是模型决定,你们公司可以定成别的。
+- `("员工离职了,他的账号怎么删?删了以后席位费会少收吗", "billing"),` 同时沾 account(删账号)和 billing(席位费)。
+- `("想把公司账户注销掉,剩下的年费能退吗", "billing"),` 注销是 account 的关键词,但客户真正关心的是退钱。
+- `("导出发票 PDF 的时候一直转圈,导不出来", "technical"),` 有「发票」两个字,但这是功能故障。
+- `("登录页一直报 500 错误,同事也一样", "technical"),` 有「登录」,但 500 是服务端报错,不是账号问题。
+- `RUNS = 3` 每张跑 3 次。只跑一次看不出模型稳不稳。
+- `inputs = [{"ticket": t} for t, _ in EDGE for _ in range(RUNS)]` 8 张 × 3 次 = 24 个输入,按顺序排好,一次 `batch` 跑完。
+- `got = Counter(o["triage"].category for o in outs[i * RUNS:(i + 1) * RUNS])` 第 i 张工单的 3 次结果在 `outs` 里是连着的,切片取出来计数。
+- `mark = "✓" if got[want] == RUNS else "✗"` 3 次全对才打勾。
+
+</div>
+
+用原版定义跑(实跑两次,结果相同):
+
+```text
+✗ 员工离职了,他的账号怎么删?删了以后席位费会   期望 billing   实际 {'account': 3}
+✗ 想把公司账户注销掉,剩下的年费能退吗       期望 billing   实际 {'account': 3}
+✓ 导出发票 PDF 的时候一直转圈,导不出来    期望 technical 实际 {'technical': 3}
+✓ 升级企业版的钱扣了,但功能还是基础版的      期望 billing   实际 {'billing': 3}
+✓ 开发票的邮件一直收不到,查了垃圾箱也没有     期望 billing   实际 {'billing': 3}
+✓ 你们的 API 文档在哪里看           期望 other     实际 {'other': 3}
+✓ 管理员权限被别人改掉了,现在我进不了设置页    期望 account   实际 {'account': 3}
+✓ 登录页一直报 500 错误,同事也一样      期望 technical 实际 {'technical': 3}
+triage_graph: 18/24 次分对
+```
+
+错的两张都是「注销/删账号 + 钱」,模型看到注销就分给了 account。于是我把 `triage_graph.py` 复制成 `triage_graph_v2.py`,在类别定义后面加一句消歧规则:
+
+```python
+        "billing=扣款/退款/发票/价格;technical=报错/功能异常;account=登录/权限/注销;其余 other。\n"
+        "两类都沾时按客户最终要的结果分:要退钱、少收钱、核对费用的一律 billing,哪怕同时提到注销或删账号;"
+        "登录页、导出等功能报错码算 technical,哪怕发生在登录或发票页面。\n\n"
+```
+
+难工单变成 24/24。但再跑一遍那 41 张,出事了:
+
+```text
+类别统计: {'technical': 15, 'billing': 26}
+登录不了             9  {'technical': 9}
+```
+
+「验证码一直过期,登录不了」9 张全被分成了 technical,account 一张都没了。原因是我那句「登录页……算 technical」写得太宽,模型把所有登录问题都当成了技术故障。**修好一处,弄坏另一处**,这就是为什么改完提示词一定要把原来的测试集也重跑一遍。
+
+`triage_graph_v3.py` 把那半句收窄:
+
+```python
+        "两类都沾时按客户最终要的结果分:要退钱、少收钱、核对费用的一律 billing,哪怕同时提到注销或删账号;"
+        "出现具体报错码(如 500、ERR_ 开头)或页面卡住转圈的算 technical;"
+        "验证码收不到或过期、密码、权限这类登录问题仍是 account。\n\n"
+```
+
+三个版本放在一起(都是实跑):
+
+| 版本 | 难工单 24 次 | 库里 41 张的类别分布 | 结论 |
+| --- | --- | --- | --- |
+| 原版 | 18/24 | billing 26、account 9、technical 6 | 注销 + 退钱分错 |
+| v2 | 24/24 | billing 26、technical 15、account 0 | 难题修好了,登录类 9 张全被带偏 |
+| v3 | 24/24(跑了两次) | billing 26、account 9、technical 6 | 两边都对 |
+
+运行命令:
+
+```bash
+cd agent-60-lab/w4/lgdemo
+uv run python triage_all.py                  # 原版,41 张
+uv run python triage_edge.py                 # 原版,难工单
+uv run python triage_edge.py triage_graph_v3
+uv run python triage_all.py triage_graph_v3
+```
+
+这一轮总共调了大约 300 次模型,按 deepseek-flash 的价格不到一块钱。
+
+</details>
 5. 加分题:给 `triage_graph` 加一个 `billing` 分支下的子步骤,当分类是 billing 且工单正文里出现「退」字时,在 note 里追加「可能涉及退款,需审批」。想一想,这个判断应该放在条件边里还是节点里?
+
+<details><summary>参考答案</summary>
+
+答案是**放在节点里**。判断「要不要追加备注」会改 State 里的 `note`,而条件边的路由函数只能返回「下一站去哪」,它的返回值不会写进状态(正文第 7 步讲过)。所以这里加一个 `refund_check` 节点,接在 `billing` 后面:
+
+```python
+# agent-60-lab/w4/lgdemo/triage_refund.py
+"""练习 5:billing 分支下加一个子步骤,工单里提到「退」就在 note 里标出需要审批。"""
+from langgraph.graph import END, START, StateGraph
+
+from triage_graph import (TicketState, classify, escalate_if_urgent, pick_branch,
+                          to_billing, to_human, to_technical)
+
+
+def refund_check(state: TicketState) -> dict:
+    if "退" in state.get("ticket", ""):
+        return {"note": state.get("note", "") + ";可能涉及退款,需审批"}
+    return {}
+
+
+builder = StateGraph(TicketState)
+builder.add_node("classify", classify)
+builder.add_node("billing", to_billing)
+builder.add_node("refund_check", refund_check)
+builder.add_node("technical", to_technical)
+builder.add_node("human", to_human)
+builder.add_node("escalate", escalate_if_urgent)
+builder.add_edge(START, "classify")
+builder.add_conditional_edges("classify", pick_branch, ["billing", "technical", "human"])
+builder.add_edge("billing", "refund_check")  # billing 先定负责人,再做退款检查
+builder.add_edge("refund_check", "escalate")
+builder.add_edge("technical", "escalate")
+builder.add_edge("human", "escalate")
+builder.add_edge("escalate", END)
+graph = builder.compile()
+
+if __name__ == "__main__":
+    for text in ["10 月 8 号被扣了两次款,麻烦退一笔", "上个月的发票抬头写错了,能重开吗"]:
+        out = graph.invoke({"ticket": text})
+        print(f"{text[:16]:<18} → {out['triage'].category:<8} {out['owner']} | {out['note']}")
+```
+
+<div class="line-notes">
+
+- `from triage_graph import (TicketState, classify, escalate_if_urgent, pick_branch,` 节点函数和 State 全部复用 `triage_graph.py` 的,这个文件只负责重新连线。
+- `def refund_check(state: TicketState) -> dict:` 新节点。只有走到 billing 分支的工单才会经过它。
+- `if "退" in state.get("ticket", ""):` 题目要求的规则:工单原文里有「退」字。用 `.get` 而不是 `state["ticket"]`,是因为 `TicketState` 写了 `total=False`(所有字段都可以没有),直接用方括号取值 Zed 会标红。
+- `return {"note": state.get("note", "") + ";可能涉及退款,需审批"}` 在 billing 节点写好的备注后面追加。`note` 没有 reducer,所以要自己把旧值拼上再返回,直接返回新句子会把旧备注覆盖掉。
+- `return {}` 没有「退」字就什么都不改。返回空字典是合法的。
+- `builder.add_edge("billing", "refund_check")` billing 跑完先进 refund_check,再去 escalate。原来 `billing → escalate` 那条边就不要了。
+- `builder.add_edge("technical", "escalate")` 另外两个分支照旧直接去 escalate。
+
+</div>
+
+输出(实跑):
+
+```text
+10 月 8 号被扣了两次款,麻   → billing  账务组 | 需要查发票和订阅,W4 后面会接 MCP 工具;可能涉及退款,需审批;紧急,30 分钟内响应
+上个月的发票抬头写错了,能重开吗   → billing  账务组 | 需要查发票和订阅,W4 后面会接 MCP 工具
+```
+
+第一张有「退」字,备注里多了一句;第二张没有,原样通过。三段备注的顺序正好就是节点执行的顺序:billing → refund_check → escalate。
+
+也可以不加新节点,直接把这个判断写进 `to_billing` 函数里。两种都对。单独成一个节点的好处是在 stream 和图里都看得见这一步,后面 Day 25 想在这里加人工审批时,也有地方接。
+
+</details>
 
 **验收标准**:两张图都能跑通;第 2 题能用一句话说清 reducer 的作用;第 4 题有一张统计表和至少一处你修改分类定义后的前后对比;能不看代码画出两张图的结构。
 
