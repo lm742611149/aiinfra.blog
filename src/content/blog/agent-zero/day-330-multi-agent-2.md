@@ -230,7 +230,7 @@ class MiniAgent:
 - `@property` 把 `total` 变成只读属性,写 `a.usage.total`,不加括号,相当于 JS 的 getter。
 - `return (self.cache_hit_tokens * HIT + miss * MISS + self.completion_tokens * OUT) / 1_000_000` 价格是每百万 token,所以除以一百万。`1_000_000` 里的下划线只是为了好读,Python 允许。
 - `class MiniAgent:` 每个实例有自己的 `system`、`tools`、`usage`;`run` 里的 `messages` 是局部变量,每次调用都是新的。这就是上下文隔离在代码里的样子。
-- `tools: dict[str, tuple[dict, Callable[..., Any]]] = field(default_factory=dict)` 工具表:名字 → (发给模型的定义, 真正执行的函数)。写成 `= {}` 的话 dataclass 会直接报 `ValueError: mutable default <class 'dict'> for field tools is not allowed`。
+- `tools: dict[str, tuple[dict, Callable[..., Any]]] = field(default_factory=dict)` 工具表:名字 → (发给模型的定义, 真正执行的函数)。写成 `= {}` 的话 dataclass 会直接报 `ValueError: mutable default <class 'dict'> for field tools is not allowed: use default_factory`。
 - `max_steps: int = 6` 一次 `run` 最多调 6 次模型,防止死循环。
 - `verbose: bool = False` 打开后打印收到的任务、调的工具、用时。今天看「谁在什么时候干了什么」全靠它。
 - `last_answer: str = ""` 记下最近一次交回的结论,练习里要拿出来对比。
@@ -300,7 +300,7 @@ if __name__ == "__main__":
 - `from mini_agent import MiniAgent  # noqa: E402` 同目录的 `mini_agent.py`。脚本从 `part05/multi` 目录运行,当前目录本来就在搜索路径里。
 - `system="你是云簿的账务专员。只处理扣款、发票、订阅、退款问题。用工具查事实,回答里给出发票号和金额。不要提交退款,只给建议。",` 「不要提交退款」这句很重要:账务专员手上本来就没有 `create_refund_request`,但写明了它就不会在回答里说「我已为您提交」。
 - `billing.add_tool(find_customer, {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})` 参数 schema 手写,参数名必须和函数的参数名一样,否则 `fn(**args)` 会报 `TypeError`。
-- `billing.add_tool(list_invoices, {...})` 注意这里的 schema 没有写 `limit` 的上限。Day 283 的函数签名里有 `Field(le=20)`,但那个校验只在走 MCP 协议时生效,直接调 Python 函数时不生效。下面会看到模型传了 `limit: 50` 也照样查了。
+- `billing.add_tool(list_invoices, {"type": "object"` 注意这里的 schema 没有写 `limit` 的上限。Day 283 的函数签名里有 `Field(le=20)`,但那个校验只在走 MCP 协议时生效,直接调 Python 函数时不生效。下面会看到模型传了 `limit: 50` 也照样查了。
 - `answer = asyncio.run(billing.run("客户 user007@example.com 说 10 月被扣了两次钱,请核查并给出结论。"))` 这句 task 就是模拟主管会写给它的话。
 - `print(f"调用 {u.calls} 次,输入 {u.prompt_tokens}(命中缓存 {u.cache_hit_tokens}),输出 {u.completion_tokens},约 {u.cost:.4f} 元")` 实测 3 次调用,输入 1849,其中命中缓存 1152,输出 458,约 0.0051 元。
 
@@ -552,7 +552,7 @@ tech         2    1561    0.0053
 
 ## 怎么让主管派好活
 
-Anthropic 那篇文章里,第一条经验就是「教会主管怎么派活」。他们的说法是:每个子任务要写清**目标、输出格式、该用哪些工具和来源、任务边界**;写不清的话,子 Agent 会重复干活、留下空白,或者找不到必要的信息。他们早期的版本里,主管给子 Agent 的指令就是一句「研究一下半导体短缺」,结果几个子 Agent 查的东西大量重复。
+Anthropic 那篇文章里,第一条经验就是「教会主管怎么派活」。他们的说法是:每个子任务要写清**目标、输出格式、该用哪些工具和来源、任务边界**;写不清的话,子 Agent 会重复干活、留下空白,或者找不到必要的信息。他们早期的版本里,主管给子 Agent 的指令就是一句「研究一下半导体短缺」,结果一个子 Agent 去查了 2021 年的汽车芯片危机,另外两个重复地查了 2025 年的供应链。
 
 对应到今天的代码,这些要求放在了两个地方。一是主管的系统提示词:「交代任务时写清:客户是谁、要查什么、需要返回什么」。二是委派工具的 docstring:「task 要写清楚客户标识,专员看不到用户原话」。从上面的输出看,主管确实照做了:每个任务都以「客户标识:user007@example.com」开头,写了要查什么,最后一句是「请返回核查结论」。
 
@@ -729,7 +729,7 @@ if __name__ == "__main__":
 - `from server import REFUND_POLICY  # noqa: E402  # pyright: ignore[reportMissingImports]` Day 284 把政策原文抽成了模块级常量,这里直接拿来用,政策只有一个版本。
 - `"""查云簿退款政策原文。涉及能不能退、退多少、多久到账时必须先查。"""` 描述里写清什么时候必须查,模型才知道答到账时间之前要先调它。
 - `sv.billing.add_tool(get_refund_policy, {"type": "object", "properties": {}})` 没有参数的工具,schema 写一个空的 properties。
-- `sv.lead.system += "回复里的时间、金额、流程只能来自专员交回的结论,……"` `+=` 在原来的字符串后面接一句。直接改 `supervisor` 模块里那个对象的属性,不用复制整份系统提示词。
+- `sv.lead.system += "回复里的时间` `+=` 在原来的字符串后面接一句。直接改 `supervisor` 模块里那个对象的属性,不用复制整份系统提示词。
 - `sv.billing.verbose = True` 只看账务专员有没有查政策。
 
 </div>
@@ -874,11 +874,11 @@ tech         2    1452    0.0048
 
 ### 书籍
 
-- Chip Huyen《AI Engineering》(O'Reilly,2025):第 6 章 Agent 部分讲工具选择和规划失败的分类,今天看到的「编出没做过的动作」「按想象中的能力派活」都能在那套分类里找到位置,英文原版。
+- Chip Huyen《AI Engineering》(O'Reilly,2025):第 6 章后半讲 Agent,其中对 Agent 失败模式的分类(规划失败、工具失败、效率问题)适合拿来给今天看到的几种错归类,英文原版。
 
 ### 开源项目与代码
 
-- [anthropics/claude-cookbooks · patterns/agents](https://github.com/anthropics/claude-cookbooks/tree/main/patterns/agents):Anthropic 官方的 Agent 模式示例,里面的 orchestrator-workers 笔记本是工作流版本,和今天的 Agent 版对照看区别。
+- [anthropics/claude-cookbooks · patterns/agents](https://github.com/anthropics/claude-cookbooks/tree/main/patterns/agents):Anthropic 官方的 Agent 模式示例。`orchestrator_workers.ipynb` 是工作流版本,`async_multi_agent_orchestration.ipynb` 是异步的多 Agent 编排,和今天的 `MiniAgent` 对照看。
 - [openai/openai-agents-python](https://github.com/openai/openai-agents-python):OpenAI Agents SDK 源码,搜 `as_tool` 看它怎么把一个 Agent 包装成另一个 Agent 的工具,思路和今天的 `ask_billing_agent` 一样。
 
 ## 自测

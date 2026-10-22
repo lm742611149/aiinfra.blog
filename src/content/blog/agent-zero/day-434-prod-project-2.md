@@ -1076,7 +1076,7 @@ README 段落参考正文「写进 README」那一段,再补一句:「单轮最�
 ### 文档与文章
 
 - [Caddy · reverse_proxy 指令](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy):看「Headers」一节,确认它默认怎么设置 `X-Forwarded-For`、什么时候才信任客户端带来的值(`trusted_proxies`);再看 `flush_interval`,SSE 为什么不需要配置。20 分钟。
-- [Uvicorn · Settings](https://www.uvicorn.org/settings/):找 `--proxy-headers` 和 `--forwarded-allow-ips`,今天第二步的依据。10 分钟。
+- [Uvicorn · Settings](https://uvicorn.dev/settings/):找 `--proxy-headers` 和 `--forwarded-allow-ips`,今天第二步的依据。10 分钟。
 - [Google SRE Book · Testing for Reliability](https://sre.google/sre-book/testing-reliability/):Day 432 推荐过的那本书的这一章,讲在生产里测试可靠性的各种方法,今天的演练是其中最朴素的一种。40 分钟。
 - [Principles of Chaos Engineering](https://principlesofchaos.org/):混沌工程的原则,一页纸。它比今天的演练更进一步:在生产环境、持续地、自动地注入故障。先知道有这条路就行。10 分钟。
 - [MDN · Retry-After](https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Reference/Headers/Retry-After):前端视角的说明,和今天限流返回的头、假上游的 429 是同一个东西。
