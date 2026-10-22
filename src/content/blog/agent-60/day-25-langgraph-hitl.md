@@ -551,6 +551,11 @@ Agent 服务对外提供两个接口。一个是「处理工单」:收到工单�
 ### B 站视频
 
 <figure class="video">
+<div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1z3NY66EY1&p=56&autoplay=0&high_quality=1" title="尚硅谷LangGraph教程,langgraph入门,langgraph智能体项目实战" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
+<figcaption>尚硅谷 · LangGraph 教程(Day 24 推荐过的同一套) · 今天看第 56–60、65–77 集(checkpoint、Postgres 检查点、时间旅行和 fork)、84–93 集(interrupt 和审批)、107–116 集(流式和子图入门),共约 6.6 小时,不用一次看完。第 61–64 集装 PostgreSQL 可以跳过。分集清单见 Day 24 的学习资料。</figcaption>
+</figure>
+
+<figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1fykHY6EAF&autoplay=0&high_quality=1" title="LangGraph Interrupt:Human-In-The-Loop 人机交互手到擒来!" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
 <figcaption>沧海九粟 · LangGraph Interrupt:Human-In-The-Loop 人机交互手到擒来! · 21 分钟,讲 interrupt 刚推出时的设计和用法。2024 年 12 月录制,API 主体没变,但没有 response_schema 等新参数。</figcaption>
 </figure>

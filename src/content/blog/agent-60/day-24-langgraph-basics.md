@@ -603,8 +603,22 @@ for chunk in graph.stream({"messages": [("user", "上海天气?")], "llm_calls":
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1z3NY66EY1&autoplay=0&high_quality=1" title="尚硅谷LangGraph教程,langgraph入门,langgraph智能体项目实战" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
-<figcaption>尚硅谷 · 尚硅谷LangGraph教程,langgraph入门,langgraph智能体项目实战 · 2026 年 7 月录制,版本较新,一共一百多集,今天只看讲 State、节点、边、条件边的前十几集,其余当工具书按需查。</figcaption>
+<figcaption>尚硅谷 · 尚硅谷LangGraph教程,langgraph入门,langgraph智能体项目实战 · 2026 年 7 月发布,132 集共约 21 小时。只讲 LangGraph 本身,讲得很细,今天看第 8–34、37、40–47 集,分集清单见下面。</figcaption>
 </figure>
+
+这套课我按目录过了一遍(2026-10-22 查,B 站播放 83 万、收藏 1.4 万),值得看,但别从头刷到尾。它的长处是把 LangGraph 的 API 一个个拆开讲透:state 和 reducer 讲了十几集,`Send` 动态扇出、`Command`、重试/超时/节点缓存、Postgres checkpoint 的表结构、fork 回放、并行中断时的检查点、子图的持久化策略,这些很多教程一笔带过的地方它都单独录了一集。短处也明显:标题写「项目实战」,其实没有一个完整项目,部署只有 3 集、设计模式 5 集几分钟带过;**多 Agent(supervisor、handoff)、MCP 接入、评测都没讲**,这些还是看本课 Day 26、Day 23 和 W5。环境用的是 miniconda + Jupyter,和本课的 uv 不一样,第 1–7 集直接跳过。
+
+| 集数 | 内容 | 时长 | 对应本课 | 建议 |
+| --- | --- | --- | --- | --- |
+| 1–7 | 装 miniconda、Jupyter、配 key | 1 小时 | Day 0 | 跳过,我们用 uv |
+| 8–34、37、40–47 | 三要素、state/reducer、边、条件分支、Command、循环和退出 | 5.5 小时 | **Day 24** | 今天看 |
+| 35–36、38–39、48–55 | 延时节点、动态分支和扇入(Send)、重试、超时、缓存 | 2.2 小时 | Day 24 / Day 37 | 选看,写并行和容错时回来查 |
+| 56–60、65–77、84–93、107–116 | checkpoint、Postgres 检查点、时间旅行和 fork、interrupt 审批、流式、子图入门 | 6.6 小时 | **Day 25** | 明天看 |
+| 61–64 | 装 PostgreSQL 和 SQL 基础 | 0.5 小时 | Day 17 | 跳过,Day 17 装过了 |
+| 78–83、94–97、117–127 | 长期记忆 store、静态断点、子图持久化细节 | 3.2 小时 | Day 25 / Day 48 | 选看 |
+| 98–106 | LangSmith 调试、部署、ToolNode、`wrap_tool_call` | 1.9 小时 | Day 34 / Day 41 | 选看,`wrap_tool_call` 那集值得看 |
+| 128–132 | 提示词链、路由、编排者-工作者、评估-优化、agent | 0.5 小时 | Day 13 | 当 Day 13 的 LangGraph 版复习 |
+
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1bi421v7oD&autoplay=0&high_quality=1" title="吴恩达&langchain《用LangGraph搭建智能体|AI Agents in LangGraph》【短课英字可关】" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
