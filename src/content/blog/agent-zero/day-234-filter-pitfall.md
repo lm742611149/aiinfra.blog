@@ -657,7 +657,7 @@ uv run python -m part04.ex_ef_find
 ```
 
 ```text
- ef_search      平均返回行数      拿满 10 行的查询数
+ ef_search      平均返回行数         拿满 10 行的查询数
         40         4.2               0/50
         60         6.4               7/50
         80         7.7              16/50

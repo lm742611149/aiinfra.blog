@@ -199,7 +199,7 @@ rollback 后  c 看到 1812  c.in_transaction = False
 
 读这份输出,要抓住三件事:
 
-- `UPDATE` 之后 `in_transaction` 变成 `True`,说明 Python 悄悄开了一个事务。**`SELECT` 不会触发**,只有 `INSERT`、`UPDATE`、`DELETE`、`REPLACE` 才会。(官方文档在 [Transaction control](https://docs.python.org/3/library/sqlite3.html) 一节里写得很清楚,这是 3.12 以前一直是默认的行为。)
+- `UPDATE` 之后 `in_transaction` 变成 `True`,说明 Python 悄悄开了一个事务。**`SELECT` 不会触发**,只有 `INSERT`、`UPDATE`、`DELETE`、`REPLACE` 才会。(官方文档在 [Transaction control](https://docs.python.org/3/library/sqlite3.html) 一节里写得很清楚,这是默认模式的行为,3.12 以前只有这一种。)
 - 事务没结束前,另一个连接 b 看到的永远是旧值。这是**隔离**:别人的半成品对你不可见。
 - 事务不提交就关掉,等于没做。所以**忘了写 `conn.commit()` 的脚本,跑完什么都没存下来**,而且不报任何错。这是新手写 SQLite 最常遇到的第一个「我的数据呢」。
 
@@ -529,7 +529,7 @@ uv run python -m part01.commit_cost
 ```
 
 ```text
-每条都 commit:0.360 秒;全部做完 commit 一次:0.002 秒;差 196 倍
+每条都 commit:0.273 秒;全部做完 commit 一次:0.001 秒;差 191 倍
 ```
 
 两次实测相差大约二百倍(这台机器同时还有别的任务在跑,具体数字每次不同,只看量级)。结论很实用:**一批相关的写操作放进同一个事务,最后提交一次**,既快又保证一致;每条一提交,慢,而且中途断了会留下一半。Day 94 造 15 张发票时就这么做。
@@ -584,7 +584,7 @@ b.close()
 
 ```text
 a 正在写,还没提交。b 也想写:
-  0.5 秒后报错: OperationalError database is locked
+  0.6 秒后报错: OperationalError database is locked
   b.in_transaction = True <- 失败了,但事务还开着
 b 只是读,不受影响: [(500,)]
 a 提交之后 b 写成功了: [(499,)]
@@ -1417,7 +1417,7 @@ TMP_DB.unlink()
 
 ```text
 行数: 5000
-for 循环 execute:9.5 毫秒;executemany:4.8 毫秒;(都只 commit 一次)
+for 循环 execute:9.1 毫秒;executemany:4.7 毫秒;(都只 commit 一次)
 ```
 
 三次实测(各跑一次的结果略有出入,量级一样)里,`executemany` 都比循环快,差距大概在一半左右;它们都比第 4 步「每条一个 commit」快两个数量级。真正决定快慢的是**提交的次数**,所以批量写入一定要放进一个外层事务;`executemany` 是在这个基础上的小优化。Day 94 造发票数据时会用到 `executemany`。
@@ -1613,7 +1613,7 @@ b 这回读到 2900
 
 ### 书籍
 
-- Martin Kleppmann、Chris Riccomini,《Designing Data-Intensive Applications》(第 2 版,O'Reilly,2026;中文译本《设计数据密集型应用》第 1 版由清华大学出版社出版,具体版次以出版社页面为准)。第 7 章讲事务:ACID、隔离级别、丢失更新、写偏斜。今天遇到的「先读后写」问题,书里讲得最透;现在读会有点深,以后做多个服务同时写数据时回来看。
+- Martin Kleppmann、Chris Riccomini,《Designing Data-Intensive Applications》(第 2 版,O'Reilly,2026;中文译本《设计数据密集型应用》第 1 版由清华大学出版社出版,具体版次以出版社页面为准)。有专门一章讲事务:ACID、隔离级别、丢失更新、写偏斜。今天遇到的「先读后写」问题,书里讲得最透;现在读会有点深,以后做多个服务同时写数据时回来看。
 
 ### 开源项目与代码
 
