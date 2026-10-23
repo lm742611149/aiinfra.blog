@@ -374,16 +374,6 @@ def _events(graph, payload: Any, ticket_id: str) -> Generator[ServerSentEvent, N
     yield _sse("done", _summary(graph, ticket_id))
 ```
 
-`resumable` 的最后加两行:
-
-```python
-# supportpilot/src/supportpilot/api/app.py(resumable 里 return 之前加)
-    if ticket_id in RUNNING:
-        raise HTTPException(409, "上一次的处理还在收尾,请稍后再试")
-```
-
-文件顶部的 import 改成 `from collections.abc import Generator, Iterator`。
-
 <div class="line-notes">
 
 - `RUNNING: set[str] = set()` 模块级的集合,整个进程共用一份。Python 的 set 单次 add、discard 在 GIL 下是原子的,多个线程同时调不会把集合弄坏。
@@ -393,6 +383,18 @@ def _events(graph, payload: Any, ticket_id: str) -> Generator[ServerSentEvent, N
 - `for mode, chunk in stream:` 其余逻辑和 Day 467 一样。
 - `stream.close()` 生成器的 `close()` 会在它暂停的地方抛一个 GeneratorExit,让它的 finally 都执行完。LangGraph 的流收到 GeneratorExit 后会等正在跑的节点结束、把结果写进 checkpoint 才返回。正常跑完时调 `close()` 什么也不做,出错时也一样安全。
 - `RUNNING.discard(ticket_id)` 用 discard 不用 remove:元素不在集合里时 discard 不报错,remove 会抛 KeyError。
+</div>
+
+文件顶部的 import 改成 `from collections.abc import Generator, Iterator`。`resumable` 的最后加两行:
+
+```python
+# supportpilot/src/supportpilot/api/app.py(resumable 里 return 之前加)
+    if ticket_id in RUNNING:
+        raise HTTPException(409, "上一次的处理还在收尾,请稍后再试")
+```
+
+<div class="line-notes">
+
 - `if ticket_id in RUNNING:` 放在 `resumable` 最后:前面三项是「工单状态不对」,这一项是「现在不行,等会儿可以」,语义不同但都用 409。前端靠 detail 文字分不出来,所以下面前端统一按「等一会儿再试」处理。
 
 </div>
@@ -1329,7 +1331,7 @@ npx tsx scripts/check_resume.mts
 - [MDN · AbortController](https://developer.mozilla.org/zh-CN/docs/Web/API/AbortController):中文,一页,看 abort() 和 signal 的例子。
 - [MDN · 使用服务器发送事件](https://developer.mozilla.org/zh-CN/docs/Web/API/Server-sent_events/Using_server-sent_events):中文,看事件的 id 字段和断线重连那几段,理解 Last-Event-ID 是怎么来的。
 - [HTML 规范 · Server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html):英文原始规范,查 `Last-Event-ID` 和 `retry` 字段的准确定义。
-- [LangGraph · Durable execution](https://docs.langchain.com/oss/python/langgraph/durable-execution):官方讲持久执行和「从中断处恢复」,包括为什么有副作用的操作要放进 task 或做成幂等。英文。
+- [LangGraph · Checkpointers](https://docs.langchain.com/oss/python/langgraph/checkpointers):官方讲 checkpoint、super-step 和 pending writes 的那一页。看「Pending writes」一段:节点跑完的结果会先单独存下,恢复时成功的节点不重跑,正好解释了第二步 resume 时 act 为什么没有再调工具。英文。
 - [MDN · ARIA live regions](https://developer.mozilla.org/zh-CN/docs/Web/Accessibility/ARIA/Guides/Live_regions):polite 和 assertive 的区别、role="alert" 的用法。
 - [MDN · aria-busy](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Attributes/aria-busy):英文,一页。
 - [W3C · Developing a Keyboard Interface](https://www.w3.org/WAI/ARIA/apg/practices/keyboard-interface/):W3C 官方的键盘交互指南,讲焦点该怎么移动、什么时候该主动设置焦点。英文。
