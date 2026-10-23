@@ -629,7 +629,7 @@ print(f"自动处理率 {auto / len(rows):.0%}")
 <div class="line-notes">
 
 - `from collections import Counter` 专门用来计数的字典,传一个可迭代对象,它数出每个值出现几次。相当于 JS 里 `reduce` 出一个 `{值: 次数}` 对象。
-- `rows = [json.loads(line) for line in Path(...).read_text(encoding="utf-8").splitlines()]` JSONL 的读法:读全文,按行切开,每行 `json.loads` 一次。
+- `rows = [json.loads(line) for line in Path(` JSONL 的读法:读全文,按行切开,每行 `json.loads` 一次。
 - `routes = Counter(row["route"] for row in rows)` 括号里是生成器表达式,不用先建列表。
 - `for route, n in routes.most_common():` 按次数从多到少排好返回 `(值, 次数)` 列表。
 - `print(f"  {route}: {n} 张 ({n / len(rows):.0%})")` `:.0%` 把小数格式化成不带小数位的百分数,0.375 显示成 `38%`。

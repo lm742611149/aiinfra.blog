@@ -12,7 +12,7 @@
        while x<=b and x in d: x+=1
        print(a,b,x if x<=b else 'done')"
    ```
-2. 每条流派 1 个 general-purpose 写手(Opus),一次写起点开始的连续 3 天,最多 20 个并发。写手交稿后:把它汇报里的拆天建议/接口约定追加到 docs/agent-zero-split-notes.md,再给同一条流派下 3 天。
+2. 每条流派 1 个 general-purpose 写手,一次写起点开始的连续 3 天。**10-23 用户定:每批 5 个并发(20 个太费 token)**;写手模型先用 sonnet 试,交稿后由主会话对照相邻 Opus 写的天抽读核查(篇幅/逐行讲解/代入数据/代码实跑/line-notes 齐全),达标就继续 sonnet,不达标换回 Opus 重写。半成品(上个写手中断留下的)交给同条流的下一个写手检查补完,check-course 报的问题一并修。写手交稿后:把它汇报里的拆天建议/接口约定追加到 docs/agent-zero-split-notes.md,再给同一条流派下 3 天。
 3. 5 小时额度用完就停,等用户说 reset 再继续。定期 `git add src/content/blog/agent-zero docs/ && git commit && git push` 备份(全是 draft:true,线上不显示)。
 4. 写手提示词模板(把 A/B/C 和子目录名换掉;涉及执行命令/浏览器的天加安全红线一句):
 

@@ -123,7 +123,7 @@ if __name__ == "__main__":
 - `out.append(0.2 if ok else 0.0)` 格式分只给 0.2,是结果分满分 1.0 的五分之一。格式是拐杖,不能比走路本身还重要。
 - `def field_reward(completions, expected, **kwargs) -> list[float]:` `expected` 就是数据集里那一列,TRL 按列名传进来,一条回答对应一个 `expected`。`**kwargs` 接住 TRL 塞进来的其他参数(`prompts`、`completion_ids`、`trainer_state` 等),我们用不到,但必须写,否则会报「意外的关键字参数」。
 - `return [triage_reward(_text(c), e) for c, e in zip(completions, expected)]` `zip` 把两个列表按位置配对,相当于 JS 里 `completions.map((c, i) => [c, expected[i]])`。
-- `"后面加解释": '{"category": ... "urgency": "low"}'` 两个相邻的字符串字面量会被 Python 自动拼成一个,第二行就是接在 JSON 后面的那段解释。
+- `"后面加解释": '{"category": "refund"` 两个相邻的字符串字面量会被 Python 自动拼成一个,第二行就是接在 JSON 后面的那段解释。
 
 </div>
 
@@ -195,7 +195,7 @@ if __name__ == "__main__":
 
 <div class="line-notes">
 
-- `TOOLS = {"find_customer", ... "transfer_to_human"}` 允许调用的工具集合。前四个是 CloudLedger 的四个工具,最后一个是转人工。调用了集合外的工具名(模型编的),格式分就没了。
+- `TOOLS = {"find_customer", "get_subscription"` 允许调用的工具集合。前四个是 CloudLedger 的四个工具,最后一个是转人工。调用了集合外的工具名(模型编的),格式分就没了。
 - `def score(traj: list[dict], expected_amount: float, transfer_cost: float = 0.3) -> dict[str, float]:` 返回一个字典,四部分各多少、合计多少都在里面。训练时只用合计,但调试奖励时你一定想知道分是在哪一项丢的。`transfer_cost` 是转人工扣多少分,下面要拿它做实验。
 - `refunds = [s["args"].get("amount") for s in traj if s["tool"] == "create_refund_request"]` 把所有退款调用的金额挑出来。`.get("amount")` 在没有这个参数时返回 `None` 而不报错。
 - `parts["结果"] = 1.0 if len(refunds) == 1 and abs(refunds[0] - expected_amount) < 0.005 else -0.5` 结果奖励:恰好退了一次、金额对(差不到半分钱)得 1 分。退错或退了两次,扣 0.5 分。退错钱是真金白银的损失,所以是负分,不只是 0 分。浮点数不能直接用 `==` 比,Day 579 的 `refund_verifier.py` 也是这么比的。
@@ -731,12 +731,12 @@ model.save_pretrained("grpo_lora")
 
 - `G, PER_STEP, STEPS, LR, MAX_NEW = 4, 4, 24, 5e-5, 48` 每组 4 个回答(TRL 默认 8,CPU 上省一半);每步 4 道题;一共 24 步;学习率 5e-5;每个回答最多 48 个 token。24 步 × 4 道 = 96 道题,200 道训练题只用了一半不到,CPU 太慢,这是能接受的上限。学习率比 Colab 那份高 5 倍,和 Day 576 的理由一样:总共只有 24 步,太小看不出变化。
 - `REWARD_FUNCS = [format_reward, field_reward]` 和 Colab 脚本传给 `reward_funcs` 的是同一个列表,权重都是 1。
-- `model = get_peft_model(model, LoraConfig(r=16, ...))` 和 Day 576 一样,挂上 LoRA,只训练那 1.75% 的参数。
+- `model = get_peft_model(model, LoraConfig(r=16, lora_alpha=32` 和 Day 576 一样,挂上 LoRA,只训练那 1.75% 的参数。
 - `model.eval()` 关掉 dropout。GRPO 里同一组回答的 logp 要和采样时的模型一致,dropout 会让它每次算出来不一样。
 - `END = tok.convert_tokens_to_ids("<|im_end|>")` Qwen 的对话里 assistant 说完话会输出 `<|im_end|>`,这是「正常结束」的标记。拿它来判断有没有被截断。
 - `return tok.apply_chat_template(msgs, add_generation_prompt=True, return_tensors="pt")` 套模板,末尾加上「轮到 assistant 了」,`return_tensors="pt"` 直接返回 PyTorch 张量,形状 (1, prompt 长度)。
 - `@torch.no_grad()` 装饰器([Day 64](/blog/agent-zero/day-064-httpx-1/) 之后我们在 [Day 76](/blog/agent-zero/day-076-week11-review/) 前后学过装饰器)。采样时不需要梯度,关掉省内存省时间。
-- `out = model.generate(ids, ..., do_sample=True, temperature=1.0,` 采样而不是贪心,温度 1.0,按模型原本的概率分布抽。
+- `out = model.generate(ids, attention_mask=torch.ones_like(ids), do_sample=True, temperature=1.0,` 采样而不是贪心,温度 1.0,按模型原本的概率分布抽。
 - `top_p=1.0, top_k=0, repetition_penalty=1.0, max_new_tokens=MAX_NEW, num_return_sequences=G, pad_token_id=PAD)` 这一行很重要。Qwen2.5 的默认生成配置是 `top_p=0.8`、`top_k=20`、`repetition_penalty=1.05`,会把分布「修剪」过;GRPO 要的是模型**原本**的分布,所以全部显式关掉。TRL 的 `GRPOConfig` 里这几项默认也是 1.0、0(不限)、1.0。`num_return_sequences=G` 对同一个 prompt 一次生成 G 个回答,这就是 vLLM 的 `n` 参数在 transformers 里的样子,Day 579 用 DeepSeek 时只能发 4 次请求。
 - `return out[:, ids.shape[1]:]` 切掉 prompt,只留回答部分,形状 (G, 回答长度)。4 个回答长短不一,短的后面会被填充成 `PAD`。
 - `full = torch.cat([ids.repeat(len(comp), 1), comp], dim=1)` 把 prompt 复制 G 份,和 G 个回答拼起来,一次前向算完一组。`repeat(4, 1)` 是在第一维复制 4 份。
@@ -753,7 +753,7 @@ model.save_pretrained("grpo_lora")
 - `loss = -(adv.unsqueeze(1) * logps * mask).sum() / n_tok` **整个 GRPO 的核心就这一行**。每个 token 的 logprob 乘上它所在回答的优势(同一个回答的每个 token 优势相同,`unsqueeze(1)` 把形状 (G,) 变成 (G, 1) 才能和 (G, 长度) 相乘),填充位置乘 0,全部加起来再除以整批的 token 总数。前面的负号是因为优化器做的是「让 loss 变小」,而我们要「让优势为正的回答概率变大」。除以整批 token 数而不是每个回答各自平均,就是 TRL 默认 `loss_type="dapo"` 的做法。Day 579 玩具里的 `grad += a * (onehot − p)`,在这里由 `backward()` 自动算出来。
 - `loss.backward()` 一道题一道题地反向传播,梯度累加在 LoRA 参数上,4 道题都算完再更新一次。这样同时只有一组在内存里。
 - `opt.step()` `opt.zero_grad()` 更新,清零。因为每批采样只更新一次(TRL 的 `num_iterations=1`),采样时的模型和更新时的模型是同一个,PPO 那套「新旧概率比」恒等于 1,裁剪不起作用,所以这里没写裁剪。`num_iterations` 大于 1 时就必须加上。
-- `print(f"step {step:>2}  " + ...` 每步打印一行,指标名和 TRL 日志一致,方便你以后在 Colab 上对照着读。`flush=True` 让重定向到文件时也能实时看到。
+- `print(f"step {step:>2}  " + "  ".join(` 每步打印一行,指标名和 TRL 日志一致,方便你以后在 Colab 上对照着读。`flush=True` 让重定向到文件时也能实时看到。
 
 </div>
 
