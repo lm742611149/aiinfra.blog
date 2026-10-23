@@ -1208,7 +1208,7 @@ uv run python -m part02.timeout_vs_connect
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1nabx6EEeH&autoplay=0&high_quality=1" title="LLM API 速率限制详解：HTTP 429、RPM、TPM 与指数退避" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
-<figcaption>快乐的天才程序员 · LLM API 速率限制详解:HTTP 429、RPM、TPM 与指数退避 · 6 分钟,2026 年 10 月。今天只看前半段讲 429 是什么;后半段的指数退避是明天的内容,可以先留着。</figcaption>
+<figcaption>快乐的天才程序员 · LLM API 速率限制详解:HTTP 429、RPM、TPM 与指数退避 · 6 分钟,2026 年 9 月。今天只看前半段讲 429 是什么;后半段的指数退避是明天的内容,可以先留着。</figcaption>
 </figure>
 
 ### 其他经典视频

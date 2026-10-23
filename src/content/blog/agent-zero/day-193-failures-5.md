@@ -407,7 +407,7 @@ class RobustAgent:
         self.registry = registry
         self.system = system
         self.limits = limits or Limits()
-        self.llm = RetryingChat(llm or make_llm())  # 不传就建一个真的,SDK 自带重试已关
+        self.llm: SupportsChat = RetryingChat(llm or make_llm())  # 不传就建一个真的,SDK 自带重试已关;标成协议类型,子类才能换成别的包装
         self.verbose = verbose
         self.messages: list[dict[str, Any]] = []  # 每次 run 重新开始;跑完留着,测试和日志要看
 
@@ -485,7 +485,7 @@ class RobustAgent:
 - `return chat_with_retry(self.llm, messages, **kw)` 转调 Day 190 的函数,所有关键字参数(`tools`、`tool_choice`)原样转发。重试 4 次、只重试临时错误,都是 `chat_with_retry` 装饰器里定的。
 - `llm: SupportsChat | None = None, verbose: bool = True) -> None:` 参数里 `llm` 是测试的入口:传 `FakeClient` 就是假模型,不传就用真的。`verbose` 控制要不要打印每一步,测试里关掉,免得满屏输出。
 - `self.limits = limits or Limits()` 不传就用默认的六个阈值。
-- `self.llm = RetryingChat(llm or make_llm())  # 不传就建一个真的,SDK 自带重试已关` `make_llm()` 是 Day 190 的工厂,`max_retries=0`,避免 SDK 那层重试和 tenacity 叠加成 3 × 4 = 12 次。`llm or make_llm()`:传了就用传的,没传才建,所以测试里 `.env` 没有 key 也不会报错。
+- `self.llm: SupportsChat = RetryingChat(llm or make_llm())  # 不传就建一个真的,SDK 自带重试已关;标成协议类型,子类才能换成别的包装` 变量标成 `SupportsChat` 而不是 `RetryingChat`,是给明天留的口子:子类可以把它换成另一个也有 `chat` 方法的包装,类型检查不会报错。`make_llm()` 是 Day 190 的工厂,`max_retries=0`,避免 SDK 那层重试和 tenacity 叠加成 3 × 4 = 12 次。`llm or make_llm()`:传了就用传的,没传才建,所以测试里 `.env` 没有 key 也不会报错。
 - `self.messages: list[dict[str, Any]] = []  # 每次 run 重新开始;跑完留着,测试和日志要看` 对话历史的出口。
 - `def _model_step(self, messages: list[dict[str, Any]]) -> ChatResult:` 一步里「调模型」的部分,方法名前的下划线是 Python 约定的「内部用,子类可以覆盖」。
 - `return self.llm.chat(messages, tools=self.registry.schemas)` 经过 `RetryingChat`,所以这里自带重试。
@@ -843,6 +843,7 @@ assistant 已查到杭州 21 度,其余没做。
 # agent-zero-lab/part03/failure_zoo_193.py  把 Day 189 的九类失败全部交给 RobustAgent,看体检报告还剩几个「没有」
 import json
 import time
+from collections.abc import Sequence
 
 from part03.budget import Limits
 from part03.failure_zoo import reg
@@ -851,7 +852,7 @@ from part03.retry_llm import make_llm
 from part03.robust_agent import RobustAgent
 
 PARTIAL = "已经查到的结果见上,其余没有完成。"
-SCRIPTS: dict[str, list[Step]] = {
+SCRIPTS: dict[str, Sequence[Step]] = {
     "2 工具卡住": [[call("slow_lookup", order_id="O1")], "订单接口暂时没有响应,请稍后再查。"],
     "3 工具抛异常": [[call("flaky_lookup", order_id="O1")], "订单接口连不上,请稍后再查。"],
     "4 参数不是合法 JSON": [[("get_weather", '{"city": 杭州}')], "杭州天气:21 度。"],
@@ -862,27 +863,29 @@ SCRIPTS: dict[str, list[Step]] = {
 }
 
 
-for name, script in SCRIPTS.items():
-    fake = FakeClient(script)
-    agent = RobustAgent(reg, "你是助手。", Limits(max_steps=6, tool_timeout=1), llm=fake, verbose=False)
-    start = time.perf_counter()
-    r = agent.run("帮我查一下。")
-    seconds = time.perf_counter() - start
-    chars = len(json.dumps(agent.messages, ensure_ascii=False))
-    print(f"-> {name}:status={r.status} steps={r.steps} needs_human={r.needs_human} | 模型被调 {len(fake.calls)} 次 | "
-          f"上下文 {chars} 字符 | 耗时 {seconds:.1f} 秒")
+if __name__ == "__main__":  # 被 Day 194 的 make_logs.py 导入时不跑
+    for name, script in SCRIPTS.items():
+        fake = FakeClient(script)
+        agent = RobustAgent(reg, "你是助手。", Limits(max_steps=6, tool_timeout=1), llm=fake, verbose=False)
+        start = time.perf_counter()
+        r = agent.run("帮我查一下。")
+        seconds = time.perf_counter() - start
+        chars = len(json.dumps(agent.messages, ensure_ascii=False))
+        print(f"-> {name}:status={r.status} steps={r.steps} needs_human={r.needs_human} | 模型被调 {len(fake.calls)} 次 | "
+              f"上下文 {chars} 字符 | 耗时 {seconds:.1f} 秒")
 
-REAL = {"1 模型 API 连不上(端口 9 没人监听)": {"base_url": "http://127.0.0.1:9"},
-        "对照:key 写错(真发到 DeepSeek)": {"api_key": "sk-wrong-key-for-demo"}}
-for name, overrides in REAL.items():
-    agent = RobustAgent(reg, "你是助手。", llm=make_llm(**overrides), verbose=False)
-    start = time.perf_counter()
-    r = agent.run("杭州天气?")
-    print(f"-> {name}:status={r.status} error={r.error} needs_human={r.needs_human} | 耗时 {time.perf_counter() - start:.1f} 秒")
+    REAL = {"1 模型 API 连不上(端口 9 没人监听)": {"base_url": "http://127.0.0.1:9"},
+            "对照:key 写错(真发到 DeepSeek)": {"api_key": "sk-wrong-key-for-demo"}}
+    for name, overrides in REAL.items():
+        agent = RobustAgent(reg, "你是助手。", llm=make_llm(**overrides), verbose=False)
+        start = time.perf_counter()
+        r = agent.run("杭州天气?")
+        print(f"-> {name}:status={r.status} error={r.error} needs_human={r.needs_human} | 耗时 {time.perf_counter() - start:.1f} 秒")
 ```
 
 <div class="line-notes">
 
+- `from collections.abc import Sequence` 剧本表的类型标成 `Sequence[Step]`,原因和 `FakeClient` 一样:`list[Step]` 要求元素类型一模一样,会让类型检查报红。
 - `from part03.failure_zoo import reg` 直接复用 Day 189 的那张工具表(`get_weather`、`slow_lookup`、`flaky_lookup`、`dump_logs`),工具原样不动,只换循环。
 - `from part03.fake_client import FakeClient, Step, call` `Step` 是剧本里一幕的类型别名,下面标注 `SCRIPTS` 用。
 - `PARTIAL = "已经查到的结果见上,其余没有完成。"` 收尾那一幕的统一台词。
@@ -890,6 +893,7 @@ for name, overrides in REAL.items():
 - `"4 参数不是合法 JSON": [[("get_weather", '{"city": 杭州}')], "杭州天气:21 度。"],` 这一类要手写 `(工具名, 参数字符串)`,因为 `call()` 会把参数规规矩矩序列化成合法 JSON。
 - `"6 同一个调用反复发": [[call("get_weather", city="杭州")]] * 4 + [PARTIAL],` 演四遍同一个调用,再加收尾那一句。
 - `"8/9 停不下来,撞线": [[call("get_weather", city=c)] for c in` 六个不同的城市,每步一个,走满 6 步撞线,再加收尾那一句。
+- `if __name__ == "__main__":` 下面才是要跑的部分。明天 Day 194 的脚本要 `from part03.failure_zoo_193 import SCRIPTS` 借用剧本表,没有这个守卫,一导入就会把九类全跑一遍。
 - `agent = RobustAgent(reg, "你是助手。", Limits(max_steps=6, tool_timeout=1), llm=fake, verbose=False)` 和 Day 189 一样给 6 步,工具超时调成 1 秒(原来卡 3 秒,调成 1 秒才看得到「超时」而不用干等)。
 - `start = time.perf_counter()` 记起点。`perf_counter` 是精度最高的计时器,量一小段耗时用它(`monotonic` 也行,Day 192 讲过后者)。
 - `chars = len(json.dumps(agent.messages, ensure_ascii=False))` 上下文一共多少字符。`messages` 只增不减,跑完的长度就是最大值。Day 189 的 `FakeLLM` 里是用 `seen_chars` 记的,今天换成事后量。

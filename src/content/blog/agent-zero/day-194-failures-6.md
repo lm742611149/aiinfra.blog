@@ -402,7 +402,7 @@ for n in (2_000, 10_000, 20_000):
 <div class="line-notes">
 
 - `LOOSE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")  # 邮箱:用户名部分不限长度` 我第一遍写的。`[\w.+-]+` 是「一个或多个字母数字下划线点加减号」,后面要跟一个 `@`。
-- `BOUNDED = re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}\.[\w.]{1,63}")  # 邮箱:每一段都限定长度` 现在 `run_log.py` 里用的。邮箱的用户名最长 64、域名一段最长 63,是协议里的上限(RFC 5321),所以限长不会漏掉真邮箱。
+- `BOUNDED = re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}\.[\w.]{1,63}")  # 邮箱:每一段都限定长度` 现在 `run_log.py` 里用的。邮箱用户名最长 64 个字符(RFC 5321)、域名每一段最长 63 个字符(RFC 1035),都是协议里的上限,所以限长不会漏掉真邮箱。
 - `text = "x" * n  # 一长串字母,里面没有 @,正则要在每个位置都试一遍` 最坏的输入:全是能匹配用户名的字符,但没有 `@`。
 - `for name, pattern in (("松的", LOOSE), ("限长的", BOUNDED)):` 元组的元组,两个正则各跑一遍。
 - `pattern.sub("邮箱***", text)` 真正执行替换,计时只量这一行。
@@ -1030,7 +1030,7 @@ uv run python -m part03.ex194_concurrent
 一共 100 行,能解析的 100 行,坏了 0 行;单行最长 61426 字符
 ```
 
-100 次运行、100 行、100 行能解析,单行最长 6 万多个字符(UTF-8 下一行十几万字节)。我跑了三遍,每次都是零损坏。
+100 次运行、100 行、100 行能解析,单行最长 6 万多个字符(汉字在 UTF-8 里占 3 个字节,一行将近 20 万字节)。我跑了三遍,每次都是零损坏。
 
 别急着下「线程同时写没问题」的结论。**我没能把它写坏,不等于它保证不坏。** 这个结果依赖几个条件:同一个进程里的线程,每次都是 `with open(..., "a")` 各开各的文件对象,一条记录只调一次 `f.write`,而且文件在本机磁盘上。Python 对超过缓冲区的大写入会一次性交给操作系统,操作系统对追加模式的写入又会原子地定位到文件末尾,所以这里没出事。换成多个进程同时写、或者文件放在网络盘(NFS)上,行为就没这么好了。要稳妥就让**一个**地方负责写:加一个 `threading.Lock`,或者各线程把记录放进队列、由一个写线程取出来写(这个队列思路第七部分讲生产化时会再碰到)。
 
@@ -1205,7 +1205,7 @@ uv run pytest -q
 
 - [JSON Lines 官网](https://jsonlines.org/):格式的说明,一页纸,三条规则:UTF-8、每行一个合法 JSON、行以 `\n` 结尾。英文。
 - [Python 官方文档 · logging 模块](https://docs.python.org/zh-cn/3.12/library/logging.html):中文版。今天没有用 `logging`,是为了先把「记什么」讲清楚;真正的项目里日志级别(DEBUG/INFO/ERROR)、输出到多个地方、按大小轮转都由它负责,可以把今天的 JSON 记录接在它上面。
-- [OpenTelemetry · Semantic conventions for generative AI](https://opentelemetry.io/docs/specs/semconv/gen-ai/):行业正在统一的 AI 应用可观测性字段约定,看看别人给「一次模型调用」「一次工具调用」起了哪些字段名,和我们的 `events` 对照。英文,草稿阶段会变,读思路别背字段。
+- [OpenTelemetry · Semantic conventions for generative AI](https://opentelemetry.io/docs/specs/semconv/gen-ai/):行业正在统一的 AI 应用可观测性字段约定,看看别人给「一次模型调用」「一次工具调用」起了哪些字段名,和我们的 `events` 对照。英文,这套约定还在演进,字段名会变,读思路别背字段。
 - [Hamel Husain · Your AI Product Needs Evals](https://hamel.dev/blog/posts/evals/):强调「先看数据」:先从日志里把真实的失败一条条读出来,再决定评测什么。英文。
 - [Anthropic · Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents):把一次运行的完整记录叫 transcript,评测和排查都是围绕它做的。今天的 `messages` 加 `events` 就是一份 transcript。英文。
 - [Langfuse 文档](https://langfuse.com/docs):开源的 LLM 可观测性平台,把每次运行存成 trace,每个模型调用、工具调用是其中的 span,在网页上逐步回放。今天手写的东西是它的最小版,第六部分会真正接入。英文。
@@ -1231,7 +1231,7 @@ uv run pytest -q
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/9L77QExPmI0" title="Modern Python logging" loading="lazy" allow="accelerometer; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
-<figcaption>mCoding · Modern Python logging · 讲怎么用 `logging` 配置输出 JSON 格式、怎么放进队列异步写,英文,和练习 3 的「一个地方负责写」对着看。</figcaption>
+<figcaption>mCoding · Modern Python logging · 讲现代的 `logging` 配置写法,英文;看完回头想想练习 3 里「一个地方负责写」用 `logging` 怎么实现。</figcaption>
 </figure>
 
 ### 书籍

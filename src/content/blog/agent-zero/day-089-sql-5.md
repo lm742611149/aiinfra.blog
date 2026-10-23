@@ -1191,7 +1191,7 @@ sqlite3 ex5.db "CREATE INDEX idx_big_customer ON big_invoices (customer_id);"
 
 <div class="line-notes">
 
-- `chmod +x check_plan.sh` 给脚本加上「可执行」权限(Day 4 的 `chmod`)。
+- `chmod +x check_plan.sh` 给脚本加上「可执行」权限(Day 7 的 `chmod +x`)。
 - `./check_plan.sh ex5.db big_invoices "SELECT * FROM big_invoices WHERE amount = 100 LIMIT 2"; echo "退出码 $?"` `amount` 没有索引。`$?` 是上一条命令的退出码。
 - `./check_plan.sh ex5.db big_invoices "SELECT * FROM big_invoices WHERE customer_id = 1234 LIMIT 2"` 走索引的查询。
 - `./check_plan.sh ex5.db big_invoices "SELECT count(*) FROM big_invoices"` 不带条件的 `count(*)`,看脚本怎么判。
