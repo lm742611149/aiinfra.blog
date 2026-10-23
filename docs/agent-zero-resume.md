@@ -12,7 +12,7 @@
        while x<=b and x in d: x+=1
        print(a,b,x if x<=b else 'done')"
    ```
-2. 每条流派 1 个 general-purpose 写手,一次写起点开始的连续 3 天。**10-23 用户定:写手一律用 sonnet(model: "sonnet"),每批 10 个并发**(sonnet 六组抽读对照 Opus 质量持平;20 个太费)。交稿后主会话仍抽读一篇核质量(篇幅/逐行讲解/代入数据/代码实跑/line-notes 齐全),明显缩水的那组换 Opus 重写。半成品(上个写手中断留下的)交给同条流的下一个写手检查补完,check-course 报的问题一并修。写手交稿后:把它汇报里的拆天建议/接口约定追加到 docs/agent-zero-split-notes.md,再给同一条流派下 3 天。
+2. 每条流派 1 个 general-purpose 写手,一次写起点开始的连续 3 天。**10-23 用户定:下一批先用 Fable(model: "fable")5 个并发试写(21/54/86/125/157 起各 3 天),交稿后和 sonnet/Opus 写的相邻天对照质量与用量;之后再决定用 sonnet 每批 10 个并发还是 Fable**(sonnet 六组抽读对照 Opus 质量持平;20 个太费)。交稿后主会话仍抽读一篇核质量(篇幅/逐行讲解/代入数据/代码实跑/line-notes 齐全),明显缩水的那组换 Opus 重写。半成品(上个写手中断留下的)交给同条流的下一个写手检查补完,check-course 报的问题一并修。写手交稿后:把它汇报里的拆天建议/接口约定追加到 docs/agent-zero-split-notes.md,再给同一条流派下 3 天。
 3. 5 小时额度用完就停,等用户说 reset 再继续。定期 `git add src/content/blog/agent-zero docs/ && git commit && git push` 备份(全是 draft:true,线上不显示)。
 4. 写手提示词模板(把 A/B/C 和子目录名换掉;涉及执行命令/浏览器的天加安全红线一句):
 
