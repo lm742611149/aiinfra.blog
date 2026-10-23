@@ -1133,8 +1133,7 @@ print(f"{len(CASES)} 句里判错 {wrong} 句")
 - `from part03 import wf1_gates` 要替换的是 `wf1_gates` 里的 `PROMISE_RE`,导入模块本身。
 - `from part03.ex197_regex_audit import CASES` 同一批句子。`ex197_regex_audit.py` 的打印部分在 `if __name__ == "__main__":` 里,所以只导入数据。
 - `wf1_gates.PROMISE_RE = re.compile(` 把模块里的正则换成新版。`check_reply` 每次调用时才去读这个名字,所以换了就生效。
-- `(?:工作日|自然日|天|小时|周|星期|个月)(?:内|之内)?` 单位多了周、星期、个月。「一周内」「两个月之内」都能命中了。
-- `(?:到账|退回|退款|处理|解决|完成|答复|回复)` 动作词多了「答复」「回复」。
+- `(?:工作日|自然日|天|小时|周|星期|个月)(?:内|之内)?` 这一行是新正则的主体,三处变化:单位多了周、星期、个月,「一周内」「两个月之内」能命中了;「内」也认「之内」;末尾的动作词多了「答复」「回复」,`(?:到账|退回|退款|处理|解决|完成|答复|回复)` 补上后「一周内给您答复」就抓得住了。
 - `flagged = wf1_gates.check_reply(text, []) is not None` 和原来一样的判定。
 - `print(("对  " if flagged == truth else "判错"), "|", text)` 只标对错。
 
