@@ -1658,6 +1658,11 @@ c9a8ea7 新功能(提交错地方了)
 <figcaption>廿一日船 · Git处理合并冲突 · 约 11 分钟,2024 年。同一个作者的下一集,讲冲突标记和解决步骤,对应第五步。</figcaption>
 </figure>
 
+<figure class="video">
+<div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1ne4y1S7S9&autoplay=0&high_quality=1" title="十分钟学会常用git撤销操作,全面掌握git的时光机" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
+<figcaption>码农高天 · 十分钟学会常用git撤销操作,全面掌握git的时光机 · 约 9 分钟,2022 年。对应「还一笔账」:reset 三档、reflog 找回。</figcaption>
+</figure>
+
 ### 其他经典视频
 
 <figure class="video">

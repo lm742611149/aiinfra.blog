@@ -312,8 +312,6 @@ git log --oneline --decorate --graph -5
 git push
 ```
 
-(这之前我让同事加了 `NOTES.md` 并推送,你自己加了 `TODO.md` 并提交,两件事互不相干。)
-
 <div class="line-notes">
 
 - `git push` 第一次:被拒绝。
@@ -322,6 +320,8 @@ git push
 - `git push` 第二次:你的 `main` 现在包含了远程所有的提交,又多了自己的,所以是快进,通过。
 
 </div>
+
+(这之前我让同事加了 `NOTES.md` 并推送,你自己加了 `TODO.md` 并提交,两件事互不相干。)
 
 实测输出:
 
@@ -414,9 +414,7 @@ ssh-keygen -t ed25519 -C "learner@example.com"
 
 <div class="line-notes">
 
-- `ssh-keygen` 是 macOS 自带的生成密钥的工具,不用额外安装。
-- `-t ed25519` `-t` 是 type,选算法。`ed25519` 是现在 GitHub 官方文档推荐的算法,key 短、快、安全。老教程里的 `rsa -b 4096` 也能用,但不再是首选。
-- `-C "learner@example.com"` `-C` 是 comment(备注),只是写在公钥末尾的一段文字,方便你以后认出「这是哪把 key」,通常写邮箱,不影响安全。
+- `ssh-keygen -t ed25519 -C "learner@example.com"` `ssh-keygen` 是 macOS 自带的生成密钥的工具,不用额外安装。`-t` 是 type,选算法:`ed25519` 是现在 GitHub 官方文档推荐的算法,key 短、快、安全,老教程里的 `rsa -b 4096` 也能用,但不再是首选。`-C` 是 comment(备注),只是写在公钥末尾的一段文字,方便你以后认出「这是哪把 key」,通常写邮箱,不影响安全。
 
 </div>
 
@@ -549,9 +547,9 @@ Authenticated to 127.0.0.1 ([127.0.0.1]:2222) using "publickey".
 <div class="line-notes">
 
 - `ssh -v fake-github true` `-v` 打印调试信息(输出太长,我只摘了关键四行);`fake-github` 是我在 `~/.ssh/config` 里起的别名,指向 `127.0.0.1:2222`;末尾的 `true` 是让远端执行的命令(什么都不做)。
-- `Server host key: ssh-ed25519 SHA256:9BqA…` 服务器亮出它自己的指纹,就是上面「要核对」的那个东西。第一次连会被写进 `known_hosts`。
+- `Server host key: ssh-ed25519 SHA256:9BqALZs3` 服务器亮出它自己的指纹,就是上面「要核对」的那个东西。第一次连会被写进 `known_hosts`。
 - `Authentications that can continue: publickey` 服务器说「我只接受公钥认证」(我在配置里关掉了密码登录)。
-- `Offering public key: ~/.ssh/id_ed25519 ED25519 SHA256:gG8V…` 客户端把我的公钥指纹递过去:「我有这把钥匙,你认识吗」,指纹和前面 `ssh-keygen -lf` 打出来的一致。
+- `Offering public key: ~/.ssh/id_ed25519 ED25519 SHA256:gG8VEA2G` 客户端把我的公钥指纹递过去:「我有这把钥匙,你认识吗」,指纹和前面 `ssh-keygen -lf` 打出来的一致。
 - `Authenticated to 127.0.0.1 ([127.0.0.1]:2222) using "publickey".` 服务器出题,私钥答对了,认证通过。这一行就是 GitHub 那边 `Hi 你的用户名!` 的前半句。
 
 </div>
@@ -601,7 +599,7 @@ git push -u origin main
 
 </div>
 
-推完刷新网页,你应该看到文件列表和提交历史。**最后一步一定要做:在网页的文件列表里确认没有 `.env`。** 有 `.gitignore` 挡着的话它根本不会在这,但看一眼才放心。(GitHub 对公开仓库默认有「推送保护」会拦截一部分已知格式的密钥,但这是最后一道保险,不是你可以省掉本地检查的理由。)
+推完刷新网页,你应该看到文件列表和提交历史。**最后一步一定要做:在网页的文件列表里确认没有 `.env`。** 有 `.gitignore` 挡着的话它根本不会在这,但看一眼才放心。(GitHub 官方文档说,个人账号默认开着「推送保护」(push protection),往公开仓库推已知格式的密钥会被拦下。但它是最后一道保险,不是你可以省掉本地检查的理由。)
 
 ## 第五步:PR,团队怎么往 main 里合代码
 
