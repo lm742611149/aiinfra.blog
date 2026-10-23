@@ -395,6 +395,7 @@ ERROR:  1001 is outside the valid range for parameter "hnsw.ef_search" (1 .. 100
 import time
 
 import numpy as np
+from psycopg import sql
 
 from part04.pg_store import connect
 
@@ -403,18 +404,19 @@ conn.prepare_threshold = None
 rng = np.random.default_rng(1)
 ids = [int(i) for i in rng.choice(20000, 50, replace=False)]
 queries = [r[1] for r in conn.execute("SELECT id, embedding FROM ann_demo WHERE id = ANY(%s)", (ids,))]
-SQL = "SELECT id FROM ann_demo WHERE category = '{cat}' ORDER BY embedding <=> %s LIMIT 10"
+SELECT = sql.SQL("SELECT id FROM ann_demo WHERE category = {cat} ORDER BY embedding <=> %s LIMIT 10")
 
 
 def measure(cat: str) -> tuple[float, float, float]:
     """返回 (平均返回行数, 召回率, 平均毫秒),标准答案来自不用索引的精确查询。"""
+    query = SELECT.format(cat=sql.Literal(cat))  # 分类值直接写进 SQL 文本,部分索引才认得出
     rows, hit, ms = 0, 0, 0.0
     for q in queries:
         conn.execute("SET enable_indexscan = off; SET enable_bitmapscan = off; SET enable_seqscan = on")
-        truth = {r[0] for r in conn.execute(SQL.format(cat=cat), (q,))}
+        truth = {r[0] for r in conn.execute(query, (q,))}
         conn.execute("RESET enable_indexscan; RESET enable_bitmapscan; SET enable_seqscan = off")
         t0 = time.perf_counter()
-        got = {r[0] for r in conn.execute(SQL.format(cat=cat), (q,))}
+        got = {r[0] for r in conn.execute(query, (q,))}
         ms += (time.perf_counter() - t0) * 1000
         rows += len(got)
         hit += len(got & truth)
@@ -423,11 +425,11 @@ def measure(cat: str) -> tuple[float, float, float]:
 
 
 print("--- 补救一:部分索引(只给 category 等于某个值的行建 HNSW)")
-for cat in ["退款", "发票"]:
+for cat, index_name in [("退款", "ann_demo_refund_hnsw"), ("发票", "ann_demo_invoice_hnsw")]:
     t0 = time.perf_counter()
     conn.execute(
-        f"CREATE INDEX ann_demo_{'refund' if cat == '退款' else 'invoice'}_hnsw ON ann_demo "
-        f"USING hnsw (embedding vector_cosine_ops) WHERE category = '{cat}'"
+        sql.SQL("CREATE INDEX {name} ON ann_demo USING hnsw (embedding vector_cosine_ops) WHERE category = {cat}")
+        .format(name=sql.Identifier(index_name), cat=sql.Literal(cat))
     )
     build = time.perf_counter() - t0
     rows, recall, ms = measure(cat)
@@ -443,7 +445,7 @@ conn.execute("DROP INDEX ann_demo_refund_hnsw; DROP INDEX ann_demo_invoice_hnsw"
 conn.execute("CREATE INDEX ann_demo_category_idx ON ann_demo (category)")
 conn.execute("ANALYZE ann_demo; RESET enable_seqscan")
 for cat in ["退款", "发票", "错误码"]:
-    plan = conn.execute("EXPLAIN " + SQL.format(cat=cat), (queries[0],)).fetchall()
+    plan = conn.execute(sql.SQL("EXPLAIN ") + SELECT.format(cat=sql.Literal(cat)), (queries[0],)).fetchall()
     nodes = [ln[0].strip() for ln in plan if "Order By" not in ln[0]]
     print(f"{cat}:", " | ".join(n.split("  (cost")[0] for n in nodes if "->" in n or "Limit" in n))
 conn.execute("DROP INDEX ann_demo_category_idx")
@@ -452,31 +454,33 @@ conn.execute("DROP INDEX ann_demo_category_idx")
 <div class="line-notes">
 
 - `import time` 量建索引的耗时和查询耗时。
+- `from psycopg import sql` Day 232 学过的 `sql` 模块,用来安全地拼 SQL 文本。这次要把分类值写进 SQL 字符串本身(不是用 `%s` 占位符),必须走它。
 - `conn = connect()` 同样一条连接用到底。
 - `conn.prepare_threshold = None` 同上,关掉自动预编译,否则中间改设置会被缓存的计划盖掉。
 - `rng = np.random.default_rng(1)` 和 `filter_pitfall.py` 完全一样的种子,抽到同样的 50 个问题,两张表的数字才能比。
 - `queries = [r[1] for r in conn.execute("SELECT id, embedding FROM ann_demo WHERE id = ANY(%s)"` 这次直接把取回的行放进列表推导式(Day 23)里,只留向量。
-- `SQL = "SELECT id FROM ann_demo WHERE category = '{cat}' ORDER BY embedding <=> %s LIMIT 10"` 注意这次分类是写在 SQL 文本里的字面量,用 Python 的 `.format` 填,不是 `%s` 占位符。原因是部分索引的条件 `WHERE category = '退款'` 要和查询里的条件**逐字对上**,规划器才会用它。这里的 `cat` 来自代码里写死的两个值,没有任何用户输入;处理用户输入时千万不要这样拼 SQL(Day 232 的 `sql.Literal` 才是正确做法)。
+- `SELECT = sql.SQL("SELECT id FROM ann_demo WHERE category = {cat} ORDER BY embedding <=> %s LIMIT 10")` 查询模板。`{cat}` 是 `sql.SQL` 的占位符,稍后用 `.format` 填;`%s` 仍然是 psycopg 的参数占位符,留给问题向量。为什么分类值要写进 SQL 文本,而不是用 `%s`?部分索引的条件 `WHERE category = '退款'` 要和查询里的条件**逐字对上**,规划器才会用它。
 - `def measure(cat: str) -> tuple[float, float, float]:` 返回三个数。`tuple[float, float, float]` 是返回值类型标注(Day 45)。
+- `query = SELECT.format(cat=sql.Literal(cat))` `sql.Literal("退款")` 会渲染成带引号并且转义好的 `'退款'`,填进 `{cat}`,得到完整的 SQL。和手写 f-string 不同,用户输入里的引号不会破坏 SQL(Day 232)。
 - `rows, hit, ms = 0, 0, 0.0` 三个累加器,同 `filter_pitfall.py`。
 - `for q in queries:` 对每个问题各量一次。
 - `conn.execute("SET enable_indexscan = off; SET enable_bitmapscan = off; SET enable_seqscan = on")` 一次发三条语句(用分号隔开)。这三条把所有索引路径关掉,只剩顺序扫描加排序,答案一定精确。`enable_bitmapscan` 也要关,因为后面有 B-tree 索引时,规划器可能走"位图扫描",虽然也是精确的,但这里要的是不依赖任何索引的标准答案。
-- `truth = {r[0] for r in conn.execute(SQL.format(cat=cat), (q,))}` 集合推导式,和列表推导式一样,换成花括号。`SQL.format(cat=cat)` 把 `{cat}` 换成 `退款` 或 `发票`。
+- `truth = {r[0] for r in conn.execute(query, (q,))}` 集合推导式,和列表推导式一样,换成花括号。
 - `conn.execute("RESET enable_indexscan; RESET enable_bitmapscan; SET enable_seqscan = off")` 把前两个恢复成默认(开),再把顺序扫描关掉,逼规划器走索引。
 - `t0 = time.perf_counter()` 开始计时。
-- `got = {r[0] for r in conn.execute(SQL.format(cat=cat), (q,))}` 走索引的答案。
+- `got = {r[0] for r in conn.execute(query, (q,))}` 走索引的答案。
 - `hit += len(got & truth)` 集合交集的大小。
 - `return rows / n, hit / (10 * n), ms / n` 平均返回行数、召回率、平均毫秒。
-- `for cat in ["退款", "发票"]:` 分别给两种分类建部分索引。
-- `f"CREATE INDEX ann_demo_{'refund' if cat == '退款' else 'invoice'}_hnsw ON ann_demo "` 索引名:退款对应 `ann_demo_refund_hnsw`,发票对应 `ann_demo_invoice_hnsw`。f 字符串里嵌了一个三元表达式,Python 的三元写法是 `A if 条件 else B`,相当于 JS 的 `条件 ? A : B`。
-- `f"USING hnsw (embedding vector_cosine_ops) WHERE category = '{cat}'"` 和 Day 229 的建索引语句相比,只多了最后的 `WHERE`。
+- `for cat, index_name in [("退款", "ann_demo_refund_hnsw"), ("发票", "ann_demo_invoice_hnsw")]:` 分别给两种分类建部分索引,每项是 `(分类, 索引名)`。
+- `sql.SQL("CREATE INDEX {name} ON ann_demo USING hnsw (embedding vector_cosine_ops) WHERE category = {cat}")` 和 Day 229 的建索引语句相比,只多了最后的 `WHERE`。`{name}` 和 `{cat}` 是待填的占位符。
+- `.format(name=sql.Identifier(index_name), cat=sql.Literal(cat))` 索引名是"标识符",用 `sql.Identifier` 填(会按需加双引号);分类值是"字面量",用 `sql.Literal` 填。两者不能混用。
 - `build = time.perf_counter() - t0` 建这个部分索引花的秒数。
 - `rows, recall, ms = measure(cat)` 量这种分类。
 - `for name, size in conn.execute(` 括号里的查询是下面两行字符串:`SELECT indexrelname, pg_size_pretty(pg_relation_size(indexrelid)) FROM pg_stat_user_indexes WHERE relname = 'ann_demo' ORDER BY 1`。`pg_stat_user_indexes` 是 Postgres 内置的索引统计视图,每个索引一行;`indexrelname` 是索引名,`indexrelid` 用来算大小。这一步看三个 HNSW 索引各占多大。
 - `conn.execute("DROP INDEX ann_demo_refund_hnsw; DROP INDEX ann_demo_invoice_hnsw")` 部分索引量完删掉,为的是下面单独看 B-tree 的作用。
 - `conn.execute("CREATE INDEX ann_demo_category_idx ON ann_demo (category)")` 给 `category` 列建 B-tree 普通索引。不写 `USING` 默认就是 B-tree。
 - `conn.execute("ANALYZE ann_demo; RESET enable_seqscan")` 重新统计,并且这次**不再**强制关掉顺序扫描,让规划器自由选。
-- `plan = conn.execute("EXPLAIN " + SQL.format(cat=cat), (queries[0],)).fetchall()` 只 `EXPLAIN` 不执行(没有 `ANALYZE`),取执行计划的文字。
+- `plan = conn.execute(sql.SQL("EXPLAIN ") + SELECT.format(cat=sql.Literal(cat)), (queries[0],)).fetchall()` `sql.SQL` 对象可以用 `+` 拼起来,这里在前面接上 `EXPLAIN `。只 `EXPLAIN` 不执行(没有 `ANALYZE`),取执行计划的文字。
 - `nodes = [ln[0].strip() for ln in plan if "Order By" not in ln[0]]` 计划里 `Order By:` 那一行会把 1024 个数字的问题向量整个打出来,过滤掉。
 - `print(f"{cat}:", " | ".join(n.split("  (cost")[0] for n in nodes if "->" in n or "Limit" in n))` 每行去掉 `(cost=...)` 之后的部分,只留节点名,用 `|` 连起来。
 - `conn.execute("DROP INDEX ann_demo_category_idx")` 清理,不让这个 B-tree 留着影响下面的实验。
@@ -489,8 +493,8 @@ uv run python -m part04.filter_fixes
 
 ```text
 --- 补救一:部分索引(只给 category 等于某个值的行建 HNSW)
-退款:建索引 1.9 秒,平均返回 10.0 行,召回率 1.00,平均 0.8 毫秒
-发票:建索引 0.1 秒,平均返回 10.0 行,召回率 1.00,平均 0.7 毫秒
+退款:建索引 2.3 秒,平均返回 10.0 行,召回率 1.00,平均 0.9 毫秒
+发票:建索引 0.2 秒,平均返回 10.0 行,召回率 1.00,平均 0.8 毫秒
   ann_demo_hnsw           157 MB
   ann_demo_invoice_hnsw   1608 kB
   ann_demo_pkey           912 kB
@@ -501,7 +505,7 @@ uv run python -m part04.filter_fixes
 错误码: Limit | ->  Sort | ->  Index Scan using ann_demo_category_idx on ann_demo
 ```
 
-部分索引干净利落:两种分类都拿满 10 行,召回率 1.00,而且比"带过滤的大索引"更快(0.7 到 0.8 毫秒),因为图里只有 2000 个点或者 200 个点。代价是每多一个分类值就要多一个索引:退款的索引占 16 MB(2000 个点,每点约 8 KB,和 Day 233 的 156 MB / 20000 行吻合),发票的 1.6 MB。所以它只适合"分类值很少、很固定、查询里天天按它过滤"的场景,比如一个客服知识库里"退款"就是最常被单独搜的那一类。
+部分索引干净利落:两种分类都拿满 10 行,召回率 1.00,而且比"带过滤的大索引"更快(0.8 到 0.9 毫秒),因为图里只有 2000 个点或者 200 个点。代价是每多一个分类值就要多一个索引:退款的索引占 16 MB(2000 个点,每点约 8 KB,和 Day 233 的 156 MB / 20000 行吻合),发票的 1.6 MB。所以它只适合"分类值很少、很固定、查询里天天按它过滤"的场景,比如一个客服知识库里"退款"就是最常被单独搜的那一类。
 
 普通索引那三行,规划器自己的选择:退款走 `Bitmap Heap Scan`(用 B-tree 把 2000 行找出来),发票和错误码走 `Index Scan using ann_demo_category_idx`,三种都**根本没用 HNSW**,是 B-tree 找出符合条件的行,再 `Sort` 精确排序。所以你给过滤列建了普通索引以后,这个坑反而"消失"了,规划器认为先过滤更划算,结果是精确的,也不会少。这和 Day 233 里"小表上走不到索引"是同一个原因:规划器是按成本选路的。坑出现的条件是:过滤列没有索引、或者符合条件的行太多(比如占 30% 以上)、数据又大到全表扫描不划算,这时规划器才会走 HNSW 再过滤。
 
