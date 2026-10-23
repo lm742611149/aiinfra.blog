@@ -1496,7 +1496,7 @@ uv run pytest -q tests/test_schema_from_model.py
 
 ### 书籍
 
-- Chip Huyen《AI Engineering: Building Applications with Foundation Models》(O'Reilly,2025):英文,书里 Agent 那一章讲工具,提到工具的描述和参数设计会明显影响模型的表现。[出版社页面](https://www.oreilly.com/library/view/ai-engineering/9781098166298/)。
+- Chip Huyen《AI Engineering: Building Applications with Foundation Models》(O'Reilly,2025):英文,书里 Agent 那一章讲工具,提到工具的描述和参数设计会明显影响模型的表现。[出版社页面](https://www.oreilly.com/library/view/ai-engineering/9781098166298/)(对爬虫返回 403,需浏览器打开)。
 
 ### 开源项目与代码
 
