@@ -25,7 +25,7 @@ draft: true
 3. 实跑 LangGraph 1.2 的节点超时(`timeout`)和节点错误处理器(`error_handler`),说清它们解决什么问题。
 4. 在装好的包里找到各框架主循环的位置,并用今天的实测证据,回答面试里最常见的三个问题:框架底层怎么实现的、局限在哪、什么时候不用框架。
 
-预计用时 3 小时:查版本和概念 20 分钟,三个新框架各 25 分钟,七行对比 15 分钟,LangGraph 和读源码 30 分钟,练习 1 小时。前置:[Day 333](/blog/agent-zero/day-333-frameworks-1/) 的 `part05/fw/` 全部文件(今天直接 import 它的 `fw_common.py` 和 `compare.py`),[Day 311](/blog/agent-zero/day-311-lg-agent-loop/) 和 [Day 317](/blog/agent-zero/day-317-lg-retry/) 的 LangGraph 节点与重试,[Day 51](/blog/agent-zero/day-051-pydantic-1/)、[Day 52](/blog/agent-zero/day-052-pydantic-2/) 的 pydantic。今天调模型的实跑,每个脚本一次约 0.004–0.005 元,七行对比跑了 21 次约 0.1 元,加上调试合计约 0.3 元。
+预计用时 3 小时:查版本和概念 20 分钟,三个新框架各 25 分钟,七行对比 15 分钟,LangGraph 和读源码 30 分钟,练习 1 小时。前置:[Day 333](/blog/agent-zero/day-333-frameworks-1/) 的 `part05/fw/` 全部文件(今天直接 import 它的 `fw_common.py` 和 `compare.py`),[Day 311](/blog/agent-zero/day-311-lg-agent-loop/) 的 LangGraph 节点和 Agent 循环,[Day 190](/blog/agent-zero/day-190-failures-2/) 的重试原理,[Day 51](/blog/agent-zero/day-051-pydantic-1/)、[Day 52](/blog/agent-zero/day-052-pydantic-2/) 的 pydantic。今天调模型的实跑,每个脚本一次约 0.004–0.005 元,七行对比跑了 21 次约 0.1 元,加上调试合计约 0.3 元。
 
 学法提示:先对照文章逐行敲一遍(不复制粘贴)并跑通;第二天合上文章,把 `fw_pydantic_ai.py` 默写出来,再口头回答一遍面试三题;做练习时先自己写,做不出再展开参考答案,看完关掉自己重写一遍。
 
@@ -324,7 +324,14 @@ uv run python fw_msaf.py
 [Agent Framework] 模型请求 3 次,输入 2261(命中缓存 1792),输出 358,约 0.0039 元,用时 3.6 秒
 ```
 
-这个框架启动时还有一个小插曲:它用标准库 `logging` 往外打每次工具调用的 INFO 日志(`Function name: list_invoices` 之类),被 Day 284 `server.py` 装在根日志器上的 Rich 处理器接住,刷了一屏。所以 `fw_common.py` 的静音名单里要加上 `agent_framework`;今天一并加了 `LiteLLM` 和 `litellm`,下一步 ADK 会用到。
+这个框架启动时还有一个小插曲:它用标准库 `logging` 往外打每次工具调用的 INFO 日志(`Function name: list_invoices` 之类),被 Day 284 `server.py` 装在根日志器上的 Rich 处理器接住,刷了一屏。所以要把 Day 333 建的 `fw_common.py` 里那个静音名单改成下面这样,今天一并加上了 `LiteLLM` 和 `litellm`,下一步 ADK 会用到:
+
+```python
+for noisy in ("httpx", "httpx2", "openai", "langchain_openai", "agent_framework", "LiteLLM", "litellm"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
+```
+
+每多接一个框架,这个名单可能就要多一项,因为它们各有各的日志器名字。
 
 ## 第 3 步:Google ADK 2.x
 
@@ -469,6 +476,30 @@ Google ADK              3   2278   426   0.0044   7.8
 
 **第三,花钱最少的是 OpenAI Agents SDK(0.0042 元),但别急着当结论。** 它的输入只有 1898、输出 394,是因为它那一轮的模型回答碰巧短一些。输出 token 的价格是输入的四倍,几十个 token 的波动就能让名次变化。再强调一次:这个量级的差别,别拿来选型。
 
+<figure>
+<svg viewBox="0 0 640 300" role="img" aria-label="七种做法的平均用时:手写 4.2 秒、LangChain 3.8、OpenAI Agents SDK 3.7、Claude Agent SDK 6.5、Pydantic AI 3.8、Agent Framework 3.8、Google ADK 7.8;括号里是平均花费">
+  <rect x="0" y="0" width="640" height="300" fill="var(--paper-raised)"/>
+  <text x="20" y="22" font-family="var(--font-mono)" font-size="12" fill="var(--ink)">同一个任务,七种做法的平均用时(秒)和花费(元),各跑 3 遍</text>
+  <g font-family="var(--font-mono)" font-size="11" fill="var(--ink-soft)">
+    <text x="20" y="54">手写</text><text x="20" y="90">LangChain</text><text x="20" y="126">OpenAI Agents</text>
+    <text x="20" y="162">Claude Agent</text><text x="20" y="198">Pydantic AI</text><text x="20" y="234">Agent Framework</text><text x="20" y="270">Google ADK</text>
+  </g>
+  <g stroke="var(--compute)" fill="var(--compute-wash)">
+    <rect x="130" y="40" width="210" height="20"/><rect x="130" y="76" width="190" height="20"/><rect x="130" y="112" width="185" height="20"/>
+    <rect x="130" y="184" width="190" height="20"/><rect x="130" y="220" width="190" height="20"/>
+  </g>
+  <g stroke="var(--mem)" fill="var(--mem-wash)">
+    <rect x="130" y="148" width="325" height="20"/><rect x="130" y="256" width="390" height="20"/>
+  </g>
+  <g font-family="var(--font-mono)" font-size="11" fill="var(--ink)">
+    <text x="346" y="55">4.2 (0.0049)</text><text x="326" y="91">3.8 (0.0048)</text><text x="321" y="127">3.7 (0.0042)</text>
+    <text x="461" y="163">6.5 (0.0078)</text><text x="326" y="199">3.8 (0.0046)</text><text x="326" y="235">3.8 (0.0049)</text><text x="526" y="271">7.8 (0.0044)</text>
+  </g>
+  <text x="320" y="292" text-anchor="middle" font-family="var(--font-mono)" font-size="11" fill="var(--ink-faint)">蓝色是离群的两个:Claude 多一个起标题的请求,ADK 多一层 LiteLLM。条长 50 像素 = 1 秒。</text>
+</svg>
+<figcaption>五个框架挤在 3.7–4.2 秒,花费都在 0.004–0.005 元。能看出差别的只有两个有额外环节的做法。</figcaption>
+</figure>
+
 下面这些才是选型要看的,而且全都是今天亲手撞出来的:
 
 | 框架 | 接 DeepSeek 时撞到的 | 这说明什么 |
@@ -538,7 +569,7 @@ if __name__ == "__main__":
 <div class="line-notes">
 
 - `from langgraph.errors import NodeError, NodeTimeoutError` `NodeTimeoutError` 是节点超时抛的异常;`NodeError` 是传给错误处理器的「失败现场」,里面有出事的节点名和异常对象。
-- `from langgraph.types import Command, RetryPolicy` `Command` 是 [Day 309](/blog/agent-zero/day-309-lg-command/) 学的,「改状态 + 指定下一步」;`RetryPolicy` 是 [Day 317](/blog/agent-zero/day-317-lg-retry/) 学的重试策略。
+- `from langgraph.types import Command, RetryPolicy` `Command` 是 [Day 309](/blog/agent-zero/day-309-lg-command/) 学的,「改状态 + 指定下一步」;`RetryPolicy` 是 LangGraph 自带的重试策略,重试为什么要间隔、要不要抖动,[Day 190](/blog/agent-zero/day-190-failures-2/) 讲过原理,这里是把它做成了节点的一个参数。
 - `async def slow_lookup(state: State) -> dict:` 故意写得很慢的节点。
 - `await asyncio.sleep(2)  # 假装下游卡住了` 睡 2 秒。**注意要用异步的 `asyncio.sleep`,不能用 `time.sleep`**:LangGraph 的超时靠 asyncio 的取消实现,同步的 `time.sleep` 会堵住事件循环,超时要等它睡醒才能触发。源码里 `TimeoutPolicy` 的说明写着这条。
 - `async def fallback(state: State, error: NodeError) -> Command:` 错误处理器:第一个参数是状态,第二个参数标注成 `NodeError`,LangGraph 看到这个类型标注就会把失败现场传进来(「按类型注入参数」)。
@@ -897,7 +928,7 @@ is_duplicate 的类型: bool ,refundable_yuan 的类型: float
 模型请求 3 次,用时 3.0 秒
 ```
 
-模型交回了一个 `DuplicateCheck`:`is_duplicate=True`,两张发票号,退还金额 `2392.0`。后面的代码可以直接 `if out.is_duplicate:`,不用再从一段中文里抠。这在 [Day 150](/blog/agent-zero/day-150-structured-output/) 你是手写的 `extract` + 重试,Pydantic AI 把它做进了框架。它是「框架给你的能力」的又一个例子,和超时、重试、次数上限同一类。
+模型交回了一个 `DuplicateCheck`:`is_duplicate=True`,两张发票号,退还金额 `2392.0`。后面的代码可以直接 `if out.is_duplicate:`,不用再从一段中文里抠。这在 [Day 150](/blog/agent-zero/day-150-structured-4/) 你是手写的 `extract` + 重试,Pydantic AI 把它做进了框架。它是「框架给你的能力」的又一个例子,和超时、重试、次数上限同一类。
 
 </details>
 
@@ -913,7 +944,7 @@ is_duplicate 的类型: bool ,refundable_yuan 的类型: float
 
 **不选什么,为什么。**
 
-- **不选 Claude Agent SDK 做客服主链路。** 客服 Agent 只需要两三个业务工具,不需要读写文件和执行命令的 harness;今天看到它默认读家目录配置、多一个起标题的请求、比别人贵三到五成、慢两秒,而且只有 Claude 官方接口才是它的主场(我们用 DeepSeek 要走兼容层)。需要「什么都能干」的编码或运维助手时再考虑,而且必须沙箱。
+- **不选 Claude Agent SDK 做客服主链路。** 客服 Agent 只需要两三个业务工具,不需要读写文件和执行命令的 harness;今天看到它默认读家目录配置、多一个起标题的请求、比别人贵六成以上、慢两秒多,而且只有 Claude 官方接口才是它的主场(我们用 DeepSeek 要走兼容层)。需要「什么都能干」的编码或运维助手时再考虑,而且必须沙箱。
 - **不选 OpenAI Agents SDK。** 它的 handoff 和护栏很好用,但默认绑 Responses API 和 tracing 上传,接 DeepSeek 要多配几处,而我们的流程图已经用 LangGraph 表达了。如果团队主要用 OpenAI 的模型、流程是「几个专员互相交接」,它会是更轻的选择。
 - **不选 ADK 和微软 Agent Framework。** 一个主场在 Gemini、接 DeepSeek 要借 LiteLLM(7.8 秒对 3.7 秒),一个选项封闭(要关思考得打补丁)。如果公司已经全面上 Google Cloud 或 .NET,答案会不同。
 - **不选低代码。** Day 336、337 会专门讲:原型阶段可以用,核心链路的版本管理、评测和可迁移性更重要(Agent Builder 一年就下线是个提醒)。

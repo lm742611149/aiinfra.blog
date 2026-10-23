@@ -966,7 +966,7 @@ Claude Agent SDK        3   2550   549   0.0070   5.7
 读这张表要小心:**这个任务太简单,三次请求就答完,所以差别小,别把 0.0043 对 0.0054 当结论。** 手写版的 13 行也有水分,它背后是我们三天里写的 `MiniAgent`。能确定的是几个方向:
 
 - 钱和请求数上,前三个几乎一样。框架没有让你多花钱,也没有省钱。
-- Claude Agent SDK 比另外三个贵三到五成、比手写版慢一点五秒:多出来的一个标题请求、更长的系统提示词和环境块都是原因。
+- Claude Agent SDK 比另外三个贵三成到六成、比手写版慢一点五秒:多出来的一个标题请求、更长的系统提示词和环境块都是原因。
 - 代码量上,框架没有惊人的差距,真正省下来的是**循环、重试、用量统计**这些你要自己写的东西。手写版那 111 行,框架里是一个 `create_agent(...)` 或一个 `Runner.run_sync(...)`。
 
 真正的差别不在这张表里,而在「出了问题你能不能改」。手写版每一行都是你的。LangChain 的行为大部分能通过 LangGraph 和 middleware 改。OpenAI Agents SDK 的循环写在 `Runner` 里,足够简单,读源码一个下午能读完。Claude Agent SDK 的核心是一个你改不了的程序,你能配置,不能改它的内部逻辑;而且今天看到了,它会加东西、会多花一次请求、会读你的家目录。
@@ -1369,7 +1369,7 @@ SDK 默认用 strict 模式,生成的 schema 里 `required` 包含所有参数,�
 
 <details><summary>答案</summary>
 
-先分层:LangChain(LangGraph)是编排框架,你设计流程;OpenAI Agents SDK 和 Claude Agent SDK 是 Agent SDK,循环、工具执行、会话是现成的;Claude Agent SDK 更进一步,底下是 Claude Code 本体,是 harness,自带读写文件和执行命令的工具,控制力最低、能力最强,也最需要隔离。选型看三件事:流程是不是固定(固定用 workflow,不需要通用 Agent)、需不需要持久化和人工介入(需要就 LangGraph)、需不需要一个什么都能干的通用 Agent(需要就 harness,但要沙箱)。可以补一句我实测过:同一个简单任务,三个框架的请求数和花费几乎一样,Claude Agent SDK 贵三到五成、慢一点五秒左右,因为它多一个标题请求和更长的系统提示词;换框架时关键参数要抓包确认,因为每个框架读配置的地方不同。
+先分层:LangChain(LangGraph)是编排框架,你设计流程;OpenAI Agents SDK 和 Claude Agent SDK 是 Agent SDK,循环、工具执行、会话是现成的;Claude Agent SDK 更进一步,底下是 Claude Code 本体,是 harness,自带读写文件和执行命令的工具,控制力最低、能力最强,也最需要隔离。选型看三件事:流程是不是固定(固定用 workflow,不需要通用 Agent)、需不需要持久化和人工介入(需要就 LangGraph)、需不需要一个什么都能干的通用 Agent(需要就 harness,但要沙箱)。可以补一句我实测过:同一个简单任务,三个框架的请求数和花费几乎一样,Claude Agent SDK 贵三成到六成、慢一点五秒左右,因为它多一个标题请求和更长的系统提示词;换框架时关键参数要抓包确认,因为每个框架读配置的地方不同。
 
 </details>
 
