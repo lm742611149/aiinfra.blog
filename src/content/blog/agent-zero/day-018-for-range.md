@@ -213,7 +213,7 @@ print("数字字符一共", digits, "个")
 - `for ch in ticket_id:` 一次拿一个字符。第一轮 `ch` 是 `"T"`,第二轮 `"0"`,第三轮 `"0"`,第四轮 `"1"`。
 - `print(repr(ch), ch.isdigit())` `repr()` 把值连引号一起打印,看得出这是个字符串而不是数字。`isdigit()` 是 Day 17 的字符串方法,问「是不是数字字符」。
 - `digits = 0` **循环开始之前**先把计数器设成 0。下面会解释为什么必须放在外面。
-- `for ch in "T001 计费 C023":` 直接对一个字符串字面量循环,共 13 个字符(含两个空格和两个汉字)。
+- `for ch in "T001 计费 C023":` 直接对一个字符串字面量循环,共 12 个字符(含两个空格和两个汉字)。
 - `if ch.isdigit():` 每个字符都问一遍,是数字就进分支。
 - `digits += 1` 是数字就加 1。`+=` 是 Day 12 学的「在原来的值上加」。
 - `print("数字字符一共", digits, "个")` 回到最左边,循环全部结束后才打印一次。
@@ -861,7 +861,7 @@ print(f"规则分对了 {correct}/{len(tickets)}")
 - `category = "登录"` 命中登录词。
 - `else:` 都没命中。
 - `category = "功能"` 默认功能。
-- `if category == human:` 规则的结果和人工答案一样吗?这一行比前面的链少缩进一层:它和 if/elif 链是同一个循环体里的并列语句,链跑完才轮到它。
+- `if category == human:` 规则的结果和人工答案一样吗?这一行和上面的 if/elif 链缩进一样,都在 `for` 的循环体里,是并列的两件事:先分类,再对答案。
 - `correct += 1` 一样就把累加器加 1。
 - `mark = "对"` 记下「对」。
 - `mark = "错"` 记下「错」。
@@ -1435,24 +1435,24 @@ $ uv run python part01/ex18_4_discount_scan.py
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1LaCjBmEPy&autoplay=0&high_quality=1" title="5分钟学编程 · Python篇 #15｜for循环：让代码自动重复执行" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
-<figcaption>猫小申 · 5分钟学编程 · Python篇 #15｜for循环:让代码自动重复执行 · 6 分钟,2025 年 11 月。`for` 的最小例子和 `range`,看完马上能对上今天前半部分。</figcaption>
+<figcaption>猫小申 · 5分钟学编程 · Python篇 #15｜for循环:让代码自动重复执行 · 6 分钟,2025 年 11 月。标题就是今天前半部分的主题,时间短,先看这个当热身。</figcaption>
 </figure>
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1BGZpYjEnP&autoplay=0&high_quality=1" title="Python新手必学：循环遍历与range函数精讲" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
-<figcaption>水哥澎湃 · Python新手必学:循环遍历与range函数精讲 · 31 分钟,2025 年 3 月。讲得慢,多种 `range` 写法和遍历例子都过一遍,今天的 `range` 一节卡住了就来看这个。</figcaption>
+<figcaption>水哥澎湃 · Python新手必学:循环遍历与range函数精讲 · 31 分钟,2025 年 3 月。标题说的是循环遍历和 `range` 两块,时间长一些,今天的 `range` 一节卡住了就来看这个。</figcaption>
 </figure>
 
 ### 其他经典视频
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/6iF8Xb7Z3wQ" title="Python Tutorial for Beginners 7: Loops and Iterations - For/While Loops" loading="lazy" allow="accelerometer; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
-<figcaption>Corey Schafer · Python Tutorial for Beginners 7: Loops and Iterations · 英文,可开自动字幕。前半讲 `for`、`range`、`enumerate`,后半讲 `while`,明天还要用,可以先只看到 `for` 结束。</figcaption>
+<figcaption>Corey Schafer · Python Tutorial for Beginners 7: Loops and Iterations · 英文,可开自动字幕。整集讲循环,包括 `for`、`range`、`break`、`continue` 和 `while`,今天看 `for` 和 `range` 的部分,`while` 留给明天。</figcaption>
 </figure>
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/KWgYha0clzw" title="Learn Python for loops in 5 minutes! 🔁" loading="lazy" allow="accelerometer; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
-<figcaption>Bro Code · Learn Python for loops in 5 minutes! · 英文,5 分钟。节奏快,例子是从 1 数到 10 之类,适合学完今天后快速过一遍巩固。</figcaption>
+<figcaption>Bro Code · Learn Python for loops in 5 minutes! · 英文,5 分钟。标题就是 5 分钟学 `for`,节奏快,适合学完今天后快速过一遍巩固。</figcaption>
 </figure>
 
 ### 书籍
@@ -1463,7 +1463,7 @@ $ uv run python part01/ex18_4_discount_scan.py
 ### 开源项目与代码
 
 - [Asabeneh/30-Days-Of-Python](https://github.com/Asabeneh/30-Days-Of-Python/tree/master/10_Day_Loops):英文,「Day 10 Loops」,`for`、`range`、嵌套循环和一批练习,和今天的顺序接近。
-- [jackfrued/Python-100-Days](https://github.com/jackfrued/Python-100-Days/blob/master/Day01-20/06.循环结构.md):中文,《06.循环结构》一篇,从 `for-in` 讲到 `range`,配的小例子是累加和乘法表。
+- [jackfrued/Python-100-Days](https://github.com/jackfrued/Python-100-Days/blob/master/Day01-20/06.循环结构.md):中文,《06.循环结构》一篇,依次讲 `for-in`、`while`、`break` 和 `continue`、嵌套循环,最后有判断素数、最大公约数、猜数字三个例子。今天读 `for-in` 和嵌套循环两节。
 
 ## 自测
 

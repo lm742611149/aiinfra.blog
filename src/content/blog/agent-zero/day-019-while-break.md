@@ -1109,14 +1109,14 @@ $ uv run python part01/ex19_4_balance.py
 - [Python 语言参考 · while 语句](https://docs.python.org/zh-cn/3.12/reference/compound_stmts.html#the-while-statement):中文,`while` 的正式语法,篇幅很短。
 - [Python 标准库 · KeyboardInterrupt](https://docs.python.org/zh-cn/3.12/library/exceptions.html#KeyboardInterrupt):中文,`Ctrl+C` 对应的异常,以后用 `try/except` 优雅退出时会用到。
 - [Python 标准库 · time.sleep](https://docs.python.org/zh-cn/3.12/library/time.html#time.sleep):中文,暂停程序;[time.monotonic](https://docs.python.org/zh-cn/3.12/library/time.html#time.monotonic) 测时间间隔。
-- [Amazon Builders' Library · Timeouts, retries, and backoff with jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/):英文,亚马逊工程师 Marc Brooker 讲为什么重试要退避加抖动。今天只读前半部分的「重试为什么会放大故障」。
+- [Amazon Builders' Library · Timeouts, retries, and backoff with jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/):英文,亚马逊工程师 Marc Brooker 讲为什么重试要退避加抖动。文章里讲了重试怎样可能让已经过载的服务更糟,读前半部分就够。
 - [MDN · while](https://developer.mozilla.org/zh-CN/docs/Web/JavaScript/Reference/Statements/while)、[do...while](https://developer.mozilla.org/zh-CN/docs/Web/JavaScript/Reference/Statements/do...while)、[break](https://developer.mozilla.org/zh-CN/docs/Web/JavaScript/Reference/Statements/break)、[continue](https://developer.mozilla.org/zh-CN/docs/Web/JavaScript/Reference/Statements/continue):中文,JS 里对应的四个语句,和 Python 对照着看。
 
 ### B 站视频
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1ANMgzuEyk&autoplay=0&high_quality=1" title="3 步拆解 while 循环三要素，彻底掌握 Python 循环逻辑" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
-<figcaption>水哥澎湃 · 3 步拆解 while 循环三要素,彻底掌握 Python 循环逻辑 · 13 分钟,2025 年 6 月。「初始值、条件、更新」三要素,对应今天 `while_basic.py` 里的三处,也是死循环的排查清单。</figcaption>
+<figcaption>水哥澎湃 · 3 步拆解 while 循环三要素,彻底掌握 Python 循环逻辑 · 13 分钟,2025 年 6 月。把 `while` 拆成三个要素来讲。看完对照今天 `while_basic.py` 里的初值、条件、更新三处,看他的拆法和我的一不一样。</figcaption>
 </figure>
 
 <figure class="video">
@@ -1128,12 +1128,12 @@ $ uv run python part01/ex19_4_balance.py
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/rRTjPnVooxE" title="While loops in Python are easy!" loading="lazy" allow="accelerometer; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
-<figcaption>Bro Code · While loops in Python are easy! · 英文,可开自动字幕。几分钟讲完 `while`,例子是「输入不合法就重问」,和今天的 `ask_times.py` 很像。</figcaption>
+<figcaption>Bro Code · While loops in Python are easy! · 英文,可开自动字幕。标题就是 `while` 循环入门,看完回头对照今天的 `ask_times.py`。</figcaption>
 </figure>
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://www.youtube-nocookie.com/embed/6iF8Xb7Z3wQ" title="Python Tutorial for Beginners 7: Loops and Iterations - For/While Loops" loading="lazy" allow="accelerometer; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
-<figcaption>Corey Schafer · Python Tutorial for Beginners 7: Loops and Iterations · 英文,可开自动字幕。昨天看过前半(`for`),今天看后半的 `while`、`break`、`continue` 和死循环。</figcaption>
+<figcaption>Corey Schafer · Python Tutorial for Beginners 7: Loops and Iterations · 英文,可开自动字幕。昨天看过 `for` 的部分,今天看 `while`、`break`、`continue` 和死循环那几段。</figcaption>
 </figure>
 
 ### 书籍
@@ -1145,7 +1145,7 @@ $ uv run python part01/ex19_4_balance.py
 ### 开源项目与代码
 
 - [Asabeneh/30-Days-Of-Python](https://github.com/Asabeneh/30-Days-Of-Python/tree/master/10_Day_Loops):英文,「Day 10 Loops」,`while`、`break`、`continue` 各有小例子加练习。
-- [jackfrued/Python-100-Days](https://github.com/jackfrued/Python-100-Days/blob/master/Day01-20/07.分支和循环结构实战.md):中文,《07.分支和循环结构实战》里有猜数字、判断素数等典型的 `while` 和 `break` 练习,做完今天的练习后可以再挑几道。
+- [jackfrued/Python-100-Days](https://github.com/jackfrued/Python-100-Days/blob/master/Day01-20/06.循环结构.md):中文,《06.循环结构》里的 `while` 和 `break`、`continue` 两节,以及后面的猜数字游戏例子;想多练几道可以再看《07.分支和循环结构实战》里的素数、斐波那契等例子。
 
 ## 自测
 

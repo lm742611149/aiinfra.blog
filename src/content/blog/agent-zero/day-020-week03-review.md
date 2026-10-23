@@ -1326,12 +1326,12 @@ $ uv run python part01/ex20_4_holdout.py
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV1UN4y1576f&autoplay=0&high_quality=1" title="如何看懂Python的报错" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
-<figcaption>jiang_keqing · 如何看懂Python的报错 · 13 分钟,2022 年 8 月。教你从最后一行往上读 Traceback,正好用来过一遍本周错题表里那几类报错。</figcaption>
+<figcaption>jiang_keqing · 如何看懂Python的报错 · 13 分钟,2022 年 8 月。标题就是怎么看懂 Python 报错,看完拿本周错题表里的几行对照一下。</figcaption>
 </figure>
 
 <figure class="video">
 <div class="video-frame"><iframe src="https://player.bilibili.com/player.html?bvid=BV17F41137cW&autoplay=0&high_quality=1" title="python编程while循环案例—猜数字游戏" loading="lazy" scrolling="no" allowfullscreen></iframe></div>
-<figcaption>小昕讲堂 · python编程while循环案例——猜数字游戏 · 9 分钟,2022 年 4 月。和练习 3 同一个题目,先自己做完再对照,看他处理输入和计次的方式有什么不同。</figcaption>
+<figcaption>小昕讲堂 · python编程while循环案例—猜数字游戏 · 9 分钟,2022 年 4 月。和练习 3 同一个题目,先自己做完再对照,看他处理输入和计次的方式有什么不同。</figcaption>
 </figure>
 
 ### 其他经典视频
