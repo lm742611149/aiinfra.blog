@@ -12,7 +12,7 @@
        while x<=b and x in d: x+=1
        print(a,b,x if x<=b else 'done')"
    ```
-2. 每条流派 1 个 general-purpose 写手,一次写起点开始的连续 3 天。**10-23 用户定:下一次额度重置后先用 Fable(model: "fable")5 个并发跑一批(起点 30/60/95/131/163 各 3 天),交稿后对照 sonnet 写的相邻天比质量和 token 用量;之后再定用哪种**。此前 sonnet 10 并发写了 60 篇,抽读对照 Opus 质量持平。Fable 单价是 sonnet 的 5 倍。交稿后主会话仍抽读一篇核质量(篇幅/逐行讲解/代入数据/代码实跑/line-notes 齐全),明显缩水的那组换 Opus 重写。半成品(上个写手中断留下的)交给同条流的下一个写手检查补完,check-course 报的问题一并修。写手交稿后:把它汇报里的拆天建议/接口约定追加到 docs/agent-zero-split-notes.md,再给同一条流派下 3 天。
+2. 每条流派 1 个 general-purpose 写手,一次写起点开始的连续 3 天。**10-27 起的定法**:写手一律 sonnet(model: "sonnet"),5 个并发;**挑写得最少的 5 条流**(脚本算完按已写篇数排序);**每组 API 硬上限 ¥2**,提示里写明「先小样本调通再放大、快到上限就停用已有数据写」;周复习日先确认要汇总的 6 天都已写好;涉及注入/执行命令/读文件/支付的天加安全红线(只打 127.0.0.1 假服务和假机密、不碰真钱/真钱包/主网/真私钥、不读家目录和真实仓库)。(Fable 试写批 10-27 已用 sonnet 补完,对比没做成。)交稿后主会话:check-course 全量 + grep /Users/minliu、Documents/nue → 抽读一篇(篇幅/逐行讲解/代入数据/实跑/「没实跑」标注)→ 把拆天建议/接口约定/待修追加到 docs/agent-zero-split-notes.md → 一起 commit+push。**DeepSeek 余额 10-27 约 ¥25**,每轮约 ¥2–5,低于 ¥10 提醒用户充值;硅基流动只有 bge-m3/bge-reranker 等免费模型能用,余额不足(Batch 会 402)。
 3. 5 小时额度用完就停,等用户说 reset 再继续。定期 `git add src/content/blog/agent-zero docs/ && git commit && git push` 备份(全是 draft:true,线上不显示)。
 4. 写手提示词模板(把 A/B/C 和子目录名换掉;涉及执行命令/浏览器的天加安全红线一句):
 
