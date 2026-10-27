@@ -86,7 +86,7 @@ draft: true
 
 ## 6. 怎么实跑
 
-- 在自己的 scratchpad 里建一份 `agent-zero-lab` 来跑,**不要写用户的任何真实目录**(`~/Documents/agent-60-lab` 等)。需要 API key 时从 `~/Documents/agent-60-lab/.env` 复制一份到 scratchpad(DeepSeek,已充值);每天的实跑花费控制在 ¥1 以内,文中写出算式。
+- 在自己的 scratchpad 里建一份 `agent-zero-lab` 来跑,**不要写用户的任何真实目录**(`~/Documents/agent-60-lab` 等)。需要 API key 时从 `~/Documents/agent-60-lab/.env` 复制一份到 scratchpad(DeepSeek,已充值);每天的实跑花费控制在 ¥1 以内,文中写出算式。**实跑只用 `deepseek-flash`,不准调 `deepseek-v4-pro` 或其他大模型**(2026-10-27 定);讲大小模型对比的天(路由、Advisor、蒸馏老师等)引用前面已有的实测结果,或给出读者可跑的代码并标「没实跑」。
 - **安全红线**:凡是让模型执行命令、读写文件、操作浏览器的 Agent(coding agent、shell 工具、computer use 等),实跑时必须把它关在你自己的 scratchpad 子目录里(macOS `sandbox-exec` 限制读写范围,或工具层把路径限定在工作目录并拒绝 `..`/绝对路径),并且第一版就要有这个限制。**绝不能让它读到用户家目录、`~/Documents/nue`(公司代码)或任何真实仓库**,因为工具结果会发给第三方模型厂商。演示「没有沙箱会怎样」只用伪造的目录和假数据。
 - 本机是 2019 款 Intel MacBook Pro,没有 GPU、没有 Docker、只有 JDK 8;需要这些的写明没实跑。本机 Postgres.app(5432,用户 minliu 无密码)可用,只能在自己新建的库里操作。
 - 类型检查:可用 basedpyright standard 档检查 scratchpad 里的代码,读者用 Zed 会看到红线,文章里的代码要 0 报错。
